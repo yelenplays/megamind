@@ -474,6 +474,40 @@ def test_unicode_digit_frontmatter_never_tracebacks(
     assert err == ""
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"version": "one"},
+        {"version": 1, "budgets": {"max_candidates": "five"}},
+        {"version": 1, "wikis": [{"name": "W", "path": 7}]},
+        {"version": 1, "wikis": "nope"},
+    ],
+)
+def test_mistyped_registry_is_a_typed_error_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], payload: dict[str, Any]
+) -> None:
+    vault = build_vault(tmp_path)
+    (vault / ".megamind/registry.json").write_text(json.dumps(payload), encoding="utf-8")
+    code, doc, err = run_json(capsys, "--root", str(vault), "config", "show")
+    assert code == 2
+    assert doc["schema_version"] == "megamind/error/v1"
+    assert doc["code"] == "registry_invalid"
+    assert str(vault) not in doc["message"]
+    assert err == ""
+
+
+def test_mistyped_registry_is_a_doctor_finding(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    (vault / ".megamind/registry.json").write_text('{"version": "one"}', encoding="utf-8")
+    code, doc, err = run_json(capsys, "--root", str(vault), "doctor")
+    assert code == 1
+    assert doc["schema_version"] == "megamind/doctor-report/v1"
+    assert doc["errors"] >= 1
+    assert err == ""
+
+
 # --- execution outside the source tree ---------------------------------------
 
 

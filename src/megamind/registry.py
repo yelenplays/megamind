@@ -70,6 +70,87 @@ class Registry:
         return None
 
 
+_BUDGET_FIELDS = (
+    "max_candidates",
+    "max_context_chars",
+    "stale_days",
+    "micro_wiki_pages",
+    "top_level_topics",
+)
+_WIKI_FIELDS = ("name", "path", "privacy", "description", "keywords", "card", "digest", "index")
+
+
+def _type_name(value: object) -> str:
+    return type(value).__name__
+
+
+def _require_int(label: str, value: object) -> int:
+    """Accept only genuine integers; JSON booleans are ints in Python but not budgets."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RegistryError(f"{label} must be an integer, got {_type_name(value)}")
+    return value
+
+
+def _require_str(label: str, value: object) -> str:
+    if not isinstance(value, str):
+        raise RegistryError(f"{label} must be a string, got {_type_name(value)}")
+    return value
+
+
+def _require_str_list(label: str, value: object) -> list[str]:
+    if not isinstance(value, list):
+        raise RegistryError(f"{label} must be a list of strings, got {_type_name(value)}")
+    return [_require_str(f"{label}[{index}]", item) for index, item in enumerate(value)]
+
+
+def _require_mapping(label: str, value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise RegistryError(f"{label} must be a JSON object, got {_type_name(value)}")
+    return {_require_str(f"{label} key", key): item for key, item in value.items()}
+
+
+def _reject_unknown(label: str, data: dict[str, object], allowed: tuple[str, ...]) -> None:
+    unknown = sorted(set(data) - set(allowed))
+    if unknown:
+        raise RegistryError(f"{label} has unknown field(s): {', '.join(unknown)}")
+
+
+def _budgets_from_json(value: object) -> Budgets:
+    data = _require_mapping("budgets", value)
+    _reject_unknown("budgets", data, _BUDGET_FIELDS)
+    defaults = Budgets()
+    values = {
+        name: _require_int(f"budget {name}", data[name])
+        if name in data
+        else getattr(defaults, name)
+        for name in _BUDGET_FIELDS
+    }
+    return Budgets(
+        max_candidates=values["max_candidates"],
+        max_context_chars=values["max_context_chars"],
+        stale_days=values["stale_days"],
+        micro_wiki_pages=values["micro_wiki_pages"],
+        top_level_topics=values["top_level_topics"],
+    )
+
+
+def _wiki_from_json(position: int, value: object) -> WikiEntry:
+    label = f"wikis[{position}]"
+    data = _require_mapping(label, value)
+    _reject_unknown(label, data, _WIKI_FIELDS)
+    defaults = WikiEntry(name="", path="")
+    return WikiEntry(
+        name=_require_str(f"{label} name", data.get("name", defaults.name)),
+        path=_require_str(f"{label} path", data.get("path", defaults.path)),
+        privacy=_require_str(f"{label} privacy", data.get("privacy", defaults.privacy)),
+        description=_require_str(f"{label} description", data.get("description", "")),
+        keywords=_require_str_list(f"{label} keywords", data.get("keywords", [])),
+        card=_require_str(f"{label} card", data.get("card", "")),
+        digest=_require_str(f"{label} digest", data.get("digest", "")),
+        index=_require_str(f"{label} index", data.get("index", "")),
+    )
+
+
 def _require_relative(label: str, value: str) -> None:
     if value.startswith("/") or value.startswith("~") or ":" in value.split("/")[0]:
         raise RegistryError(f"{label} must be a root-relative path, got: {value}")
@@ -78,26 +159,35 @@ def _require_relative(label: str, value: str) -> None:
 
 
 def validate_registry(registry: Registry) -> None:
+    """Enforce the registry schema. Every violation is a RegistryError, never a crash."""
+    _require_int("version", registry.version)
     if registry.version not in SUPPORTED_VERSIONS:
         raise RegistryError(f"unsupported registry version: {registry.version}")
     budgets = registry.budgets
-    for name in ("max_candidates", "max_context_chars", "stale_days"):
-        if getattr(budgets, name) <= 0:
+    for name in _BUDGET_FIELDS:
+        budget = _require_int(f"budget {name}", getattr(budgets, name))
+        if name in ("max_candidates", "max_context_chars", "stale_days") and budget <= 0:
             raise RegistryError(f"budget {name} must be positive")
+    if not isinstance(registry.wikis, list):
+        raise RegistryError(f"wikis must be a list, got {_type_name(registry.wikis)}")
     seen: set[str] = set()
-    for wiki in registry.wikis:
-        if not wiki.name:
+    for position, wiki in enumerate(registry.wikis):
+        if not isinstance(wiki, WikiEntry):
+            raise RegistryError(f"wikis[{position}] must be a wiki entry, got {_type_name(wiki)}")
+        name = _require_str(f"wikis[{position}] name", wiki.name)
+        if not name:
             raise RegistryError("wiki entry without a name")
-        if wiki.name in seen:
-            raise RegistryError(f"duplicate wiki name: {wiki.name}")
-        seen.add(wiki.name)
-        if not wiki.path:
-            raise RegistryError(f"wiki {wiki.name} has no path")
+        if name in seen:
+            raise RegistryError(f"duplicate wiki name: {name}")
+        seen.add(name)
+        _require_str_list(f"wiki {name} keywords", wiki.keywords)
+        if not _require_str(f"wiki {name} path", wiki.path):
+            raise RegistryError(f"wiki {name} has no path")
         for label, value in (
-            (f"wiki {wiki.name} path", wiki.path),
-            (f"wiki {wiki.name} card", wiki.card),
-            (f"wiki {wiki.name} digest", wiki.digest),
-            (f"wiki {wiki.name} index", wiki.index),
+            (f"wiki {name} path", wiki.path),
+            (f"wiki {name} card", _require_str(f"wiki {name} card", wiki.card)),
+            (f"wiki {name} digest", _require_str(f"wiki {name} digest", wiki.digest)),
+            (f"wiki {name} index", _require_str(f"wiki {name} index", wiki.index)),
         ):
             if value:
                 _require_relative(label, value)
@@ -122,14 +212,16 @@ def load_registry(root: Path) -> Registry:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
         raise RegistryError(f"registry is not valid JSON: {error}") from error
-    if not isinstance(raw, dict):
-        raise RegistryError("registry root must be a JSON object")
-    try:
-        budgets = Budgets(**raw.get("budgets", {}))
-        wikis = [WikiEntry(**entry) for entry in raw.get("wikis", [])]
-        registry = Registry(version=int(raw.get("version", 0)), budgets=budgets, wikis=wikis)
-    except TypeError as error:
-        raise RegistryError(f"registry schema mismatch: {error}") from error
+    data = _require_mapping("registry root", raw)
+    _reject_unknown("registry", data, ("version", "budgets", "wikis"))
+    raw_wikis = data.get("wikis", [])
+    if not isinstance(raw_wikis, list):
+        raise RegistryError(f"wikis must be a list, got {_type_name(raw_wikis)}")
+    registry = Registry(
+        version=_require_int("version", data.get("version", 0)),
+        budgets=_budgets_from_json(data.get("budgets", {})),
+        wikis=[_wiki_from_json(position, entry) for position, entry in enumerate(raw_wikis)],
+    )
     validate_registry(registry)
     return registry
 

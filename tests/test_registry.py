@@ -74,8 +74,45 @@ def test_unknown_registry_keys_rejected(tmp_path: Path) -> None:
     path.mkdir()
     payload = {"version": 1, "wikis": [{"name": "X", "path": "x", "surprise": True}]}
     (path / "registry.json").write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(RegistryError, match="schema"):
+    with pytest.raises(RegistryError, match="unknown field"):
         load_registry(tmp_path)
+
+
+def _write_registry(root: Path, payload: object) -> None:
+    directory = root / ".megamind"
+    directory.mkdir(exist_ok=True)
+    (directory / "registry.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"version": "one"}, "version must be an integer"),
+        ({"version": True}, "version must be an integer"),
+        ({"version": 1, "budgets": {"max_candidates": "five"}}, "budget max_candidates"),
+        ({"version": 1, "budgets": []}, "budgets must be a JSON object"),
+        ({"version": 1, "wikis": "nope"}, "wikis must be a list"),
+        ({"version": 1, "wikis": [3]}, r"wikis\[0\] must be a JSON object"),
+        ({"version": 1, "wikis": [{"name": "W", "path": 7}]}, r"wikis\[0\] path must be a string"),
+        (
+            {"version": 1, "wikis": [{"name": "W", "path": "W", "keywords": "a"}]},
+            r"wikis\[0\] keywords must be a list",
+        ),
+        (
+            {"version": 1, "wikis": [{"name": "W", "path": "W", "keywords": [1]}]},
+            r"wikis\[0\] keywords\[0\] must be a string",
+        ),
+        ([], "registry root must be a JSON object"),
+    ],
+)
+def test_mistyped_registry_values_raise_registry_error(
+    tmp_path: Path, payload: object, message: str
+) -> None:
+    _write_registry(tmp_path, payload)
+    with pytest.raises(RegistryError, match=message) as excinfo:
+        load_registry(tmp_path)
+    assert excinfo.value.code == "registry_invalid"
+    assert str(tmp_path) not in str(excinfo.value)
 
 
 def test_router_generation_is_deterministic_and_sorted() -> None:
