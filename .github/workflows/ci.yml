@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest
+      - name: Test
+        run: pytest
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . ruff mypy pytest
+      - name: Ruff lint
+        run: ruff check src tests
+      - name: Ruff format
+        run: ruff format --check src tests
+      - name: Mypy (strict)
+        run: mypy
+
+  wheel:
+    name: installed-wheel smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+      - name: Install wheel into a clean venv and run outside the source tree
+        run: |
+          python -m venv /tmp/megamind-venv
+          /tmp/megamind-venv/bin/pip install dist/*.whl
+          mkdir /tmp/scratch && cd /tmp/scratch
+          /tmp/megamind-venv/bin/megamind-axi --format json | python -c "import json,sys; d=json.load(sys.stdin); assert d['schema_version']=='megamind/home/v1' and d['initialized'] is False"
+          /tmp/megamind-venv/bin/megamind-axi init demo
+          cd demo
+          /tmp/megamind-venv/bin/megamind-axi doctor
+          /tmp/megamind-venv/bin/megamind-axi route "getting started"
+          /tmp/megamind-venv/bin/megamind-axi setup skill --dest /tmp/scratch/skills
