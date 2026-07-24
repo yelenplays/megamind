@@ -87,6 +87,7 @@ It documents why the new wiki should exist and is only ever applied with
 ## Audit records (`.megamind/audit/log.jsonl`)
 
 One JSON object per line: `ts` (UTC ISO), `action` (`init`, `capture`,
-`evolve-apply`, `router-refresh`), and action-specific fields such as `path`,
-`proposal_id`, `plan_id`, and `backup`. Backups of every mutated file live in
+`evolve-apply`, `evolve-apply-proposal-status`, `router-refresh`), and
+action-specific fields such as `path`, `proposal_id`, `plan_id`, and `backup`.
+Backups of every mutated file live in
 `.megamind/audit/backups/<name>.<content-hash>.bak`.
