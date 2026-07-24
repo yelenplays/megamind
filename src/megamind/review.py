@@ -95,8 +95,7 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
             report.uncategorized_proposals.append(rel)
         proposal_id = str(document.frontmatter.get("id", ""))
         marker = PROPOSAL_MARKER.format(id=proposal_id)
-        merged_into = [page for page, body in all_page_bodies.items() if marker in body]
-        if merged_into:
+        if any(marker in body for body in all_page_bodies.values()):
             report.already_merged_proposals.append(rel)
 
     # Duplicate titles across pages

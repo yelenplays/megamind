@@ -26,7 +26,7 @@ from .capture import CaptureError, capture, list_proposals
 from .doctor import run_doctor
 from .evolve import EvolveError, apply_plan, plan
 from .fsops import PathEscapeError
-from .models import parse_document
+from .models import FrontmatterError, parse_document
 from .registry import REGISTRY_PATH, Registry, RegistryError, load_registry
 from .review import ReviewReport, review
 from .routing import RouteResult, route
@@ -681,6 +681,10 @@ _ERROR_HELP: dict[str, list[str]] = {
         f'Run `{EXECUTABLE} capture --text "<content>" --type '
         "fact|decision|hypothesis|procedure|example|guidance`"
     ],
+    "frontmatter_invalid": [
+        f"Run `{EXECUTABLE} doctor` to locate the file with unsupported frontmatter",
+        "Fix the frontmatter block by hand; Megamind parses a small YAML subset",
+    ],
 }
 
 
@@ -714,7 +718,13 @@ def main(argv: list[str] | None = None) -> int:
         doc = _error_doc(code, str(error), operation, _ERROR_HELP.get(code, []))
         _emit(doc, output_format, no_help_hints)
         return exit_code
-    except FileNotFoundError as error:
+    except FrontmatterError as error:
+        doc = _error_doc(
+            "frontmatter_invalid", str(error), operation, _ERROR_HELP["frontmatter_invalid"]
+        )
+        _emit(doc, output_format, no_help_hints)
+        return 1
+    except (OSError, UnicodeDecodeError) as error:
         doc = _error_doc("io_error", str(error), operation, [])
         _emit(doc, output_format, no_help_hints)
         return 1

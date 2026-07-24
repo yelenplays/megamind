@@ -12,7 +12,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -73,14 +73,6 @@ class EvolutionPlan:
     creates_new_wiki: bool
     changes: list[FileChange] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, object]:
-        data = asdict(self)
-        for change in data["changes"]:
-            change["diff"] = FileChange(**change).diff()
-            del change["old"]
-            del change["new"]
-        return data
 
     def render_diff(self) -> str:
         return "\n".join(change.diff() for change in self.changes if change.diff())

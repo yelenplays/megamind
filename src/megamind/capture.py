@@ -8,7 +8,7 @@ after human review.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -33,9 +33,6 @@ class CaptureResult:
     path: str
     suggested_destination: str
     route_reasons: list[str]
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
 
 
 def normalize_content(text: str) -> str:

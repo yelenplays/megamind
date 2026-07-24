@@ -6,10 +6,10 @@ already-initialized vault is left untouched.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from .fsops import MEGAMIND_DIR, append_audit, atomic_write
+from .fsops import MEGAMIND_DIR, append_audit, atomic_write, backup_existing
 from .registry import (
     ROUTER_FILENAME,
     ROUTER_HEADER,
@@ -89,9 +89,6 @@ class InitResult:
     created: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
-
 
 def _write_if_missing(root: Path, rel: str, content: str, result: InitResult) -> None:
     target = root.resolve() / rel
@@ -163,6 +160,15 @@ def _refresh_router(root: Path, result: InitResult) -> None:
     if ROUTER_HEADER not in actual:
         result.skipped.append(f"{ROUTER_FILENAME} (hand-edited, not touched)")
         return
+    backup = backup_existing(root, ROUTER_FILENAME)
     atomic_write(root, ROUTER_FILENAME, expected)
     result.created.append(f"{ROUTER_FILENAME} (refreshed)")
-    append_audit(root, "router-refresh", {"path": ROUTER_FILENAME, "reason": "out-of-sync"})
+    append_audit(
+        root,
+        "router-refresh",
+        {
+            "path": ROUTER_FILENAME,
+            "reason": "out-of-sync",
+            "backup": backup.name if backup else None,
+        },
+    )

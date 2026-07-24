@@ -240,7 +240,9 @@ def _index_candidates(
             page_path = resolve_contained(root, page_rel)
         except ValueError:
             continue
-        chars = page_path.stat().st_size if page_path.is_file() else 0
+        # Characters, not bytes: every artifact must be measured in the unit the
+        # budget and the reported context_chars promise.
+        chars = len(page_path.read_text(encoding="utf-8")) if page_path.is_file() else 0
         candidates.append(
             RouteCandidate(
                 wiki=wiki.name,
@@ -353,12 +355,18 @@ def route(root: Path, registry: Registry, query: str) -> RouteResult:
         if len(selected) >= budgets.max_candidates:
             notes.append("candidate budget reached: further matches omitted")
             break
-        counts = candidate.privacy in CONTENT_VISIBLE_PRIVACY and candidate.kind == "page"
+        # Every artifact whose content is handed back counts against the budget,
+        # so context_chars can never exceed max_context_chars. pointer-only
+        # candidates expose paths alone and contribute nothing. The highest
+        # scoring candidate is always kept, even alone over budget, so a real
+        # match never degrades into a silent empty result.
+        exposes_content = candidate.privacy in CONTENT_VISIBLE_PRIVACY or candidate.kind == "digest"
+        counts = exposes_content and candidate.kind != "pointer" and candidate.chars > 0
         if counts and selected and context_chars + candidate.chars > budgets.max_context_chars:
             notes.append(f"context budget reached: omitted {candidate.path}")
             continue
         selected.append(candidate)
-        if counts or candidate.kind == "digest":
+        if counts:
             context_chars += candidate.chars
 
     if not selected:

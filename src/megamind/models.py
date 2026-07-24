@@ -3,6 +3,12 @@
 Frontmatter uses a deliberately small, deterministic YAML subset:
 scalar values, flow lists ("[a, b]"), and block lists of scalars.
 That keeps the core dependency-free and round-trip stable.
+
+Serialization quotes any scalar that would not survive a round trip unquoted
+(newlines, surrounding whitespace, empty strings, leading structural markers,
+values that would otherwise parse back as a bool or an int). Quoting is what
+keeps untrusted values, such as a capture provenance label, from injecting
+extra frontmatter keys into a proposal or a published page.
 """
 
 from __future__ import annotations
@@ -67,10 +73,30 @@ class Document:
         )
 
 
+_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "'": "'", "\\": "\\"}
+_UNESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+_UNSAFE_SCALAR_PREFIXES = ("[", "{", "#", "&", "*", "!", "|", ">", "%", "@", "`", '"', "'", "-")
+
+
+def _unescape(text: str) -> str:
+    result: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and index + 1 < len(text):
+            following = text[index + 1]
+            result.append(_ESCAPES.get(following, following))
+            index += 2
+            continue
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
 def _parse_scalar(raw: str) -> str | int | bool:
     text = raw.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
-        return text[1:-1]
+        return _unescape(text[1:-1])
     if text == "true":
         return True
     if text == "false":
@@ -120,20 +146,50 @@ def parse_frontmatter(text: str) -> Frontmatter:
     return result
 
 
+def _needs_quoting(text: str) -> bool:
+    """True when emitting text bare would not parse back as the same string."""
+    if text == "" or text != text.strip():
+        return True
+    if any(char in text for char in ("\n", "\r", "\t")):
+        return True
+    if text.startswith(_UNSAFE_SCALAR_PREFIXES):
+        return True
+    if text in {"true", "false"}:
+        return True
+    return text.lstrip("-").isdigit()
+
+
+def serialize_scalar(value: str | int | bool) -> str:
+    """Render one frontmatter scalar, quoting whenever a bare value would not round-trip."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if not _needs_quoting(value):
+        return value
+    escaped = "".join(_UNESCAPES.get(char, char) for char in value)
+    return f'"{escaped}"'
+
+
+def _check_key(key: str) -> str:
+    if not key or key != key.strip() or any(char in key for char in ":\n\r"):
+        raise FrontmatterError(f"unsupported frontmatter key: {key!r}")
+    return key
+
+
 def serialize_frontmatter(data: Frontmatter) -> str:
     """Serialize a frontmatter dict deterministically (insertion order preserved)."""
     lines: list[str] = []
     for key, value in data.items():
+        _check_key(key)
         if isinstance(value, list):
             if not value:
                 lines.append(f"{key}: []")
             else:
                 lines.append(f"{key}:")
-                lines.extend(f"  - {item}" for item in value)
-        elif isinstance(value, bool):
-            lines.append(f"{key}: {'true' if value else 'false'}")
+                lines.extend(f"  - {serialize_scalar(item)}" for item in value)
         else:
-            lines.append(f"{key}: {value}")
+            lines.append(f"{key}: {serialize_scalar(value)}")
     return "".join(f"{line}\n" for line in lines)
 
 

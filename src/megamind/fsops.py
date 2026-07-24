@@ -112,8 +112,3 @@ def append_audit(
     with open(log_path, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
     return log_path
-
-
-def relative_to_root(root: Path, target: Path) -> str:
-    """Render a resolved path relative to root for output (never leak absolute paths)."""
-    return target.resolve().relative_to(root.resolve()).as_posix()

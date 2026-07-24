@@ -43,6 +43,15 @@ Megamind reads and writes a deterministic YAML subset: `key: value` scalars
 scalars. Nested maps are not supported; doctor reports files it cannot parse.
 Obsidian reads this subset fine.
 
+Writing quotes any scalar that would not survive a round trip bare: embedded
+newlines, surrounding whitespace, the empty string, leading structural markers
+(`-`, `[`, `#`, ...), and values that would otherwise parse back as a boolean
+or an integer. Inside quotes, `\\`, `"`, and the whitespace escapes `\n`,
+`\r`, `\t` carry their usual meaning. This is a safety property, not
+cosmetics: an untrusted value such as a capture provenance label can never
+inject additional frontmatter keys, so it can never flip a proposal's `status`
+or a page's `superseded_by`.
+
 ## Routing card (`CARD.md`)
 
 Frontmatter: `megamind: routing-card`, `wiki`, `privacy`, `keywords`.

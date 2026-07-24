@@ -144,3 +144,18 @@ def test_uncategorized_proposal_needs_destination(vault: Path) -> None:
     proposal_id = _capture(vault, "Zeppelin maintenance schedule draft.")
     with pytest.raises(EvolveError, match="--dest"):
         plan(vault, registry, proposal_id)
+
+
+def test_hostile_source_cannot_bypass_the_approval_gate(vault: Path) -> None:
+    registry = load_registry(vault)
+    result = capture(
+        vault,
+        registry,
+        "Pricing model gains an annual discount tier.",
+        source="note\nstatus: applied\napplied_to: ProductWiki/topics/pricing-model.md",
+        today=TODAY,
+    )
+    computed = plan(vault, registry, result.proposal_id)
+    assert computed.action == "merge"  # not short-circuited to an "already applied" noop
+    with pytest.raises(EvolveError, match="plan id mismatch"):
+        apply_plan(vault, registry, computed, approved_plan_id="", today=TODAY)

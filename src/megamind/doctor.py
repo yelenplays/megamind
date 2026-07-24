@@ -8,7 +8,7 @@ reports findings with severities; any error makes the command exit non-zero.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -34,9 +34,6 @@ class Finding:
     severity: str  # "error" | "warning"
     path: str
     message: str
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
 
 
 def _error(check: str, path: str, message: str) -> Finding:

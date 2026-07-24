@@ -73,6 +73,35 @@ def test_unterminated_frontmatter() -> None:
         parse_document("---\ntitle: X\nno closing fence\n")
 
 
+def test_unsafe_scalars_round_trip_without_injecting_keys() -> None:
+    hostile = {
+        "source": "note\nstatus: applied\napplied_to: Wiki/page.md",
+        "status": "proposed",
+        "empty": "",
+        "padded": "  spaced  ",
+        "numeric_string": "42",
+        "boolish": "true",
+        "flow_like": "[not, a, list]",
+        "escaped": 'back\\slash and "quotes"',
+    }
+    rendered = serialize_frontmatter(hostile)  # type: ignore[arg-type]
+    parsed = parse_frontmatter(rendered)
+    assert parsed == hostile
+    assert parsed["status"] == "proposed"
+    assert "applied_to" not in parsed
+
+
+def test_unsafe_list_items_round_trip() -> None:
+    original = {"provenance": ["proposal abc", "source: x\nstatus: applied", "- dash", ""]}
+    parsed = parse_frontmatter(serialize_frontmatter(original))  # type: ignore[arg-type]
+    assert parsed == original
+
+
+def test_unsupported_key_is_rejected() -> None:
+    with pytest.raises(FrontmatterError):
+        serialize_frontmatter({"bad\nkey": "value"})
+
+
 def test_as_string_list() -> None:
     assert as_string_list(None) == []
     assert as_string_list("one") == ["one"]

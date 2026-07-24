@@ -90,3 +90,25 @@ def test_route_reports_reasons_for_every_candidate(vault: Path) -> None:
     assert result.matched
     for candidate in result.candidates:
         assert candidate.reasons
+
+
+def test_context_chars_counts_characters_not_bytes(vault: Path) -> None:
+    page = vault / "ProductWiki/topics/pricing-model.md"
+    page.write_text(page.read_text(encoding="utf-8") + "\nPrix: 12 € par mois.\n", "utf-8")
+    registry = load_registry(vault)
+    result = route(vault, registry, "pricing model")
+    expected = sum(
+        len((vault / c.path).read_text(encoding="utf-8"))
+        for c in result.candidates
+        if c.kind != "pointer"
+    )
+    assert result.context_chars == expected
+
+
+def test_digest_artifacts_respect_the_context_budget(vault: Path) -> None:
+    registry = load_registry(vault)
+    registry.budgets.max_context_chars = 1
+    result = route(vault, registry, "product pricing brand voice")
+    assert result.matched
+    assert len(result.candidates) == 1  # the top candidate is always returned
+    assert any("context budget reached" in note for note in result.notes)

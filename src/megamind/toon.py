@@ -11,7 +11,8 @@ from __future__ import annotations
 Scalar = str | int | float | bool | None
 JsonValue = Scalar | dict[str, "JsonValue"] | list["JsonValue"]
 
-_QUOTE_IF_CONTAINS = (",", '"', "\n", ":")
+_QUOTE_IF_CONTAINS = (",", '"', "\n", "\r", ":", "\\")
+_ESCAPES = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r"}
 _QUOTE_IF_STARTS = ("-", "[", "{", "#")
 
 
@@ -39,17 +40,12 @@ def _scalar(value: Scalar) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return repr(value)
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-    if _needs_quotes(value):
-        return f'"{escaped}"'
-    return escaped
-
-
-def _cell(value: Scalar) -> str:
-    """Render a table cell; empty for None, quoted only when necessary."""
-    if value is None:
-        return ""
-    return _scalar(value)
+    # Escapes are only meaningful inside quotes, so a bare value is emitted
+    # verbatim and any value needing an escape is quoted (see _QUOTE_IF_CONTAINS).
+    if not _needs_quotes(value):
+        return value
+    escaped = "".join(_ESCAPES.get(char, char) for char in value)
+    return f'"{escaped}"'
 
 
 def _is_scalar(value: JsonValue) -> bool:
@@ -83,7 +79,7 @@ def _encode_list(key: str, items: list[JsonValue], indent: int, lines: list[str]
         lines.append(f"{pad}{key}[{count}]{{{','.join(fields)}}}:")
         for item in items:
             assert isinstance(item, dict)
-            row = ",".join(_cell(item[field]) for field in fields)  # type: ignore[arg-type]
+            row = ",".join(_scalar(item[field]) for field in fields)  # type: ignore[arg-type]
             lines.append(f"{pad}  {row}")
         return
     if all(_is_scalar(item) for item in items):

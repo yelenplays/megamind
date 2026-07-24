@@ -11,7 +11,7 @@ contract), `docs/architecture.md` (design and scoring weights),
 
 - Checks that must stay green: `pytest`, `ruff check src tests`,
   `ruff format --check src tests`, `mypy` (strict; config in `pyproject.toml`).
-  CI (`.github/workflows/ci.yml`) runs these on Python 3.10-3.13 plus an
+  CI (`.github/workflows/ci.yml`) runs these on Python 3.10-3.14 plus an
   installed-wheel smoke test executed outside the source tree.
 - Core is stdlib-only by design; do not add runtime dependencies.
 - The AXI contract in `docs/axi.md` is product contract: exactly one typed

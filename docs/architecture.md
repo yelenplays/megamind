@@ -44,9 +44,15 @@ else card, else path pointer) is returned instead, so the ladder degrades
 gracefully rather than guessing.
 
 Candidates are sorted by score with alphabetical tie-breaking, then cut by
-`max_candidates` and `max_context_chars` from the registry budgets. Privacy
-classes shape the result: `digest-only` wikis never expose pages,
-`pointer-only` wikis never expose content. Tokenization is lowercase word
+`max_candidates` and `max_context_chars` from the registry budgets. Every
+artifact whose content is handed back counts against the budget in characters,
+pages and digests alike, so the reported `context_chars` never exceeds
+`max_context_chars`; each artifact dropped for budget adds a
+`context budget reached: omitted <path>` note. The highest scoring candidate is
+always returned even when it alone exceeds the budget, so a real match never
+degrades into a silent empty result. Privacy classes shape the result:
+`digest-only` wikis never expose pages, `pointer-only` wikis never expose
+content and therefore cost nothing against the budget. Tokenization is lowercase word
 extraction with an English stopword list and naive plural stripping. All
 weights are constants in `routing.py`; changing them is a behavior change and
 needs test updates.

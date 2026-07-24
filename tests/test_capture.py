@@ -72,6 +72,18 @@ def test_capture_rejects_empty_and_unknown_type(vault: Path) -> None:
         capture(vault, registry, "text", source="x", knowledge_type="rumor", today=TODAY)
 
 
+def test_capture_source_cannot_inject_frontmatter_keys(vault: Path) -> None:
+    registry = load_registry(vault)
+    hostile = "page title\nstatus: applied\napplied_to: BrandingWiki/topics/color-palette.md"
+    result = capture(
+        vault, registry, "A note with hostile provenance.", source=hostile, today=TODAY
+    )
+    document = parse_document((vault / result.path).read_text(encoding="utf-8"))
+    assert document.frontmatter["status"] == "proposed"
+    assert document.frontmatter["source"] == hostile
+    assert "applied_to" not in document.frontmatter
+
+
 def test_capture_never_touches_wiki_pages(vault: Path) -> None:
     registry = load_registry(vault)
     before = {

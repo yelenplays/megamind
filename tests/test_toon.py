@@ -68,3 +68,12 @@ def test_newline_and_quote_escaping() -> None:
 def test_deterministic() -> None:
     doc = {"a": 1, "b": [{"x": "y"}], "c": {"d": True}}
     assert encode(doc) == encode(doc)
+
+
+def test_backslash_values_are_quoted_and_escaped() -> None:
+    out = encode({"v": "a\\b"})
+    assert out == 'v: "a\\\\b"\n'
+
+
+def test_plain_values_are_never_escaped_in_place() -> None:
+    assert encode({"v": "plain value"}) == "v: plain value\n"

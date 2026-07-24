@@ -45,9 +45,12 @@ def test_reinit_refreshes_generated_router_after_registry_edit(tmp_path: Path) -
     (root / "DemoWiki").mkdir()
     registry.wikis.append(WikiEntry(name="DemoWiki", path="DemoWiki", keywords=["demo"]))
     save_registry(root, registry)
+    before = (root / ROUTER_FILENAME).read_text(encoding="utf-8")
     result = init_vault(root)
     assert f"{ROUTER_FILENAME} (refreshed)" in result.created
     assert "DemoWiki" in (root / ROUTER_FILENAME).read_text(encoding="utf-8")
+    backups = list((root / ".megamind/audit/backups").glob(f"{ROUTER_FILENAME}.*.bak"))
+    assert [b.read_text(encoding="utf-8") for b in backups] == [before]
 
 
 def test_reinit_never_touches_hand_edited_router(tmp_path: Path) -> None:

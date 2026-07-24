@@ -434,6 +434,32 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
     assert capsys.readouterr().out.startswith("megamind-axi ")
 
 
+def test_malformed_index_is_a_typed_error_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    (vault / "ProductWiki/INDEX.md").write_text(
+        "---\nmegamind: index\nbroken line without a colon\n---\n\n# Index\n", encoding="utf-8"
+    )
+    code, doc, err = run_json(capsys, "--root", str(vault), "route", "pricing", "model")
+    assert code == 1
+    assert doc["schema_version"] == "megamind/error/v1"
+    assert doc["code"] == "frontmatter_invalid"
+    assert doc["help"]
+    assert err == ""
+
+
+def test_capture_from_a_directory_is_a_typed_io_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    code, doc, err = run_json(capsys, "--root", str(vault), "capture", "--file", str(vault))
+    assert code == 1
+    assert doc["schema_version"] == "megamind/error/v1"
+    assert doc["code"] == "io_error"
+    assert err == ""
+
+
 # --- execution outside the source tree ---------------------------------------
 
 
