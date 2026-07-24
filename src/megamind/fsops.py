@@ -49,22 +49,33 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
-def atomic_write(root: Path, target: str | Path, content: str) -> Path:
-    """Write content atomically to a root-contained path, creating parent dirs."""
-    resolved = resolve_contained(root, target)
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=resolved.parent, prefix=".megamind-tmp-")
+def atomic_write_path(target: Path, content: str) -> Path:
+    """Write content to an already-resolved absolute path via temp file plus rename.
+
+    Low-level mechanism only: no containment check, backup, or audit. Callers that
+    write into a vault must go through ``atomic_write`` (which resolves and contains
+    the target first); this primitive exists for writes outside any vault root, such
+    as installing the packaged skill into an arbitrary destination.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".megamind-tmp-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_name, resolved)
+        os.replace(tmp_name, target)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp_name)
         raise
-    return resolved
+    return target
+
+
+def atomic_write(root: Path, target: str | Path, content: str) -> Path:
+    """Write content atomically to a root-contained path, creating parent dirs."""
+    resolved = resolve_contained(root, target)
+    return atomic_write_path(resolved, content)
 
 
 def backup_existing(root: Path, target: str | Path) -> Path | None:
