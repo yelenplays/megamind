@@ -1,0 +1,79 @@
+{
+  "budgets": {
+    "max_candidates": 5,
+    "max_context_chars": 8000,
+    "micro_wiki_pages": 4,
+    "stale_days": 180,
+    "top_level_topics": 3
+  },
+  "version": 1,
+  "wikis": [
+    {
+      "card": "ProductWiki/CARD.md",
+      "description": "Synthetic product knowledge: pricing, feature flags, releases, integrations.",
+      "digest": "ProductWiki/DIGEST.md",
+      "index": "ProductWiki/INDEX.md",
+      "keywords": [
+        "product",
+        "pricing",
+        "plan",
+        "feature",
+        "flag",
+        "roadmap",
+        "release",
+        "integration"
+      ],
+      "name": "ProductWiki",
+      "path": "ProductWiki",
+      "privacy": "public-reference"
+    },
+    {
+      "card": "BrandingWiki/CARD.md",
+      "description": "Synthetic brand guidance: colors, logo, voice and tone.",
+      "digest": "BrandingWiki/DIGEST.md",
+      "index": "BrandingWiki/INDEX.md",
+      "keywords": [
+        "brand",
+        "branding",
+        "logo",
+        "color",
+        "palette",
+        "voice",
+        "tone",
+        "typography"
+      ],
+      "name": "BrandingWiki",
+      "path": "BrandingWiki",
+      "privacy": "company-private"
+    },
+    {
+      "card": "",
+      "description": "Synthetic research summaries; only the digest is routable.",
+      "digest": "ResearchDigest/DIGEST.md",
+      "index": "",
+      "keywords": [
+        "research",
+        "interview",
+        "study",
+        "notification"
+      ],
+      "name": "ResearchDigest",
+      "path": "ResearchDigest",
+      "privacy": "digest-only"
+    },
+    {
+      "card": "",
+      "description": "Synthetic archive; only the path is ever returned.",
+      "digest": "",
+      "index": "",
+      "keywords": [
+        "archive",
+        "history",
+        "old"
+      ],
+      "name": "ArchiveBox",
+      "path": "ArchiveBox",
+      "privacy": "pointer-only"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "budgets": {
+    "max_candidates": 5,
+    "max_context_chars": 8000,
+    "stale_days": 180,
+    "micro_wiki_pages": 4,
+    "top_level_topics": 3
+  },
+  "wikis": [
+    {
+      "name": "<WikiName>",
+      "path": "<relative/path/to/wiki>",
+      "privacy": "public-reference",
+      "description": "<one sentence: what questions this wiki answers>",
+      "keywords": ["<term>", "<term>"],
+      "card": "<relative/path/to/wiki>/CARD.md",
+      "digest": "<relative/path/to/wiki>/DIGEST.md",
+      "index": "<relative/path/to/wiki>/INDEX.md"
+    }
+  ]
+}
