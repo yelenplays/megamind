@@ -52,10 +52,10 @@ pages and digests alike, so the reported `context_chars` never exceeds
 always returned even when it alone exceeds the budget, so a real match never
 degrades into a silent empty result. Privacy classes shape the result:
 `digest-only` wikis never expose pages, `pointer-only` wikis never expose
-content and therefore cost nothing against the budget. Tokenization is lowercase word
-extraction with an English stopword list and naive plural stripping. All
-weights are constants in `routing.py`; changing them is a behavior change and
-needs test updates.
+content and therefore cost nothing against the budget. Tokenization is
+lowercase word extraction with an English stopword list and naive plural
+stripping. All weights are constants in `routing.py`; changing them is a
+behavior change and needs test updates.
 
 ## The evolution ladder
 
@@ -80,7 +80,10 @@ yields a no-op. Supersession marks the old page `superseded` with a
   outside all fail closed.
 - Writes are atomic (temp file + `os.replace`). Mutations of existing files
   first copy the old content to `.megamind/audit/backups/<name>.<hash>.bak`.
-- Every mutating action appends a JSON line to `.megamind/audit/log.jsonl`.
+- Every mutating action inside a vault appends a JSON line to
+  `.megamind/audit/log.jsonl`. Containment, backup, and audit are vault
+  policies layered on top of the bare atomic-write primitive, so `setup skill`,
+  which writes into a destination outside any vault, gets atomicity only.
 - The registry stores only root-relative paths, so vaults stay portable and
   never leak machine-specific locations.
 - `doctor` re-checks the invariants: containment, unsafe symlinks, router

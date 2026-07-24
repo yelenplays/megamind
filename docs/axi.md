@@ -84,8 +84,9 @@ help[2]:
 `proposal_not_found`, `plan_mismatch`, `approval_required`, `evolve_invalid`,
 `path_escape`, `frontmatter_invalid`, `io_error`. Malformed vault content and
 filesystem failures are reported as `frontmatter_invalid` and `io_error`
-documents with exit 1; no invocation ever ends in a traceback. Messages never include machine-specific absolute
-paths from inside the vault model; registry paths are always root-relative.
+documents with exit 1; no invocation ever ends in a traceback. Messages never
+include machine-specific absolute paths from inside the vault model; registry
+paths are always root-relative.
 
 ## Testing the contract
 

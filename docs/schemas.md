@@ -32,9 +32,14 @@ the fields.
 
 Rules: paths are root-relative (absolute paths and `..` are rejected), wiki
 names are unique, `privacy` is one of `public-reference`, `company-private`,
-`personal-local`, `digest-only`, `pointer-only`, and budgets are positive.
-`card`, `digest`, and `index` are optional; routing degrades gracefully
-without them.
+`personal-local`, `digest-only`, `pointer-only`, and `max_candidates`,
+`max_context_chars`, and `stale_days` are positive. `card`, `digest`, and
+`index` are optional; routing degrades gracefully without them.
+
+Loading validates types before use: every field must have the type shown
+above (a JSON boolean is never accepted as a budget), and unknown fields at
+any level are rejected rather than silently ignored, so a typo in a wiki entry
+surfaces as a `registry_invalid` error instead of a silently defaulted value.
 
 ## Frontmatter subset
 

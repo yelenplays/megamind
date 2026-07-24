@@ -19,9 +19,11 @@ contract), `docs/architecture.md` (design and scoring weights),
   (golden-tested in `tests/test_cli.py`), stable `schema_version`, definitive
   empty states, truncation with `--full`, `help[]`, exit codes 0/1/2.
   Diagnostics go to stderr only.
-- Every filesystem write must go through `megamind.fsops` (containment,
-  atomic write, backup, audit). Dry-run defaults and approval tokens
-  (`plan_id`, `--approve-new-wiki`) are product contract, not polish.
+- Every filesystem write must go through `megamind.fsops`. Writes into a vault
+  use `atomic_write` plus backup and audit; the bare `atomic_write_path`
+  primitive is only for destinations outside any vault root (skill install).
+  Dry-run defaults and approval tokens (`plan_id`, `--approve-new-wiki`) are
+  product contract, not polish.
 - Determinism is product contract: no wall-clock behavior (use the `--today`
   plumbing), no randomness, no network in any command. Routing weights are
   constants in `src/megamind/routing.py`; changing them changes behavior and

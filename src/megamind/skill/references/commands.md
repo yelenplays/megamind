@@ -70,5 +70,5 @@ directory. Setup never makes network calls or edits shell/provider config.
 
 `megamind/error/v1` with a stable `code` (`usage_error`, `not_initialized`,
 `registry_invalid`, `capture_invalid`, `proposal_not_found`, `plan_mismatch`,
-`approval_required`, `evolve_invalid`, `path_escape`, `io_error`), a
-sanitized `message`, and `help[]` with corrective commands.
+`approval_required`, `evolve_invalid`, `path_escape`, `frontmatter_invalid`,
+`io_error`), a sanitized `message`, and `help[]` with corrective commands.

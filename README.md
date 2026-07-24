@@ -96,8 +96,9 @@ generated projection of it; `megamind-axi doctor` verifies they never drift.
 
 ## Safety guarantees
 
-- All writes are contained to the vault root; path traversal and symlinks that
-  escape the root are rejected.
+- All vault writes are contained to the vault root; path traversal and
+  symlinks that escape the root are rejected. The only write outside a vault is
+  `setup skill --dest`, which goes exactly where you point it.
 - Writes are atomic; every mutation of an existing file leaves a backup under
   `.megamind/audit/backups/` and an audit record in `.megamind/audit/log.jsonl`.
 - `evolve` is dry-run by default and requires the plan id from the dry run as
