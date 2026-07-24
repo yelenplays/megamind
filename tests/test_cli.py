@@ -460,6 +460,20 @@ def test_capture_from_a_directory_is_a_typed_io_error(
     assert err == ""
 
 
+def test_unicode_digit_frontmatter_never_tracebacks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    (vault / "ProductWiki/topics/pricing-model.md").write_text(
+        "---\ntitle: Pricing\ntype: fact\nstatus: active\nqty: \u00b2\n---\n\n# Pricing\n",
+        encoding="utf-8",
+    )
+    code, doc, err = run_json(capsys, "--root", str(vault), "route", "pricing", "model")
+    assert code == 0
+    assert doc["schema_version"] == "megamind/route-result/v1"
+    assert err == ""
+
+
 # --- execution outside the source tree ---------------------------------------
 
 

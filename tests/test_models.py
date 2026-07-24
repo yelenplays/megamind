@@ -106,3 +106,23 @@ def test_as_string_list() -> None:
     assert as_string_list(None) == []
     assert as_string_list("one") == ["one"]
     assert as_string_list(["a", "b"]) == ["a", "b"]
+
+
+def test_unicode_digit_forms_stay_strings() -> None:
+    data = parse_frontmatter("qty: ²\nreal: 12\nnegative: -3\n")
+    assert data["qty"] == "²"
+    assert data["real"] == 12
+    assert data["negative"] == -3
+    assert parse_frontmatter(serialize_frontmatter(data)) == data
+
+
+def test_single_quoted_scalars_are_literal() -> None:
+    data = parse_frontmatter("path: 'C:\\temp\\new'\nname: 'it''s here'\n")
+    assert data["path"] == "C:\\temp\\new"
+    assert data["name"] == "it's here"
+
+
+def test_double_quoted_scalars_are_unescaped() -> None:
+    data = parse_frontmatter('path: "C:\\\\temp"\nmulti: "a\\nb"\n')
+    assert data["path"] == "C:\\temp"
+    assert data["multi"] == "a\nb"

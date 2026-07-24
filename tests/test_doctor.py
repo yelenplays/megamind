@@ -102,3 +102,13 @@ def test_malformed_proposal_is_an_error(vault: Path) -> None:
     assert any("does not match filename" in m for m in messages)
     assert any("unknown proposal status" in m for m in messages)
     assert any("lacks a source" in m for m in messages)
+
+
+def test_unicode_digit_frontmatter_does_not_crash_doctor(vault: Path) -> None:
+    page = vault / "ProductWiki/topics/pricing-model.md"
+    page.write_text(
+        "---\ntitle: Pricing\ntype: fact\nstatus: active\nqty: ²\n---\n\n# Pricing\n",
+        encoding="utf-8",
+    )
+    findings = run_doctor(vault)
+    assert not [f for f in findings if "pricing-model.md" in f.path and "frontmatter" in f.message]

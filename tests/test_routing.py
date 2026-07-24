@@ -112,3 +112,18 @@ def test_digest_artifacts_respect_the_context_budget(vault: Path) -> None:
     assert result.matched
     assert len(result.candidates) == 1  # the top candidate is always returned
     assert any("context budget reached" in note for note in result.notes)
+
+
+def test_unreadable_page_still_routes_as_a_candidate(vault: Path) -> None:
+    (vault / "ProductWiki/topics/pricing-model.md").write_bytes(b"\xff\xfe not utf-8")
+    registry = load_registry(vault)
+    result = route(vault, registry, "pricing model")
+    assert result.matched
+    broken = [c for c in result.candidates if c.path.endswith("pricing-model.md")]
+    assert broken and broken[0].chars == 0
+
+
+def test_unreadable_digest_degrades_instead_of_raising(vault: Path) -> None:
+    (vault / "ProductWiki/DIGEST.md").write_bytes(b"\xff\xfe not utf-8")
+    registry = load_registry(vault)
+    assert route(vault, registry, "pricing model").matched

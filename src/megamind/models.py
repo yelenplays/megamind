@@ -79,6 +79,7 @@ _UNSAFE_SCALAR_PREFIXES = ("[", "{", "#", "&", "*", "!", "|", ">", "%", "@", "`"
 
 
 def _unescape(text: str) -> str:
+    """Resolve backslash escapes in a double-quoted scalar."""
     result: list[str] = []
     index = 0
     while index < len(text):
@@ -93,16 +94,28 @@ def _unescape(text: str) -> str:
     return "".join(result)
 
 
+def _is_integer_literal(text: str) -> bool:
+    """True only for plain ASCII integers; Unicode digit forms stay strings."""
+    digits = text[1:] if text.startswith("-") else text
+    return bool(digits) and digits.isascii() and digits.isdigit()
+
+
 def _parse_scalar(raw: str) -> str | int | bool:
     text = raw.strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+    if len(text) >= 2 and text[0] == text[-1] and text[0] == '"':
         return _unescape(text[1:-1])
+    if len(text) >= 2 and text[0] == text[-1] and text[0] == "'":
+        # Single-quoted YAML scalars are literal; the only escape is a doubled quote.
+        return text[1:-1].replace("''", "'")
     if text == "true":
         return True
     if text == "false":
         return False
-    if text.lstrip("-").isdigit() and text not in {"", "-"}:
-        return int(text)
+    if _is_integer_literal(text):
+        try:
+            return int(text)
+        except ValueError as error:
+            raise FrontmatterError(f"unsupported integer value: {text!r}") from error
     return text
 
 
@@ -156,7 +169,7 @@ def _needs_quoting(text: str) -> bool:
         return True
     if text in {"true", "false"}:
         return True
-    return text.lstrip("-").isdigit()
+    return _is_integer_literal(text)
 
 
 def serialize_scalar(value: str | int | bool) -> str:

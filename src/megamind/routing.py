@@ -171,6 +171,7 @@ class RouteResult:
 
 
 def _read_if_exists(root: Path, rel: str) -> str | None:
+    """Read a vault artifact, treating unreadable or non-UTF-8 files as absent."""
     if not rel:
         return None
     try:
@@ -179,7 +180,18 @@ def _read_if_exists(root: Path, rel: str) -> str | None:
         return None
     if not path.is_file():
         return None
-    return path.read_text(encoding="utf-8")
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _char_count(path: Path) -> int:
+    """Size of an already-resolved artifact in characters; 0 when unreadable."""
+    try:
+        return len(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return 0
 
 
 def _score_wiki(
@@ -241,8 +253,9 @@ def _index_candidates(
         except ValueError:
             continue
         # Characters, not bytes: every artifact must be measured in the unit the
-        # budget and the reported context_chars promise.
-        chars = len(page_path.read_text(encoding="utf-8")) if page_path.is_file() else 0
+        # budget and the reported context_chars promise. An unreadable page still
+        # routes as a candidate; doctor is what reports it.
+        chars = _char_count(page_path)
         candidates.append(
             RouteCandidate(
                 wiki=wiki.name,
