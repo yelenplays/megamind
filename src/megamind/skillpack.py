@@ -8,6 +8,9 @@ is a checked-in copy of the same files; a test guards against drift.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import tempfile
 from importlib import resources
 from pathlib import Path
 
@@ -36,6 +39,21 @@ def write_skill(dest: Path) -> tuple[list[str], list[str]]:
             skipped.append(rel)
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        _atomic_write_text(target, content)
         created.append(rel)
     return created, skipped
+
+
+def _atomic_write_text(target: Path, content: str) -> None:
+    """Write content to target via a temp file plus rename, never a partial file."""
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".megamind-tmp-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, target)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_name)
+        raise

@@ -302,5 +302,17 @@ def apply_plan(
         proposal_doc.frontmatter["status"] = "applied"
         proposal_doc.frontmatter["applied_to"] = computed.destination
         proposal_doc.frontmatter["applied_on"] = (today or date.today()).isoformat()
+        backup = backup_existing(root, proposal_rel)
         atomic_write(root, proposal_rel, proposal_doc.render())
+        append_audit(
+            root,
+            "evolve-apply-proposal-status",
+            {
+                "plan_id": computed.plan_id,
+                "proposal_id": computed.proposal_id,
+                "plan_action": computed.action,
+                "path": proposal_rel,
+                "backup": backup.name if backup else None,
+            },
+        )
     return applied
