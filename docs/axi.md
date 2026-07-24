@@ -92,6 +92,9 @@ paths are always root-relative.
 
 `tests/test_cli.py` golden-tests TOON and JSON as renderings of the same
 object, exit behavior, the no-args home, empty states, truncation, `--fields`,
-`help[]` presence, and module execution outside the source tree. CI
+`help[]` presence, and module execution outside the source tree.
+`tests/test_skillpack.py` additionally asserts that the error codes and exit
+semantics documented here, in the standalone skill's
+`references/commands.md`, and raised by the package itself all agree. CI
 additionally builds the wheel, installs it into a clean environment, and runs
 `megamind-axi` from a scratch directory.
