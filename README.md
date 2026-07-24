@@ -45,8 +45,8 @@ pip install git+https://github.com/yelenplays/megamind
 The PyPI distribution is not published yet. From a checkout, run
 `pip install .`. Uninstall with `pip uninstall megamind-axi`. Megamind stores
 its state inside your vault under `.megamind/`; deleting that directory removes
-everything Megamind ever added
-(your wiki pages stay untouched unless you approved changes to them).
+everything Megamind ever added (your wiki pages stay untouched unless you
+approved changes to them).
 
 ## Quickstart
 
