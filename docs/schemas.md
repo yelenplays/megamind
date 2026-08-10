@@ -94,8 +94,9 @@ v2 card fields, all optional:
 - `dependencies`: other wikis this one relies on.
 - `context_budget`: optional per-wiki overrides surfaced by the catalog.
 - `catalog_visibility`: `full`, `redacted` (name, root, sensitivity, and
-  purpose only), or `hidden` (existence withheld from projections). Personal
-  wikis default to `redacted`; everything else to `full`.
+  purpose only), or `hidden` (identity and all fields withheld; the projection
+  states that a wiki is withheld rather than omitting the row silently).
+  Personal wikis default to `redacted`; everything else to `full`.
 
 Loading validates types before use: every field must have the type shown
 above (a JSON boolean is never accepted as a budget), and unknown fields at

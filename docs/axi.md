@@ -57,8 +57,10 @@ help[2]:
    `wiki,privacy,chars,reasons`. Doctor findings carry exactly
    `check,severity,path,message`.
 3. **Content truncation**: evolve diffs are bounded to 60 lines
-   (`diff_truncated`, `diff_lines_total`, `--full`), review sections to 20
-   items, doctor findings to 50, each with an explicit note.
+   (`diff_truncated`, `diff_lines_total`, `--full`), doctor findings to 50, and
+   every other item list - review sections, catalog wikis, preflight matches
+   and filtered entries, adopt file lists - to 20, each with an explicit note
+   and `--full` to lift it.
 4. **Pre-computed aggregates**: home returns proposal/review/doctor counts;
    review returns an `aggregates` object; route returns context-budget
    accounting; doctor returns error/warning counts.

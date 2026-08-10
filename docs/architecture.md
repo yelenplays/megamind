@@ -149,11 +149,15 @@ is the host's own policy.
 - The registry stores only root-relative paths, so vaults stay portable and
   never leak machine-specific locations.
 - `doctor` re-checks the invariants: containment, unsafe symlinks, router
-  consistency, metadata validity, link integrity, proposal hygiene.
+  consistency, metadata validity, link integrity, proposal hygiene, registry
+  schema version, access-policy contradictions, and wiki-shaped directories
+  that were never registered.
 
 ## Determinism
 
 Commands avoid wall-clock dependence where it matters: proposal ids and plan
-ids are content hashes, and `capture`, `evolve`, `review`, and the home view
-accept `--today` for reproducible date handling in tests and benchmarks. The
-only non-deterministic output is audit timestamps.
+ids are content hashes, and `capture`, `evolve`, `review`, `catalog`,
+`preflight`, and the home view accept `--today` for reproducible date handling
+in tests and benchmarks. `catalog` and `preflight` go further and read no clock
+at all: without `--today` freshness is simply reported as unknown rather than
+computed. The only non-deterministic output is audit timestamps.

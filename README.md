@@ -176,7 +176,7 @@ host integration enforces yet.
 - [AXI output contract](docs/axi.md) - schemas, formats, exit codes
 - [Architecture](docs/architecture.md) - modules, ladders, scoring weights
 - [Schemas and templates](docs/schemas.md) - registry, cards, pages, proposals
-- [Domain vocabulary](CONTEXT.md) - the settled Phase 1 terms
+- [Domain vocabulary](CONTEXT.md) - the settled domain terms
 - [Decision records](docs/adr/) - the hard-to-reverse tradeoffs
 - [Roadmap](docs/roadmap.md)
 - [Contributing](CONTRIBUTING.md) - development setup, tests, style
