@@ -6,7 +6,8 @@ Copy-ready, generic templates for every Megamind artifact. Placeholders use
 
 | File | Purpose |
 | --- | --- |
-| `registry.json` | `.megamind/registry.json` shape with all fields |
+| `registry.json` | `.megamind/registry.json` schema v2 shape with all card fields |
+| `wiki-card.json` | `.megamind/wiki-card.json` for a canonical single-wiki root |
 | `routing-card.md` | Per-wiki routing card (`CARD.md`) |
 | `digest.md` | Per-wiki digest (`DIGEST.md`) |
 | `index.md` | Per-wiki domain index (`INDEX.md`) |

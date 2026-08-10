@@ -126,3 +126,145 @@ def test_router_generation_is_deterministic_and_sorted() -> None:
     assert router == generate_router(registry)
     assert router.startswith(ROUTER_HEADER)
     assert router.index("## Alpha") < router.index("## Zeta")
+
+
+# --- schema v2 ---------------------------------------------------------------
+
+
+def _write_json(root: Path, rel: str, payload: object) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+V2_ENTRY = {
+    "name": "LegalWiki",
+    "path": "LegalWiki",
+    "privacy": "company-private",
+    "description": "Synthetic legal knowledge.",
+    "keywords": ["legal", "entity"],
+    "card": "LegalWiki/CARD.md",
+    "digest": "",
+    "index": "LegalWiki/INDEX.md",
+    "purpose": "Answers questions about the synthetic legal setup.",
+    "answers": ["entity form", "contract templates"],
+    "does_not_answer": ["tax filing advice"],
+    "scope_boundaries": "Synthetic company facts only.",
+    "owners": ["team-legal@example.invalid"],
+    "sensitivity": "company-private",
+    "model_access": {"local": "full", "cloud": "none"},
+    "routing_mode": "full",
+    "source_policy": {
+        "summary": "Synthetic statute excerpts only.",
+        "allowlist": "LegalWiki/SOURCES.md",
+        "allowlist_status": "approved",
+    },
+    "freshness": {"half_life_days": 90, "last_confirmed": "2026-08-01"},
+    "examples": ["What entity form did we choose?"],
+    "triggers": ["legal", "gmbh"],
+    "negative_triggers": ["personal taxes"],
+    "dependencies": ["ProductWiki"],
+    "context_budget": {"max_candidates": 3, "max_context_chars": 4000},
+    "catalog_visibility": "full",
+}
+
+
+def test_v2_registry_round_trip_with_card_fields(tmp_path: Path) -> None:
+    _write_json(tmp_path, ".megamind/registry.json", {"version": 2, "wikis": [V2_ENTRY]})
+    registry = load_registry(tmp_path)
+    wiki = registry.wikis[0]
+    assert registry.version == 2
+    assert wiki.purpose.startswith("Answers questions")
+    assert wiki.answers == ["entity form", "contract templates"]
+    assert wiki.does_not_answer == ["tax filing advice"]
+    assert wiki.owners == ["team-legal@example.invalid"]
+    assert wiki.sensitivity == "company-private"
+    assert wiki.model_access.cloud == "none"
+    assert wiki.source_policy.allowlist_status == "approved"
+    assert wiki.freshness.half_life_days == 90
+    assert wiki.negative_triggers == ["personal taxes"]
+    assert wiki.context_budget.max_context_chars == 4000
+    save_registry(tmp_path, registry)
+    assert load_registry(tmp_path).wikis[0] == wiki
+
+
+def test_v1_registry_loads_with_safe_defaults(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path,
+        ".megamind/registry.json",
+        {"version": 1, "wikis": [{"name": "Old", "path": "Old", "privacy": "personal-local"}]},
+    )
+    wiki = load_registry(tmp_path).wikis[0]
+    assert wiki.purpose == ""
+    assert wiki.sensitivity == ""
+    assert wiki.model_access.local == "" and wiki.model_access.cloud == ""
+    assert wiki.catalog_visibility == ""
+
+
+def test_v1_registry_rejects_v2_fields_with_migration_guidance(tmp_path: Path) -> None:
+    payload = {"version": 1, "wikis": [{"name": "Old", "path": "Old", "purpose": "oops"}]}
+    _write_json(tmp_path, ".megamind/registry.json", payload)
+    with pytest.raises(RegistryError, match="megamind-axi migrate"):
+        load_registry(tmp_path)
+
+
+def test_v2_registry_still_rejects_unknown_fields(tmp_path: Path) -> None:
+    payload = {"version": 2, "wikis": [{"name": "W", "path": "W", "surprise": 1}]}
+    _write_json(tmp_path, ".megamind/registry.json", payload)
+    with pytest.raises(RegistryError, match="unknown field"):
+        load_registry(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("sensitivity", "top-secret", "invalid sensitivity"),
+        ("routing_mode", "sideways", "invalid routing_mode"),
+        ("catalog_visibility", "stealth", "invalid catalog_visibility"),
+        ("model_access", {"cloud": "everything"}, "must be one of full, digest-only, none"),
+        ("source_policy", {"allowlist_status": "maybe"}, "allowlist_status"),
+        ("freshness", {"half_life_days": -3}, "half_life_days must be positive"),
+        ("freshness", {"last_confirmed": "last week"}, "last_confirmed must be an ISO date"),
+        ("context_budget", {"max_candidates": 0}, "max_candidates must be positive"),
+    ],
+)
+def test_v2_field_validation(tmp_path: Path, field: str, value: object, message: str) -> None:
+    entry = {"name": "W", "path": "W", field: value}
+    _write_json(tmp_path, ".megamind/registry.json", {"version": 2, "wikis": [entry]})
+    with pytest.raises(RegistryError, match=message):
+        load_registry(tmp_path)
+
+
+def test_migrate_upgrades_v1_and_is_idempotent(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path,
+        ".megamind/registry.json",
+        {
+            "version": 1,
+            "wikis": [
+                {"name": "Pub", "path": "Pub", "privacy": "public-reference"},
+                {"name": "Corp", "path": "Corp", "privacy": "company-private"},
+                {"name": "Diary", "path": "Diary", "privacy": "personal-local"},
+                {"name": "Box", "path": "Box", "privacy": "pointer-only"},
+            ],
+        },
+    )
+    from megamind.registry import migrate_registry
+
+    registry, changed, notes = migrate_registry(tmp_path)
+    assert changed
+    by_name = {wiki.name: wiki for wiki in registry.wikis}
+    assert registry.version == 2
+    assert by_name["Pub"].model_access.cloud == "full"
+    assert by_name["Corp"].model_access.cloud == ""  # explicit owner policy still required
+    assert by_name["Corp"].sensitivity == "company-private"
+    assert any("Corp" in note for note in notes)
+    assert by_name["Diary"].model_access.cloud == "digest-only"
+    assert by_name["Box"].model_access.local == "none"
+    assert by_name["Box"].routing_mode == "pointer"
+
+    loaded = load_registry(tmp_path)
+    assert loaded.version == 2
+    again, changed_again, _ = migrate_registry(tmp_path)
+    assert not changed_again
+    assert again.version == 2

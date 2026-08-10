@@ -524,3 +524,248 @@ def test_module_execution_outside_source_tree(tmp_path: Path) -> None:
     assert doc["schema_version"] == "megamind/home/v1"
     assert doc["initialized"] is False
     assert result.stderr == ""
+
+
+# --- migrate -------------------------------------------------------------------
+
+
+def _write_v1_registry(root: Path) -> None:
+    directory = root / ".megamind"
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "wikis": [{"name": "OldWiki", "path": "OldWiki", "privacy": "public-reference"}],
+    }
+    (directory / "registry.json").write_text(json.dumps(payload), encoding="utf-8")
+    (root / "OldWiki").mkdir(exist_ok=True)
+
+
+def test_migrate_upgrades_and_is_idempotent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _write_v1_registry(vault)
+    code, doc, _ = run_json(capsys, "--root", str(vault), "migrate")
+    assert code == 0
+    assert doc["schema_version"] == "megamind/migrate-result/v1"
+    assert doc["status"] == "migrated"
+    assert doc["version"] == 2
+    saved = json.loads((vault / ".megamind/registry.json").read_text(encoding="utf-8"))
+    assert saved["version"] == 2
+    assert saved["wikis"][0]["model_access"] == {"cloud": "full", "local": "full"}
+    code, doc, _ = run_json(capsys, "--root", str(vault), "migrate")
+    assert doc["status"] == "already_current"
+
+
+def test_migrate_requires_an_initialized_vault(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, doc, _ = run_json(capsys, "--root", str(tmp_path), "migrate")
+    assert code == 2
+    assert doc["code"] == "not_initialized"
+
+
+# --- init --wiki ----------------------------------------------------------------
+
+
+def test_init_wiki_scaffolds_canonical_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "SoloWiki"
+    code, doc, _ = run_json(capsys, "init", str(target), "--wiki", "SoloWiki")
+    assert code == 0
+    assert doc["layout"] == "canonical-wiki"
+    created = set(doc["created"])
+    assert "AGENTS.md" in created
+    assert "raw/" in created
+    assert "wiki/index.md" in created
+    assert "wiki/log.md" in created
+    assert ".megamind/wiki-card.json" in created
+    assert ".megamind/gaps.jsonl" in created
+    card = json.loads((target / ".megamind/wiki-card.json").read_text(encoding="utf-8"))
+    assert card["schema"] == "megamind/wiki-card/v2"
+    assert card["name"] == "SoloWiki"
+    assert card["privacy"] == ""  # unclassified: restrictive cloud default
+    assert card["index"] == "wiki/index.md"
+
+    code, doc, _ = run_json(capsys, "init", str(target), "--wiki", "SoloWiki")
+    assert doc["status"] == "already_initialized"
+
+
+# --- catalog -------------------------------------------------------------------
+
+
+def test_catalog_single_root(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    vault = build_vault(tmp_path)
+    code, doc, err = run_json(capsys, "--root", str(vault), "catalog", "--today", "2026-08-10")
+    assert code == 0
+    assert err == ""
+    assert doc["schema_version"] == "megamind/catalog/v1"
+    assert doc["counts"]["ok"] == 5
+    assert doc["total"] == 5
+    names = {row["name"] for row in doc["wikis"]}
+    assert {"ProductWiki", "ArchiveBox"} <= names
+    assert doc["catalog_hash"]
+    assert doc["help"]
+
+
+def test_catalog_estate_and_toon_json_parity(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    estate = tmp_path / "estate"
+    estate.mkdir()
+    build_vault(estate)
+    code_j, doc, _ = run_json(capsys, "catalog", "--estate", str(estate), "--today", "2026-08-10")
+    code_t, toon_out, _ = run_toon(
+        capsys, "catalog", "--estate", str(estate), "--today", "2026-08-10"
+    )
+    assert code_j == code_t == 0
+    assert toon.encode(doc) == toon_out
+
+
+def test_catalog_projection_drift_exits_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    projection = tmp_path / "CATALOG.md"
+    code, doc, _ = run_json(
+        capsys, "--root", str(vault), "catalog", "--check-projection", str(projection)
+    )
+    assert code == 1
+    assert doc["projection_check"]["status"] == "missing"
+
+    code, emitted, _ = run_json(capsys, "--root", str(vault), "catalog", "--emit-projection")
+    assert code == 0
+    projection.write_text(emitted["projection"], encoding="utf-8")
+    code, doc, _ = run_json(
+        capsys, "--root", str(vault), "catalog", "--check-projection", str(projection)
+    )
+    assert code == 0
+    assert doc["projection_check"]["status"] == "current"
+
+    projection.write_text(emitted["projection"] + "hand edit\n", encoding="utf-8")
+    code, doc, _ = run_json(
+        capsys, "--root", str(vault), "catalog", "--check-projection", str(projection)
+    )
+    assert code == 1
+    assert doc["projection_check"]["status"] == "drifted"
+
+
+# --- preflight ------------------------------------------------------------------
+
+
+def test_preflight_matched_document(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    vault = build_vault(tmp_path)
+    code, doc, err = run_json(
+        capsys, "--root", str(vault), "preflight", "how does pricing work", "--model-class", "cloud"
+    )
+    assert code == 0
+    assert err == ""
+    assert doc["schema_version"] == "megamind/preflight-result/v1"
+    assert doc["status"] == "matched"
+    assert doc["preflight_id"]
+    assert doc["matches"][0]["name"] == "ProductWiki"
+    assert doc["matches"][0]["follow_up"]
+    assert doc["help"]
+
+
+def test_preflight_requires_model_class(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    vault = build_vault(tmp_path)
+    code, out, _ = run_toon(capsys, "--root", str(vault), "preflight", "pricing")
+    assert code == 2
+    assert "usage_error" in out
+
+
+def test_preflight_toon_json_parity(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    vault = build_vault(tmp_path)
+    argv = ("--root", str(vault), "preflight", "pricing", "--model-class", "local")
+    code_j, doc, _ = run_json(capsys, *argv)
+    code_t, toon_out, _ = run_toon(capsys, *argv)
+    assert code_j == code_t == 0
+    assert toon.encode(doc) == toon_out
+
+
+def test_preflight_no_match_is_structured_success(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    code, doc, _ = run_json(
+        capsys, "--root", str(vault), "preflight", "quantum llama", "--model-class", "local"
+    )
+    assert code == 0
+    assert doc["status"] == "no-match"
+    assert doc["matches"] == []
+    assert doc["help"]
+
+
+# --- adopt ---------------------------------------------------------------------
+
+
+def test_adopt_dry_run_apply_and_rollback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "LegacyWiki"
+    target.mkdir()
+    (target / "README.md").write_text("# Legacy\n", encoding="utf-8")
+
+    code, planned, _ = run_json(capsys, "adopt", str(target))
+    assert code == 0
+    assert planned["schema_version"] == "megamind/adopt-plan/v1"
+    assert planned["status"] == "planned"
+    assert ".megamind/wiki-card.json" in planned["files"]
+    assert not (target / ".megamind").exists()  # dry run writes nothing
+
+    code, doc, _ = run_json(capsys, "adopt", str(target), "--apply")
+    assert code == 2
+    assert doc["code"] == "usage_error"
+
+    code, applied, _ = run_json(
+        capsys, "adopt", str(target), "--apply", "--plan-id", planned["plan_id"]
+    )
+    assert code == 0
+    assert applied["schema_version"] == "megamind/adopt-result/v1"
+    assert applied["status"] == "applied"
+    assert (target / ".megamind/wiki-card.json").is_file()
+    assert (target / "README.md").read_text(encoding="utf-8") == "# Legacy\n"
+
+    code, rolled, _ = run_json(capsys, "adopt", str(target), "--rollback")
+    assert code == 0
+    assert rolled["status"] == "rolled_back"
+    assert not (target / ".megamind/wiki-card.json").exists()
+    assert (target / "README.md").is_file()
+
+
+def test_adopt_apply_and_rollback_are_mutually_exclusive(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "W"
+    target.mkdir()
+    code, doc, _ = run_json(capsys, "adopt", str(target), "--apply", "--rollback", "--plan-id", "x")
+    assert code == 2
+    assert doc["code"] == "usage_error"
+
+
+def test_adopt_missing_directory_is_typed_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, doc, _ = run_json(capsys, "adopt", str(tmp_path / "ghost"))
+    assert code == 1
+    assert doc["code"] == "adopt_invalid"
+
+
+def test_new_commands_emit_schema_version_and_help(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    for argv in (
+        ["--root", str(vault), "catalog"],
+        ["--root", str(vault), "preflight", "pricing", "--model-class", "local"],
+        ["--root", str(vault), "migrate"],
+        ["adopt", str(tmp_path / "new-legacy")],
+    ):
+        if "new-legacy" in argv[-1]:
+            (tmp_path / "new-legacy").mkdir(exist_ok=True)
+        _, doc, _ = run_json(capsys, *argv)
+        assert doc["schema_version"].startswith("megamind/"), argv
+        assert doc["help"], argv

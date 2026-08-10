@@ -252,6 +252,10 @@ def _index_candidates(
             page_path = resolve_contained(root, page_rel)
         except ValueError:
             continue
+        # Candidates always carry the canonical root-relative path: links that
+        # climb out of the index directory with ".." resolve to the same page,
+        # and agents consume the emitted path literally.
+        page_rel = page_path.relative_to(root.resolve()).as_posix()
         # Characters, not bytes: every artifact must be measured in the unit the
         # budget and the reported context_chars promise. An unreadable page still
         # routes as a candidate; doctor is what reports it.

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from megamind.registry import WikiEntry, load_registry, save_registry
+from megamind.registry import ModelAccess, WikiEntry, load_registry, save_registry
 from megamind.scaffold import init_vault
 
 
@@ -173,7 +173,7 @@ Summarized findings about synthetic user interviews. Full notes stay local.
 
 
 def build_vault(base: Path) -> Path:
-    """A synthetic vault with public, private, digest-only, and pointer-only wikis."""
+    """A synthetic v2 vault with public, private, digest-only, and pointer-only wikis."""
     root = base / "vault"
     init_vault(root, starter=True)
 
@@ -194,6 +194,11 @@ def build_vault(base: Path) -> Path:
     (root / "ArchiveBox").mkdir()
 
     registry = load_registry(root)
+    registry.version = 2
+    starter = registry.wiki_by_name("StarterWiki")
+    assert starter is not None
+    starter.sensitivity = "public-reference"
+    starter.model_access = ModelAccess(local="full", cloud="full")
     registry.wikis.extend(
         [
             WikiEntry(
@@ -205,6 +210,8 @@ def build_vault(base: Path) -> Path:
                 card="ProductWiki/CARD.md",
                 digest="ProductWiki/DIGEST.md",
                 index="ProductWiki/INDEX.md",
+                sensitivity="public-reference",
+                model_access=ModelAccess(local="full", cloud="full"),
             ),
             WikiEntry(
                 name="BrandingWiki",
@@ -215,6 +222,8 @@ def build_vault(base: Path) -> Path:
                 card="BrandingWiki/CARD.md",
                 digest="BrandingWiki/DIGEST.md",
                 index="BrandingWiki/INDEX.md",
+                sensitivity="company-private",
+                model_access=ModelAccess(local="full", cloud="none"),
             ),
             WikiEntry(
                 name="ResearchDigest",
@@ -223,6 +232,7 @@ def build_vault(base: Path) -> Path:
                 description="Synthetic research summaries; only the digest is routable.",
                 keywords=["research", "interview", "study"],
                 digest="ResearchDigest/DIGEST.md",
+                model_access=ModelAccess(local="digest-only", cloud="digest-only"),
             ),
             WikiEntry(
                 name="ArchiveBox",
@@ -230,6 +240,8 @@ def build_vault(base: Path) -> Path:
                 privacy="pointer-only",
                 description="Synthetic archive; content is never routed, only pointed to.",
                 keywords=["archive", "history"],
+                model_access=ModelAccess(local="none", cloud="none"),
+                routing_mode="pointer",
             ),
         ]
     )

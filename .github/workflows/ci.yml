@@ -67,4 +67,8 @@ jobs:
           cd demo
           /tmp/megamind-venv/bin/megamind-axi doctor
           /tmp/megamind-venv/bin/megamind-axi route "getting started"
+          /tmp/megamind-venv/bin/megamind-axi catalog --today 2026-08-10
+          /tmp/megamind-venv/bin/megamind-axi preflight "getting started" --model-class local
+          /tmp/megamind-venv/bin/megamind-axi init ../solo --wiki SoloWiki
+          /tmp/megamind-venv/bin/megamind-axi catalog --estate /tmp/scratch
           /tmp/megamind-venv/bin/megamind-axi setup skill --dest /tmp/scratch/skills

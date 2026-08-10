@@ -6,9 +6,12 @@ from pathlib import Path
 import pytest
 
 from megamind.capture import capture
+from megamind.doctor import has_errors, run_doctor
 from megamind.evolve import EvolveError, apply_plan, plan
 from megamind.models import parse_document
 from megamind.registry import load_registry
+from megamind.review import review
+from megamind.routing import route
 
 TODAY = date(2026, 3, 2)
 
@@ -123,7 +126,69 @@ def test_new_top_level_wiki_requires_explicit_approval(vault: Path) -> None:
         approve_new_wiki=True,
         today=TODAY,
     )
-    assert applied == ["FleetWiki/topics/fleet-notes.md"]
+    assert applied == [
+        "FleetWiki/topics/fleet-notes.md",
+        "FleetWiki/CARD.md",
+        "FleetWiki/INDEX.md",
+        ".megamind/registry.json",
+        "ROUTER.md",
+    ]
+
+
+def test_approved_new_wiki_is_registered_and_visible(vault: Path) -> None:
+    """An approved new top-level wiki lands registered, routable, and doctor-clean."""
+    registry = load_registry(vault)
+    proposal_id = _capture(vault, "# Fleet notes\n\nSynthetic fleet knowledge.")
+    computed = plan(vault, registry, proposal_id, destination="FleetWiki/topics/fleet-notes.md")
+    planned_paths = [change.path for change in computed.changes]
+    assert planned_paths == [
+        "FleetWiki/topics/fleet-notes.md",
+        "FleetWiki/CARD.md",
+        "FleetWiki/INDEX.md",
+        ".megamind/registry.json",
+        "ROUTER.md",
+    ]
+    apply_plan(
+        vault,
+        registry,
+        computed,
+        approved_plan_id=computed.plan_id,
+        approve_new_wiki=True,
+        today=TODAY,
+    )
+
+    updated = load_registry(vault)
+    entry = updated.wiki_by_name("FleetWiki")
+    assert entry is not None
+    assert entry.path == "FleetWiki"
+    assert entry.privacy == "company-private"  # restrictive default for a new wiki
+    assert entry.card == "FleetWiki/CARD.md"
+    assert entry.index == "FleetWiki/INDEX.md"
+    assert (vault / "FleetWiki/CARD.md").is_file()
+    assert (vault / "FleetWiki/INDEX.md").is_file()
+    assert "FleetWiki" in (vault / "ROUTER.md").read_text(encoding="utf-8")
+
+    routed = route(vault, updated, "fleet notes")
+    assert routed.matched
+    assert any(candidate.wiki == "FleetWiki" for candidate in routed.candidates)
+
+    report = review(vault, updated, today=TODAY)
+    assert all("FleetWiki" not in str(item) for item in report.promotion_candidates)
+
+    findings = run_doctor(vault)
+    assert not has_errors(findings), [f.message for f in findings if f.severity == "error"]
+    assert not any(f.check == "registration" for f in findings)
+
+
+def test_unregistered_wiki_shaped_directory_is_a_doctor_warning(vault: Path) -> None:
+    """A wiki-shaped directory that was never registered must not stay invisible."""
+    (vault / "GhostWiki/topics").mkdir(parents=True)
+    (vault / "GhostWiki/topics/ghost.md").write_text("# Ghost\n", encoding="utf-8")
+    findings = run_doctor(vault)
+    matches = [f for f in findings if f.check == "registration" and f.path == "GhostWiki"]
+    assert len(matches) == 1
+    assert matches[0].severity == "warning"
+    assert "not registered" in matches[0].message
 
 
 def test_supersede_missing_page_fails(vault: Path) -> None:

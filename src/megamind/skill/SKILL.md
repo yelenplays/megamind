@@ -55,6 +55,27 @@ go-ahead.
   links, and promotion candidates; `status: clean` means nothing needs work.
 - `megamind-axi doctor` validates the vault; exit 1 means real errors and the
   `findings` table names each offending file. Run it after any approved change.
+- `megamind-axi migrate` upgrades a v1 registry to schema v2 (access-policy
+  card fields with restrictive defaults) when doctor suggests it.
+
+## Work across wikis (catalog and preflight)
+
+Wikis can live in separate roots; each root's card is authoritative and the
+fleet catalog is a generated projection of those cards.
+
+- `megamind-axi catalog --estate <dir>` lists every wiki with scope, owners,
+  sensitivity, effective model access, and maintenance state. Broken or
+  redacted entries are stated explicitly, never silently omitted.
+- `megamind-axi preflight "<request>" --estate <dir> --model-class local|cloud`
+  routes a substantive request at the catalog level. It returns card-level
+  matches and exact follow-up commands only; it never returns page content,
+  never writes anything, and honors each card's access policy. A `none` wiki
+  appears under `filtered`, a pointer wiki yields location metadata only, and
+  `preflight_id` is the proof the consultation ran. Treat `no-match` as
+  definitive: stay quiet about wikis instead of guessing.
+- `megamind-axi adopt <dir>` brings an existing wiki directory under Megamind
+  without touching its pages: dry run first, apply with the `plan_id` only
+  after human approval, and `--rollback` removes exactly what apply created.
 
 ## References
 

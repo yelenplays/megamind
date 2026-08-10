@@ -19,6 +19,16 @@ contract), `docs/architecture.md` (design and scoring weights),
   (golden-tested in `tests/test_cli.py`), stable `schema_version`, definitive
   empty states, truncation with `--full`, `help[]`, exit codes 0/1/2.
   Diagnostics go to stderr only.
+- Registry schema v2 (`docs/schemas.md`) is additive over v1: v1 registries
+  must keep loading with restrictive derived defaults, and unknown fields are
+  still rejected. The access policy in `src/megamind/access.py` is the single
+  authority for sensitivity/model-access derivation and clamping; unknown or
+  contradictory classifications always resolve restrictively, and no other
+  layer may widen them. The fleet catalog (`catalog.py`) and `preflight` are
+  read-only projections over per-wiki cards (registry entries or canonical
+  `.megamind/wiki-card.json` roots); they never read page content, redaction
+  happens only at the projection boundary, and projections stay byte-stable
+  and drift-checkable.
 - Every filesystem write must go through `megamind.fsops`. Writes into a vault
   use `atomic_write` plus backup and audit; the bare `atomic_write_path`
   primitive is only for destinations outside any vault root (skill install).

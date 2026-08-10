@@ -10,16 +10,21 @@ output boundary (see [axi.md](axi.md)).
 
 | Module | Responsibility |
 | --- | --- |
-| `megamind.models` | Knowledge types, lifecycle states, privacy classes, frontmatter parse/serialize (deterministic YAML subset) |
+| `megamind.models` | Knowledge types, lifecycle states, privacy and access classes, frontmatter parse/serialize (deterministic YAML subset) |
 | `megamind.fsops` | Path containment, atomic writes, backups, audit log. Every write goes through here |
-| `megamind.registry` | `.megamind/registry.json` load/save/validate; generated `ROUTER.md` projection |
+| `megamind.registry` | `.megamind/registry.json` (schema v1/v2) load/save/validate/migrate; generated `ROUTER.md` projection |
+| `megamind.access` | Model-access policy: derives and clamps the binding local/cloud access, routing mode, and catalog visibility for every card |
+| `megamind.card` | The standalone `.megamind/wiki-card.json` of a canonical wiki root |
 | `megamind.links` | Markdown link and Obsidian wikilink extraction and resolution |
 | `megamind.routing` | The deterministic retrieval ladder |
 | `megamind.capture` | Proposal-first capture with dedupe and provenance |
-| `megamind.evolve` | Evolution plans, unified diffs, approval-gated apply |
+| `megamind.evolve` | Evolution plans, unified diffs, approval-gated apply, new-wiki registration |
 | `megamind.review` | Read-only gardening report |
 | `megamind.doctor` | Read-only integrity validation |
-| `megamind.scaffold` | Non-destructive `init` |
+| `megamind.scaffold` | Non-destructive `init`: registry vaults and canonical wiki roots |
+| `megamind.adopt` | Non-destructive adoption of existing wiki directories, with rollback |
+| `megamind.catalog` | The generated read-only fleet catalog and its drift-checked projection |
+| `megamind.preflight` | Catalog-level, model-access-aware routing for substantive requests |
 | `megamind.toon` | TOON encoder; the output boundary renders typed dicts |
 | `megamind.skillpack` | Packaged Agent Skill source for `setup skill` |
 | `megamind.cli` | The `megamind-axi` AXI boundary: typed documents, TOON/JSON, exits |
@@ -44,7 +49,10 @@ else card, else path pointer) is returned instead, so the ladder degrades
 gracefully rather than guessing.
 
 Candidates are sorted by score with alphabetical tie-breaking, then cut by
-`max_candidates` and `max_context_chars` from the registry budgets. Every
+`max_candidates` and `max_context_chars` from the registry budgets. Candidate
+paths are always canonical root-relative paths: index links that climb out of
+their directory with `..` resolve to the same page and are emitted in the
+resolved form. Every
 artifact whose content is handed back counts against the budget in characters,
 pages and digests alike, so the reported `context_chars` never exceeds
 `max_context_chars`; each artifact dropped for budget adds a
@@ -71,7 +79,57 @@ the reviewed diff; if the vault changed in between, the id no longer matches
 and the apply is refused. Merges embed an idempotency marker
 (`<!-- megamind:proposal:<id> -->`), so re-planning an already-merged proposal
 yields a no-op. Supersession marks the old page `superseded` with a
-`superseded_by` pointer instead of deleting anything.
+`superseded_by` pointer instead of deleting anything. An approved new
+top-level wiki is registered in the same apply: the registry entry, the card
+and index skeletons, and the regenerated router are plan changes covered by
+the `plan_id`, so the wiki is immediately visible to route, review, catalog,
+and doctor (which also warns about wiki-shaped directories that were never
+registered). New wikis start with the restrictive company-private posture
+until an owner sets an explicit access policy.
+
+## Two root shapes, one card schema
+
+A **registry vault** holds many wikis as subdirectories of one root; their
+cards are the wiki entries of `.megamind/registry.json` (schema v2; v1 loads
+with restrictive derived defaults). A **canonical wiki root** is a single wiki
+in the Karpathy layout: human-curated immutable `raw/`, the AI-maintained
+compiled `wiki/` layer with its content-oriented `index.md` and append-only
+`log.md`, and `.megamind/` state headed by the authoritative
+`wiki-card.json`. Both shapes validate against the same v2 field set; `init
+--wiki` scaffolds new canonical roots and `adopt` onboards existing ones
+without touching their content.
+
+## Access policy
+
+Every card resolves to an effective posture in `megamind.access`: sensitivity
+(who may ever see it), per-axis model access (what a local or cloud context
+may receive: `full`, `digest-only`, or `none`), routing mode, and catalog
+visibility. Unset axes derive from the privacy class; unknown, unclassified,
+broken, or unmigrated classifications derive restrictively (cloud `none`).
+Explicit values that contradict a sensitivity or privacy ceiling are clamped
+down and reported as doctor `access` errors; the restrictive value always
+wins, and no host or later routing layer can widen the decision.
+
+## The fleet catalog and preflight
+
+`catalog` aggregates the cards of separate roots (`--estate` discovery) into
+one generated, read-only projection: stable ordering, a content-hashed
+`catalog_hash`, explicit broken/unreachable/stale/redacted entries, and a
+byte-stable human-readable rendering that `--check-projection` drift-checks
+against the cards. Cards stay authoritative; the catalog is always a
+projection and redaction happens at the projection boundary. Page content is
+never read.
+
+`preflight` routes a substantive request at the catalog level under the host's
+declared model class. Lexical card evidence only (triggers/keywords, name,
+scope text; negative triggers decline explicitly). Access filtering happens
+before any path is returned; the result states `matched`, `ambiguous`,
+`no-match`, `unavailable`, or `privacy-filtered`, gives exact per-wiki
+follow-up commands where allowed, and carries a deterministic `preflight_id`
+content hash over the request hash, catalog snapshot, model class, and result.
+Preflight never mutates a wiki, never writes a host record, never calls a
+model, and never touches the network; whether and when a host runs preflight
+is the host's own policy.
 
 ## Safety model
 
