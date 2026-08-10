@@ -3,4 +3,4 @@
 Local-first, deterministic, proposal-first. See https://github.com/yelenplays/megamind
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
