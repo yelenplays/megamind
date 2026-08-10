@@ -127,3 +127,33 @@ def test_unreadable_digest_degrades_instead_of_raising(vault: Path) -> None:
     (vault / "ProductWiki/DIGEST.md").write_bytes(b"\xff\xfe not utf-8")
     registry = load_registry(vault)
     assert route(vault, registry, "pricing model").matched
+
+
+def test_index_candidates_use_canonical_root_relative_paths(vault: Path) -> None:
+    """Index links that climb out of the index dir resolve to canonical paths."""
+    from megamind.registry import WikiEntry, save_registry
+
+    (vault / "_meta/routing/deep").mkdir(parents=True)
+    (vault / "_meta/routing/deep/INDEX.md").write_text(
+        "---\nmegamind: index\nwiki: DeepWiki\n---\n\n# DeepWiki index\n\n"
+        "- [Release process](../../../ProductWiki/topics/release-process.md) - weekly train\n",
+        encoding="utf-8",
+    )
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="DeepWiki",
+            path="_meta",
+            privacy="public-reference",
+            description="Synthetic wiki whose index lives in a nested sidecar.",
+            keywords=["deep", "release"],
+            index="_meta/routing/deep/INDEX.md",
+        )
+    )
+    save_registry(vault, registry)
+
+    registry = load_registry(vault)
+    result = route(vault, registry, "release process")
+    paths = [c.path for c in result.candidates]
+    assert "ProductWiki/topics/release-process.md" in paths
+    assert all(".." not in path.split("/") for path in paths)

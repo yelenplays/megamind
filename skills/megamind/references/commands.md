@@ -13,11 +13,56 @@ root, registered wikis, proposal counts, review and doctor aggregates, and
 next actions. On an uninitialized directory it returns `initialized: false`
 with init guidance (exit 0). Zero network, always.
 
-## megamind-axi init <target> [--no-starter]
+## megamind-axi init <target> [--no-starter] [--wiki NAME]
 
 `megamind/init-result/v1` with `created[]`/`skipped[]`. Never overwrites.
 Re-running refreshes the generated `ROUTER.md` only while it still carries
-the generated-file header.
+the generated-file header. With `--wiki NAME` it scaffolds a canonical
+single-wiki root instead of a vault (`layout: canonical-wiki`): `AGENTS.md`,
+immutable `raw/`, `wiki/index.md` and `wiki/log.md`, and `.megamind/` state
+headed by `wiki-card.json`. A directory is one shape or the other: adding the
+second shape to a root that already carries the first is refused with
+`init_invalid`.
+
+## megamind-axi migrate
+
+Upgrades a v1 registry to schema v2 in place, writing the derived access
+posture out explicitly (backup plus audit record).
+`megamind/migrate-result/v1` with `status: migrated|already_current`.
+
+## megamind-axi catalog [--estate DIR] [--today D] [--full] [--emit-projection] [--check-projection PATH]
+
+`megamind/catalog/v1`. Read-only fleet catalog over one root (`--root`) or a
+directory of roots (`--estate`, discovered one level deep). Each row carries
+the card fields, the effective model access, and maintenance aggregates.
+Broken, unreachable, stale, and redacted entries are stated explicitly.
+`catalog_hash` is a content hash of the rows. `--emit-projection` adds the
+byte-stable human-readable projection; `--check-projection` compares a
+checked-in projection against the cards and exits 1 on drift or a missing
+file.
+
+## megamind-axi preflight <request...> --model-class local|cloud [--estate DIR] [--today D] [--full]
+
+`megamind/preflight-result/v1`. Catalog-level routing for a substantive
+request under the declared model class: lexical card evidence only, no page
+content, no writes, no network. Access filtering happens before paths are
+returned: `none` wikis move to `filtered[]`, pointer wikis expose location
+metadata only, digest-only wikis allow only their approved digest. `status` is
+`matched`, `ambiguous` (tie; `offers[]` choices, nothing loaded), `no-match`,
+`unavailable`, or `privacy-filtered`. `preflight_id` is a deterministic
+content hash over the request hash, catalog snapshot, model class, and result
+- proof the consultation happened, without storing the raw request.
+
+## megamind-axi adopt <target> [--name N] [--apply --plan-id ID] [--rollback] [--full]
+
+Non-destructive adoption of an existing wiki directory as a canonical root.
+Dry run: `megamind/adopt-plan/v1` with `files[]`, `directories[]`, notes about
+detected legacy shapes (existing hub pages and surrogate digests are
+referenced, never replaced), and a `plan_id`. `--apply --plan-id <id>` creates
+exactly the planned new files (`megamind/adopt-result/v1`). `--rollback`
+removes exactly what the last apply created, and only while the content is
+unchanged since creation. Existing pages are never moved, renamed, or
+rewritten.
 
 ## megamind-axi route <query...> [--fields ...]
 
@@ -41,6 +86,9 @@ Flags: `--dest <page.md|WikiName>`, `--supersedes <page.md>`,
 `--approve-new-wiki`, `--today <YYYY-MM-DD>`.
 Apply returns `megamind/evolve-result/v1`; it backs up changed files under
 `.megamind/audit/backups/` and appends to `.megamind/audit/log.jsonl`.
+Applying a new top-level wiki also registers it in the same apply: the
+registry entry, card and index skeletons, and regenerated router are part of
+the reviewed diff and covered by the `plan_id`.
 Re-applying an applied proposal is `status: noop`, exit 0.
 
 ## megamind-axi review [--today D] [--full]
@@ -69,6 +117,7 @@ directory. Setup never makes network calls or edits shell/provider config.
 ## Errors
 
 `megamind/error/v1` with a stable `code` (`usage_error`, `not_initialized`,
-`registry_invalid`, `capture_invalid`, `proposal_not_found`, `plan_mismatch`,
-`approval_required`, `evolve_invalid`, `path_escape`, `frontmatter_invalid`,
-`io_error`), a sanitized `message`, and `help[]` with corrective commands.
+`registry_invalid`, `card_invalid`, `capture_invalid`, `proposal_not_found`,
+`plan_mismatch`, `approval_required`, `evolve_invalid`, `adopt_invalid`,
+`init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`), a sanitized
+`message`, and `help[]` with corrective commands.

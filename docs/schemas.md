@@ -7,7 +7,7 @@ the fields.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "budgets": {
     "max_candidates": 5,
     "max_context_chars": 8000,
@@ -24,22 +24,127 @@ the fields.
       "keywords": ["product", "pricing"],
       "card": "ProductWiki/CARD.md",
       "digest": "ProductWiki/DIGEST.md",
-      "index": "ProductWiki/INDEX.md"
+      "index": "ProductWiki/INDEX.md",
+      "purpose": "Answers questions about the synthetic product.",
+      "answers": ["pricing model", "release process"],
+      "does_not_answer": ["brand voice -> BrandingWiki"],
+      "scope_boundaries": "Synthetic product facts only.",
+      "owners": ["team-product@example.invalid"],
+      "sensitivity": "public-reference",
+      "model_access": {"local": "full", "cloud": "full"},
+      "routing_mode": "full",
+      "source_policy": {
+        "summary": "Synthetic release notes only.",
+        "allowlist": "ProductWiki/SOURCES.md",
+        "allowlist_status": "approved"
+      },
+      "freshness": {"half_life_days": 90, "last_confirmed": "2026-08-01"},
+      "examples": ["What is the current pricing model?"],
+      "triggers": ["pricing", "release"],
+      "negative_triggers": ["payroll"],
+      "dependencies": ["BrandingWiki"],
+      "context_budget": {"max_candidates": 3, "max_context_chars": 4000},
+      "catalog_visibility": "full"
     }
   ]
 }
 ```
 
-Rules: paths are root-relative (absolute paths and `..` are rejected), wiki
-names are unique, `privacy` is one of `public-reference`, `company-private`,
-`personal-local`, `digest-only`, `pointer-only`, and `max_candidates`,
-`max_context_chars`, and `stale_days` are positive. `card`, `digest`, and
-`index` are optional; routing degrades gracefully without them.
+Schema v2 is additive: every v1 registry loads unchanged and the new fields
+fall back to the defaults below. `megamind-axi migrate` upgrades a v1 file in
+place (with backup and audit record); doctor warns about v1 registries and
+prints that guidance. A v1 registry that already carries v2 fields is rejected
+with the same migration pointer.
+
+Base rules (v1 and v2): paths are root-relative (absolute paths and `..` are
+rejected), wiki names are unique, `privacy` is one of `public-reference`,
+`company-private`, `personal-local`, `digest-only`, `pointer-only`, and
+`max_candidates`, `max_context_chars`, and `stale_days` are positive. `card`,
+`digest`, and `index` are optional; routing degrades gracefully without them.
+
+v2 card fields, all optional:
+
+- `purpose`, `answers`, `does_not_answer`, `scope_boundaries`: what the wiki
+  covers and what it declines, in the owner's words.
+- `owners`: policy metadata; who governs the wiki.
+- `sensitivity`: `public-reference`, `company-private`, `collaborative`,
+  `personal-local`, or `unclassified`. Empty derives from `privacy`.
+- `model_access`: `local` and `cloud`, each `full`, `digest-only`, or `none`.
+  An empty axis derives from the privacy class: public-reference defaults to
+  cloud `full`, personal-local to cloud `digest-only`, company-private to
+  cloud `none` (doctor warns until a `company-private` or `collaborative`
+  wiki sets an explicit cloud policy), digest-only to `digest-only` on both
+  axes, pointer-only to `none` on both. A `company-private` or `collaborative`
+  sensitivity defaults cloud to `none` whatever its privacy class implies.
+  Unknown, missing, broken, or unmigrated classifications always derive
+  restrictively, and explicit values that exceed a sensitivity or privacy
+  ceiling are clamped down (doctor reports the contradiction as an `access`
+  error; the restrictive value always wins). Ceilings key on the *derived*
+  sensitivity, so an entry that omits `sensitivity` is clamped exactly like
+  one that spells out the value its privacy class implies.
+- `routing_mode`: `full` or `pointer`. Pointer wikis return location metadata
+  and zero content. Pointer-only privacy forces pointer mode.
+- `source_policy`: a free-text `summary`, an `allowlist` path pointer, and
+  the allowlist `allowlist_status` (`approved`, `proposed`, `none`).
+- `freshness`: declared expectations only (`half_life_days`,
+  `last_confirmed`). Staleness is computed at read time (catalog passes
+  `--today`), never stored.
+- `examples`, `triggers`, `negative_triggers`, `keywords`: the lexical
+  routing signals. Negative triggers let a wiki decline a request explicitly.
+- `dependencies`: other wikis this one relies on.
+- `context_budget`: optional per-wiki overrides surfaced by the catalog.
+- `catalog_visibility`: `full`, `redacted` (name, root, sensitivity, and
+  purpose only), or `hidden` (identity and all fields withheld; the projection
+  states that a wiki is withheld rather than omitting the row silently).
+  Personal wikis default to `redacted`; everything else to `full`.
 
 Loading validates types before use: every field must have the type shown
 above (a JSON boolean is never accepted as a budget), and unknown fields at
 any level are rejected rather than silently ignored, so a typo in a wiki entry
 surfaces as a `registry_invalid` error instead of a silently defaulted value.
+
+## Wiki card (`.megamind/wiki-card.json`)
+
+A canonical wiki root carries exactly one authoritative card instead of a
+multi-wiki registry. The card is the v2 wiki-entry field set above, at the top
+level of a JSON object with `"schema": "megamind/wiki-card/v2"` and
+`"version": 2`. The wiki path is the root itself, so `path` is omitted, and
+`privacy` may be omitted entirely: an unclassified card stays locally readable
+and cloud-restrictive until the owner classifies it. Malformed cards raise
+`card_invalid`.
+
+## Canonical wiki root
+
+`megamind-axi init <path> --wiki <Name>` scaffolds the canonical layout:
+
+```text
+AGENTS.md                # domain schema, conventions, workflows
+raw/                     # immutable human-curated sources
+raw/assets/              # optional source images and files
+wiki/index.md            # content-oriented catalog of compiled pages
+wiki/log.md              # structured append-only event log
+wiki/...                 # AI-maintained compiled pages
+.megamind/wiki-card.json # the authoritative card
+.megamind/proposals/     # knowledge proposals awaiting approval
+.megamind/gaps.jsonl     # durable knowledge-gap records
+.megamind/audit/         # mutation records, backups, rollback material
+```
+
+The `raw/` layer is immutable to Megamind: it is read and cited, never
+modified. `wiki/log.md` events use a stable field shape (date, type, summary,
+pages, sources, confidence, outcome, audit reference) and never record
+credentials, secrets, or verbatim sensitive prompts. `megamind-axi adopt
+<path>` brings an existing wiki directory into this shape non-destructively:
+it detects existing index/hub pages and surrogate digests and points the new
+card at them instead of replacing anything, and `adopt --rollback` removes
+exactly the generated material.
+
+A directory carries one root shape or the other, never both: a registry vault
+and a canonical wiki root disagree about which card is authoritative, so
+discovery would have to guess. Both `init` and `adopt` refuse to add the
+second shape to a root that already carries the first (`init_invalid`,
+`adopt_invalid`).
+
 
 ## Frontmatter subset
 
@@ -100,8 +205,10 @@ It documents why the new wiki should exist and is only ever applied with
 
 ## Audit records (`.megamind/audit/log.jsonl`)
 
-One JSON object per line: `ts` (UTC ISO), `action` (`init`, `capture`,
-`evolve-apply`, `evolve-apply-proposal-status`, `router-refresh`), and
-action-specific fields such as `path`, `proposal_id`, `plan_id`, and `backup`.
-Backups of every mutated file live in
-`.megamind/audit/backups/<name>.<content-hash>.bak`.
+One JSON object per line: `ts` (UTC ISO), `action` (`init`, `migrate`,
+`capture`, `evolve-apply`, `evolve-apply-proposal-status`, `router-refresh`,
+`adopt-apply`, `adopt-rollback`), and action-specific fields such as `path`,
+`proposal_id`, `plan_id`, and `backup`. Backups of every mutated file live in
+`.megamind/audit/backups/<name>.<content-hash>.bak`. Adoption additionally
+writes `.megamind/audit/adoption-<plan_id>.json`, the content-hashed rollback
+record that `adopt --rollback` verifies before removing generated files.

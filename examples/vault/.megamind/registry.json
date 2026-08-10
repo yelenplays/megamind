@@ -6,12 +6,27 @@
     "stale_days": 180,
     "top_level_topics": 3
   },
-  "version": 1,
+  "version": 2,
   "wikis": [
     {
+      "answers": [
+        "current pricing model",
+        "release process",
+        "feature flags"
+      ],
       "card": "ProductWiki/CARD.md",
       "description": "Synthetic product knowledge: pricing, feature flags, releases, integrations.",
       "digest": "ProductWiki/DIGEST.md",
+      "does_not_answer": [
+        "brand voice -> BrandingWiki"
+      ],
+      "examples": [
+        "What is the current pricing model?"
+      ],
+      "freshness": {
+        "half_life_days": 90,
+        "last_confirmed": "2026-06-01"
+      },
       "index": "ProductWiki/INDEX.md",
       "keywords": [
         "product",
@@ -23,12 +38,32 @@
         "release",
         "integration"
       ],
+      "model_access": {
+        "cloud": "full",
+        "local": "full"
+      },
       "name": "ProductWiki",
+      "negative_triggers": [
+        "payroll"
+      ],
+      "owners": [
+        "team-product@example.invalid"
+      ],
       "path": "ProductWiki",
-      "privacy": "public-reference"
+      "privacy": "public-reference",
+      "purpose": "Answers questions about the synthetic product: pricing, features, releases.",
+      "sensitivity": "public-reference",
+      "triggers": [
+        "pricing",
+        "release",
+        "roadmap"
+      ]
     },
     {
       "card": "BrandingWiki/CARD.md",
+      "dependencies": [
+        "ProductWiki"
+      ],
       "description": "Synthetic brand guidance: colors, logo, voice and tone.",
       "digest": "BrandingWiki/DIGEST.md",
       "index": "BrandingWiki/INDEX.md",
@@ -42,9 +77,28 @@
         "tone",
         "typography"
       ],
+      "model_access": {
+        "cloud": "none",
+        "local": "full"
+      },
       "name": "BrandingWiki",
+      "owners": [
+        "team-brand@example.invalid"
+      ],
       "path": "BrandingWiki",
-      "privacy": "company-private"
+      "privacy": "company-private",
+      "purpose": "Answers questions about the synthetic brand: colors, logo, voice.",
+      "sensitivity": "company-private",
+      "source_policy": {
+        "allowlist": "",
+        "allowlist_status": "none",
+        "summary": "Synthetic brand guidelines only."
+      },
+      "triggers": [
+        "brand",
+        "palette",
+        "voice"
+      ]
     },
     {
       "card": "",
@@ -57,9 +111,18 @@
         "study",
         "notification"
       ],
+      "model_access": {
+        "cloud": "digest-only",
+        "local": "digest-only"
+      },
       "name": "ResearchDigest",
       "path": "ResearchDigest",
-      "privacy": "digest-only"
+      "privacy": "digest-only",
+      "purpose": "Synthetic research summaries; only the digest is ever shared.",
+      "triggers": [
+        "research",
+        "interview"
+      ]
     },
     {
       "card": "",
@@ -71,9 +134,19 @@
         "history",
         "old"
       ],
+      "model_access": {
+        "cloud": "none",
+        "local": "none"
+      },
       "name": "ArchiveBox",
       "path": "ArchiveBox",
-      "privacy": "pointer-only"
+      "privacy": "pointer-only",
+      "purpose": "Synthetic cold archive; location pointer only.",
+      "routing_mode": "pointer",
+      "triggers": [
+        "archive",
+        "history"
+      ]
     }
   ]
 }

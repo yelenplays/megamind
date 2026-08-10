@@ -4,6 +4,7 @@ from pathlib import Path
 
 from conftest import write
 from megamind.doctor import has_errors, run_doctor
+from megamind.registry import ModelAccess, load_registry, save_registry
 
 
 def _errors(findings: list[object]) -> list[str]:
@@ -112,3 +113,42 @@ def test_unicode_digit_frontmatter_does_not_crash_doctor(vault: Path) -> None:
     )
     findings = run_doctor(vault)
     assert not [f for f in findings if "pricing-model.md" in f.path and "frontmatter" in f.message]
+
+
+def test_doctor_warns_on_v1_registry_with_migration_guidance(tmp_path: Path) -> None:
+    import json
+
+    directory = tmp_path / ".megamind"
+    directory.mkdir()
+    payload = {"version": 1, "wikis": [{"name": "W", "path": "W", "keywords": ["w"]}]}
+    (directory / "registry.json").write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "W").mkdir()
+    findings = run_doctor(tmp_path)
+    matches = [f for f in findings if "schema v1" in f.message]
+    assert len(matches) == 1
+    assert matches[0].severity == "warning"
+    assert "megamind-axi migrate" in matches[0].message
+
+
+def test_doctor_reports_access_policy_invariants(vault: Path) -> None:
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.model_access = ModelAccess(local="full", cloud="full")
+    product.sensitivity = "personal-local"  # contradiction: cloud can never be full
+    save_registry(vault, registry)
+    findings = run_doctor(vault)
+    access_errors = [f for f in findings if f.check == "access" and f.severity == "error"]
+    assert any("restrictive value wins" in f.message for f in access_errors)
+
+
+def test_doctor_warns_when_company_wiki_lacks_explicit_cloud_policy(vault: Path) -> None:
+    registry = load_registry(vault)
+    brand = registry.wiki_by_name("BrandingWiki")
+    assert brand is not None
+    brand.model_access = ModelAccess()  # unset: derived restrictive default
+    save_registry(vault, registry)
+    findings = run_doctor(vault)
+    assert any(
+        f.check == "access" and "explicit cloud access policy" in f.message for f in findings
+    )

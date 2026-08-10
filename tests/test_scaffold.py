@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from megamind.card import CARD_PATH
 from megamind.registry import ROUTER_FILENAME, WikiEntry, load_registry, save_registry
-from megamind.scaffold import init_vault
+from megamind.scaffold import InitError, init_vault, init_wiki_root
 
 
 def test_init_creates_registry_router_and_starter(tmp_path: Path) -> None:
@@ -69,3 +72,28 @@ def test_init_no_starter(tmp_path: Path) -> None:
     registry = load_registry(root)
     assert registry.wikis == []
     assert not (root / "StarterWiki").exists()
+
+
+def test_init_wiki_refuses_a_registry_vault(tmp_path: Path) -> None:
+    """A root is one shape or the other; both cards would leave discovery guessing."""
+    root = tmp_path / "vault"
+    init_vault(root)
+    with pytest.raises(InitError, match="registry vault"):
+        init_wiki_root(root, "SoloWiki")
+    assert not (root / CARD_PATH).exists()
+
+
+def test_init_vault_refuses_a_canonical_wiki_root(tmp_path: Path) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    with pytest.raises(InitError, match="canonical wiki card"):
+        init_vault(root)
+    assert not (root / ".megamind/registry.json").exists()
+
+
+def test_init_wiki_root_is_idempotent(tmp_path: Path) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    result = init_wiki_root(root, "SoloWiki")
+    assert result.already_initialized
+    assert result.created == []

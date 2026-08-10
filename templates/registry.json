@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "budgets": {
     "max_candidates": 5,
     "max_context_chars": 8000,
@@ -16,7 +16,27 @@
       "keywords": ["<term>", "<term>"],
       "card": "<relative/path/to/wiki>/CARD.md",
       "digest": "<relative/path/to/wiki>/DIGEST.md",
-      "index": "<relative/path/to/wiki>/INDEX.md"
+      "index": "<relative/path/to/wiki>/INDEX.md",
+      "purpose": "<one sentence: the questions this wiki exists to answer>",
+      "answers": ["<topic it covers>", "<topic it covers>"],
+      "does_not_answer": ["<topic it declines> -> <OtherWiki>"],
+      "scope_boundaries": "<what stays in vs links out>",
+      "owners": ["<team-or-person@example.invalid>"],
+      "sensitivity": "public-reference",
+      "model_access": {"local": "full", "cloud": "full"},
+      "routing_mode": "full",
+      "source_policy": {
+        "summary": "<which sources are eligible>",
+        "allowlist": "<relative/path/to/ALLOWLIST.md>",
+        "allowlist_status": "approved"
+      },
+      "freshness": {"half_life_days": 90, "last_confirmed": "2026-01-01"},
+      "examples": ["<a representative question>"],
+      "triggers": ["<routing term>", "<routing term>"],
+      "negative_triggers": ["<term that means a different wiki>"],
+      "dependencies": ["<OtherWiki>"],
+      "context_budget": {"max_candidates": 3, "max_context_chars": 4000},
+      "catalog_visibility": "full"
     }
   ]
 }

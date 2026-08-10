@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from dataclasses import asdict
 from datetime import date
@@ -22,15 +23,26 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from . import __version__, toon
+from .adopt import AdoptError, apply_adoption, plan_adoption, rollback_adoption
 from .capture import CaptureError, capture, list_proposals
+from .card import CardError
+from .catalog import (
+    RootRef,
+    build_catalog,
+    check_projection,
+    discover_roots,
+    render_projection,
+    visible_rows,
+)
 from .doctor import run_doctor
 from .evolve import EvolveError, apply_plan, plan
 from .fsops import PathEscapeError
 from .models import FrontmatterError, parse_document
-from .registry import REGISTRY_PATH, Registry, RegistryError, load_registry
+from .preflight import MODEL_CLASSES, run_preflight
+from .registry import REGISTRY_PATH, Registry, RegistryError, load_registry, migrate_registry
 from .review import ReviewReport, review
 from .routing import RouteResult, route
-from .scaffold import init_vault
+from .scaffold import InitError, init_vault, init_wiki_root
 from .skillpack import skill_files, write_skill
 
 EXECUTABLE = "megamind-axi"
@@ -135,17 +147,231 @@ def cmd_home(root: Path, root_label: str, today: date | None) -> tuple[Doc, int]
     return doc, 0
 
 
-def cmd_init(target: str, starter: bool) -> tuple[Doc, int]:
+def cmd_init(target: str, starter: bool, wiki_name: str | None) -> tuple[Doc, int]:
+    if wiki_name is not None:
+        result = init_wiki_root(Path(target), wiki_name)
+        doc: Doc = {
+            "schema_version": "megamind/init-result/v1",
+            "status": "already_initialized" if result.already_initialized else "initialized",
+            "layout": "canonical-wiki",
+            "root": target,
+            "created": result.created,
+            "skipped": result.skipped,
+            "help": _help(
+                f"Edit `{target}/.megamind/wiki-card.json` to declare scope, owners, and access",
+                f"Run `{EXECUTABLE} catalog --estate <dir>` to see this wiki in a fleet catalog",
+            ),
+        }
+        return doc, 0
     result = init_vault(Path(target), starter=starter)
-    doc: Doc = {
+    doc = {
         "schema_version": "megamind/init-result/v1",
         "status": "already_initialized" if result.already_initialized else "initialized",
+        "layout": "vault",
         "root": target,
         "created": result.created,
         "skipped": result.skipped,
         "help": _help(
-            f"Run `{EXECUTABLE} --root {target}` for the vault home view",
-            f"Run `{EXECUTABLE} --root {target} doctor` to validate the vault",
+            f"Run `{EXECUTABLE} --root {shlex.quote(target)}` for the vault home view",
+            f"Run `{EXECUTABLE} --root {shlex.quote(target)} doctor` to validate the vault",
+        ),
+    }
+    return doc, 0
+
+
+def _resolve_roots(estate: str | None, root: Path, root_label: str) -> list[RootRef]:
+    if estate is not None:
+        estate_path = Path(estate)
+        if not estate_path.is_dir():
+            raise UsageError(f"estate is not a directory: {estate}")
+        return discover_roots(estate_path)
+    return [RootRef(label=root_label, path=root)]
+
+
+def _catalog_counts(rows: list[Doc]) -> Doc:
+    counts: Doc = {"ok": 0, "broken": 0, "unreachable": 0, "redacted": 0, "stale": 0}
+    for row in rows:
+        status = str(row.get("status", "ok"))
+        if status == "ok":
+            counts["ok"] += 1
+        elif status in counts:
+            counts[status] += 1
+        if row.get("stale"):
+            counts["stale"] += 1
+    return counts
+
+
+def cmd_catalog(
+    estate: str | None,
+    root: Path,
+    root_label: str,
+    today: date | None,
+    full: bool,
+    emit_projection: bool,
+    check_path: str | None,
+) -> tuple[Doc, int]:
+    refs = _resolve_roots(estate, root, root_label)
+    catalog = build_catalog(refs, today=today)
+    rows = visible_rows(catalog)
+    notes = list(catalog.notes)
+    shown = _capped(rows, full, notes, "wikis")
+    doc: Doc = {
+        "schema_version": "megamind/catalog/v1",
+        "roots": [ref.label for ref in refs],
+        "total": len(rows),
+        "counts": _catalog_counts(rows),
+        "catalog_hash": catalog.catalog_hash,
+        "wikis": shown,
+        "notes": notes,
+    }
+    exit_code = 0
+    if emit_projection:
+        doc["projection"] = render_projection(catalog)
+    if check_path is not None:
+        status = check_projection(catalog, Path(check_path))
+        doc["projection_check"] = {"path": check_path, "status": status}
+        if status != "current":
+            exit_code = 1
+            notes.append(
+                f"projection {status}: regenerate it from the cards so they cannot diverge"
+            )
+    steps = [
+        f'Run `{EXECUTABLE} preflight "<request>" --model-class local --estate <dir>` '
+        "to route a request across these wikis",
+        f"Run `{EXECUTABLE} catalog --estate <dir> --emit-projection` for the "
+        "human-readable projection",
+    ]
+    doc["help"] = steps
+    return doc, exit_code
+
+
+def cmd_preflight(
+    request: str,
+    model_class: str,
+    estate: str | None,
+    root: Path,
+    root_label: str,
+    today: date | None,
+    full: bool,
+) -> tuple[Doc, int]:
+    refs = _resolve_roots(estate, root, root_label)
+    catalog = build_catalog(refs, today=today)
+    result = run_preflight(refs, request, model_class, catalog)
+    notes = list(result.notes)
+    doc: Doc = {
+        "schema_version": "megamind/preflight-result/v1",
+        "request": result.request,
+        "request_hash": result.request_hash,
+        "model_class": result.model_class,
+        "status": result.status,
+        "preflight_id": result.preflight_id,
+        "catalog_hash": result.catalog_hash,
+        "matches": _capped(result.matches, full, notes, "matches"),
+        "offers": _capped(result.offers, full, notes, "offers"),
+        "filtered": _capped(result.filtered, full, notes, "filtered"),
+        "declined": _capped(result.declined, full, notes, "declined"),
+        "root_issues": _capped(result.root_issues, full, notes, "root_issues"),
+        "redacted_count": result.redacted_count,
+        "notes": notes,
+    }
+    if result.status == "matched" and result.matches:
+        doc["help"] = _help(
+            str(result.matches[0]["follow_up"]),
+            "Record the preflight_id with the task as proof that preflight ran",
+        )
+    elif result.status == "ambiguous":
+        doc["help"] = _help(
+            "Offer the listed wikis as choices; load nothing until the host picks one"
+        )
+    elif result.status == "privacy-filtered":
+        doc["help"] = _help(
+            "Do not load these wikis for this model class; say the wiki coverage is unavailable"
+        )
+    else:
+        doc["help"] = _help(
+            "Stay quiet about wikis on a no-match; answer without wiki context",
+            f'Run `{EXECUTABLE} capture --text "<what you learn>" --type fact` afterwards',
+        )
+    return doc, 0
+
+
+def cmd_adopt(
+    target: str,
+    name: str | None,
+    apply: bool,
+    plan_id: str | None,
+    rollback: bool,
+    full: bool,
+) -> tuple[Doc, int]:
+    target_path = Path(target)
+    if rollback:
+        removed, kept = rollback_adoption(target_path)
+        doc: Doc = {
+            "schema_version": "megamind/adopt-result/v1",
+            "status": "rolled_back",
+            "target": target,
+            "removed": removed,
+            "kept": kept,
+            "notes": ["rollback removes only generated adoption material"],
+            "help": _help(f"Run `{EXECUTABLE} catalog --estate <dir>` to confirm the fleet view"),
+        }
+        return doc, 0
+    computed = plan_adoption(target_path, name=name)
+    if apply:
+        created = apply_adoption(computed, approved_plan_id=plan_id or "")
+        doc = {
+            "schema_version": "megamind/adopt-result/v1",
+            "status": "applied" if created else "noop",
+            "target": target,
+            "wiki": computed.wiki_name,
+            "plan_id": computed.plan_id,
+            "created": created,
+            "notes": computed.notes,
+            "help": _help(
+                f"Edit `{target}/.megamind/wiki-card.json` to declare scope, owners, and access",
+                f"Run `{EXECUTABLE} catalog --estate <dir>` to see the adopted wiki",
+            ),
+        }
+        return doc, 0
+    files = [change.path for change in computed.changes]
+    notes = list(computed.notes)
+    shown = _capped(files, full, notes, "files")
+    doc = {
+        "schema_version": "megamind/adopt-plan/v1",
+        "status": computed.status,
+        "target": target,
+        "wiki": computed.wiki_name,
+        "plan_id": computed.plan_id,
+        "files": shown,
+        "directories": [rel + "/" for rel in computed.directories],
+        "notes": notes,
+    }
+    steps: list[str] = []
+    if computed.status != "noop":
+        steps.append(
+            f"Run `{EXECUTABLE} adopt {shlex.quote(target)} "
+            f"--apply --plan-id {shlex.quote(computed.plan_id)}` "
+            "after human review of this plan"
+        )
+    steps.append(
+        "Adoption never modifies existing pages; rollback with "
+        f"`{EXECUTABLE} adopt {shlex.quote(target)} --rollback`"
+    )
+    doc["help"] = steps
+    return doc, 0
+
+
+def cmd_migrate(root: Path) -> tuple[Doc, int]:
+    registry, changed, notes = migrate_registry(root)
+    doc: Doc = {
+        "schema_version": "megamind/migrate-result/v1",
+        "status": "migrated" if changed else "already_current",
+        "version": registry.version,
+        "wikis": len(registry.wikis),
+        "notes": notes,
+        "help": _help(
+            f"Run `{EXECUTABLE} doctor` to validate the migrated registry",
+            f"Run `{EXECUTABLE} config show` to review the wiki entries",
         ),
     }
     return doc, 0
@@ -182,8 +408,8 @@ def cmd_route(root: Path, registry: Registry, query: str, fields: list[str]) -> 
         best = result.candidates[0]
         doc["help"] = _help(
             f"Open `{best.path}` first; it scored highest",
-            f'Run `{EXECUTABLE} route "{query}" --fields path,kind,score,privacy,reasons` '
-            "for detail",
+            f"Run `{EXECUTABLE} route {shlex.quote(query)} "
+            "--fields path,kind,score,privacy,reasons` for detail",
         )
     else:
         doc["help"] = _help(
@@ -213,7 +439,8 @@ def cmd_capture(
         "destination": result.suggested_destination,
         "reasons": result.route_reasons[:3],
         "help": _help(
-            f"Run `{EXECUTABLE} evolve {result.proposal_id}` to plan applying it (dry run)",
+            f"Run `{EXECUTABLE} evolve {shlex.quote(result.proposal_id)}` "
+            "to plan applying it (dry run)",
             f"Run `{EXECUTABLE} review` to see all open proposals",
         ),
     }
@@ -278,17 +505,21 @@ def cmd_evolve(
     steps: list[str] = []
     if computed.action != "noop":
         apply_cmd = (
-            f"{EXECUTABLE} evolve {computed.proposal_id} --apply --plan-id {computed.plan_id}"
+            f"{EXECUTABLE} evolve {shlex.quote(computed.proposal_id)} "
+            f"--apply --plan-id {shlex.quote(computed.plan_id)}"
         )
         if destination:
-            apply_cmd += f" --dest {destination}"
+            apply_cmd += f" --dest {shlex.quote(destination)}"
         if supersedes:
-            apply_cmd += f" --supersedes {supersedes}"
+            apply_cmd += f" --supersedes {shlex.quote(supersedes)}"
         if computed.creates_new_wiki:
             apply_cmd += " --approve-new-wiki"
         steps.append(f"Run `{apply_cmd}` after human review of this diff")
     if truncated:
-        steps.append(f"Run `{EXECUTABLE} evolve {computed.proposal_id} --full` for the whole diff")
+        steps.append(
+            f"Run `{EXECUTABLE} evolve {shlex.quote(computed.proposal_id)} --full` "
+            "for the whole diff"
+        )
     if not steps:
         steps.append(f"Run `{EXECUTABLE} review` to see what still needs attention")
     doc["help"] = steps
@@ -332,11 +563,12 @@ def cmd_review(root: Path, registry: Registry, today: date | None, full: bool) -
     if report.uncategorized_proposals:
         first = report.uncategorized_proposals[0].rsplit("/", 1)[-1].removesuffix(".md")
         steps.append(
-            f"Run `{EXECUTABLE} evolve {first} --dest <WikiName>` to categorize a proposal"
+            f"Run `{EXECUTABLE} evolve {shlex.quote(first)} --dest <WikiName>` "
+            "to categorize a proposal"
         )
     elif report.open_proposals:
         first = report.open_proposals[0].rsplit("/", 1)[-1].removesuffix(".md")
-        steps.append(f"Run `{EXECUTABLE} evolve {first}` to plan applying a proposal")
+        steps.append(f"Run `{EXECUTABLE} evolve {shlex.quote(first)}` to plan applying a proposal")
     if report.dead_links or report.superseded_still_linked:
         steps.append(f"Run `{EXECUTABLE} doctor` for the full integrity picture")
     if not steps:
@@ -469,6 +701,89 @@ def build_parser() -> AxiParser:
     _common_flags(p_init)
     p_init.add_argument("target", help="directory to initialize")
     p_init.add_argument("--no-starter", action="store_true", help="skip the synthetic starter wiki")
+    p_init.add_argument(
+        "--wiki",
+        default=None,
+        metavar="NAME",
+        help="scaffold a canonical single-wiki root (Karpathy layout) instead of a vault",
+    )
+
+    p_migrate = sub.add_parser(
+        "migrate",
+        help="upgrade a v1 registry to schema v2 in place (backup + audit)",
+        epilog=f"example: {EXECUTABLE} migrate",
+    )
+    _common_flags(p_migrate)
+
+    p_catalog = sub.add_parser(
+        "catalog",
+        help="generated read-only fleet catalog over separate wiki roots",
+        epilog=(
+            f"examples:\n  {EXECUTABLE} catalog --estate ~/Wikis\n"
+            f"  {EXECUTABLE} catalog --estate ~/Wikis --emit-projection\n"
+            f"  {EXECUTABLE} catalog --estate ~/Wikis --check-projection ~/Wikis/CATALOG.md"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _common_flags(p_catalog)
+    p_catalog.add_argument("--estate", default=None, help="directory of wiki roots to aggregate")
+    p_catalog.add_argument("--today", default=argparse.SUPPRESS, help="override today's date (ISO)")
+    p_catalog.add_argument("--full", action="store_true", help="never truncate the wiki list")
+    p_catalog.add_argument(
+        "--emit-projection",
+        action="store_true",
+        help="include the byte-stable human-readable projection in the document",
+    )
+    p_catalog.add_argument(
+        "--check-projection",
+        default=None,
+        metavar="PATH",
+        help="drift-check a checked-in projection file against the cards (exit 1 on drift)",
+    )
+
+    p_preflight = sub.add_parser(
+        "preflight",
+        help="catalog-level route for a substantive request under a declared model class",
+        epilog=(
+            f'example: {EXECUTABLE} preflight "how do we price cleanup offers" '
+            "--estate ~/Wikis --model-class cloud"
+        ),
+    )
+    _common_flags(p_preflight)
+    p_preflight.add_argument("request", nargs="+", help="privacy-safe request representation")
+    p_preflight.add_argument(
+        "--model-class",
+        required=True,
+        choices=list(MODEL_CLASSES),
+        help="the host's declared model class",
+    )
+    p_preflight.add_argument("--estate", default=None, help="directory of wiki roots to consult")
+    p_preflight.add_argument(
+        "--today", default=argparse.SUPPRESS, help="override today's date (ISO)"
+    )
+    p_preflight.add_argument("--full", action="store_true", help="never truncate result lists")
+
+    p_adopt = sub.add_parser(
+        "adopt",
+        help="non-destructively adopt an existing wiki directory (dry-run first)",
+        epilog=(
+            f"examples:\n  {EXECUTABLE} adopt existing-wiki/\n"
+            f"  {EXECUTABLE} adopt existing-wiki/ --apply --plan-id <plan-id>\n"
+            f"  {EXECUTABLE} adopt existing-wiki/ --rollback"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _common_flags(p_adopt)
+    p_adopt.add_argument("target", help="existing wiki directory to adopt")
+    p_adopt.add_argument("--name", default=None, help="wiki name (default: directory name)")
+    p_adopt.add_argument("--apply", action="store_true", help="apply instead of dry run")
+    p_adopt.add_argument("--plan-id", default=None, help="approval token from the dry run")
+    p_adopt.add_argument(
+        "--rollback",
+        action="store_true",
+        help="remove exactly what the latest adoption apply created",
+    )
+    p_adopt.add_argument("--full", action="store_true", help="never truncate the file list")
 
     p_route = sub.add_parser(
         "route",
@@ -605,7 +920,42 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
     if command is None:
         return cmd_home(root, root_label, _parse_today(getattr(args, "today", None)))
     if command == "init":
-        return cmd_init(args.target, starter=not args.no_starter)
+        return cmd_init(args.target, starter=not args.no_starter, wiki_name=args.wiki)
+    if command == "migrate":
+        return cmd_migrate(root)
+    if command == "catalog":
+        return cmd_catalog(
+            args.estate,
+            root,
+            root_label,
+            today=_parse_today(getattr(args, "today", None)),
+            full=args.full,
+            emit_projection=args.emit_projection,
+            check_path=args.check_projection,
+        )
+    if command == "preflight":
+        return cmd_preflight(
+            " ".join(args.request),
+            args.model_class,
+            args.estate,
+            root,
+            root_label,
+            today=_parse_today(getattr(args, "today", None)),
+            full=args.full,
+        )
+    if command == "adopt":
+        if args.apply and args.rollback:
+            raise UsageError("--apply and --rollback are mutually exclusive")
+        if args.apply and not args.plan_id:
+            raise UsageError("--apply requires --plan-id from the dry run")
+        return cmd_adopt(
+            args.target,
+            name=args.name,
+            apply=args.apply,
+            plan_id=args.plan_id,
+            rollback=args.rollback,
+            full=args.full,
+        )
     if command == "route":
         fields = ROUTE_FIELDS_DEFAULT
         if args.fields:
@@ -677,6 +1027,10 @@ _ERROR_HELP: dict[str, list[str]] = {
     "plan_mismatch": [f"Run `{EXECUTABLE} evolve <proposal-id>` again and review the fresh diff"],
     "approval_required": ["Re-run with `--approve-new-wiki` only after explicit human approval"],
     "proposal_not_found": [f"Run `{EXECUTABLE} review` to list existing proposals"],
+    "init_invalid": [
+        f"Run `{EXECUTABLE} init <path>` for a registry vault",
+        f"Run `{EXECUTABLE} init <path> --wiki <Name>` for a canonical single-wiki root",
+    ],
     "capture_invalid": [
         f'Run `{EXECUTABLE} capture --text "<content>" --type '
         "fact|decision|hypothesis|procedure|example|guidance`"
@@ -712,7 +1066,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         _emit(doc, output_format, no_help_hints)
         return 2
-    except (RegistryError, CaptureError, EvolveError, PathEscapeError) as error:
+    except (
+        RegistryError,
+        CaptureError,
+        EvolveError,
+        AdoptError,
+        CardError,
+        InitError,
+        PathEscapeError,
+    ) as error:
         code = str(getattr(error, "code", "operation_failed"))
         exit_code = 2 if code in {"not_initialized", "registry_invalid"} else 1
         doc = _error_doc(code, str(error), operation, _ERROR_HELP.get(code, []))

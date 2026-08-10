@@ -15,13 +15,18 @@ with a stable `schema_version`:
 | schema_version | emitted by |
 | --- | --- |
 | `megamind/home/v1` | `megamind-axi` (no arguments) |
-| `megamind/init-result/v1` | `init` |
+| `megamind/init-result/v1` | `init` (vault or `--wiki` canonical root) |
 | `megamind/route-result/v1` | `route` |
 | `megamind/capture-result/v1` | `capture` |
 | `megamind/evolve-plan/v1` | `evolve` (dry run) |
 | `megamind/evolve-result/v1` | `evolve --apply` |
 | `megamind/review-report/v1` | `review` |
 | `megamind/doctor-report/v1` | `doctor` |
+| `megamind/catalog/v1` | `catalog` |
+| `megamind/preflight-result/v1` | `preflight` |
+| `megamind/adopt-plan/v1` | `adopt` (dry run) |
+| `megamind/adopt-result/v1` | `adopt --apply`, `adopt --rollback` |
+| `megamind/migrate-result/v1` | `migrate` |
 | `megamind/config/v1` | `config show` |
 | `megamind/setup-plan/v1`, `megamind/setup-result/v1` | `setup skill` |
 | `megamind/error/v1` | any failure |
@@ -40,7 +45,7 @@ max_candidates: 5
 notes[0]:
 help[2]:
   Open `ProductWiki/topics/pricing-v2.md` first; it scored highest
-  "Run `megamind-axi route \"pricing\" --fields path,kind,score,privacy,reasons` for detail"
+  "Run `megamind-axi route pricing --fields path,kind,score,privacy,reasons` for detail"
 ```
 
 ## The ten principles, applied
@@ -52,8 +57,10 @@ help[2]:
    `wiki,privacy,chars,reasons`. Doctor findings carry exactly
    `check,severity,path,message`.
 3. **Content truncation**: evolve diffs are bounded to 60 lines
-   (`diff_truncated`, `diff_lines_total`, `--full`), review sections to 20
-   items, doctor findings to 50, each with an explicit note.
+   (`diff_truncated`, `diff_lines_total`, `--full`), doctor findings to 50, and
+   every other item list - review sections, catalog wikis, preflight matches
+   and filtered entries, adopt file lists - to 20, each with an explicit note
+   and `--full` to lift it.
 4. **Pre-computed aggregates**: home returns proposal/review/doctor counts;
    review returns an `aggregates` object; route returns context-budget
    accounting; doctor returns error/warning counts.
@@ -80,9 +87,10 @@ help[2]:
 
 ## Error codes
 
-`usage_error`, `not_initialized`, `registry_invalid`, `capture_invalid`,
-`proposal_not_found`, `plan_mismatch`, `approval_required`, `evolve_invalid`,
-`path_escape`, `frontmatter_invalid`, `io_error`. Malformed vault content and
+`usage_error`, `not_initialized`, `registry_invalid`, `card_invalid`,
+`capture_invalid`, `proposal_not_found`, `plan_mismatch`, `approval_required`,
+`evolve_invalid`, `adopt_invalid`, `init_invalid`, `path_escape`,
+`frontmatter_invalid`, `io_error`. Malformed vault content and
 filesystem failures are reported as `frontmatter_invalid` and `io_error`
 documents with exit 1; no invocation ever ends in a traceback. Messages never
 include machine-specific absolute paths from inside the vault model; registry
@@ -98,3 +106,21 @@ semantics documented here, in the standalone skill's
 `references/commands.md`, and raised by the package itself all agree. CI
 additionally builds the wheel, installs it into a clean environment, and runs
 `megamind-axi` from a scratch directory.
+
+## Federation surfaces
+
+`catalog` and `preflight` are read-only commands over one or more wiki roots
+(`--root` for a single root, `--estate` for a directory of roots). Both are
+catalog-level only: they read registry entries and wiki cards, never page
+content. `catalog` aggregates every eligible card into a deterministic
+projection (explicit broken/unreachable/stale/redacted entries, stable
+ordering, a content-hashed `catalog_hash`, and a byte-stable human-readable
+projection via `--emit-projection`, drift-checked with `--check-projection`).
+`preflight` routes a substantive request under the host's declared model class
+(`local` or `cloud`): wikis the class may not receive are filtered before any
+path is returned, pointer wikis expose location metadata only, digest-only
+wikis allow only their approved digest, and the deterministic `preflight_id`
+binds the request hash, catalog snapshot, model class, and result so a host
+can prove preflight ran without storing the raw request. Statuses are
+definitive: `matched`, `ambiguous`, `no-match`, `unavailable`, and
+`privacy-filtered` are all structured successes with exit 0.

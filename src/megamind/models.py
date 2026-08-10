@@ -44,6 +44,37 @@ PRIVACY_CLASSES: tuple[str, ...] = (
     "pointer-only",
 )
 
+# Schema v2 access-policy vocabulary. Sensitivity says who may ever see a wiki;
+# model access says what a local or cloud model context may receive. Broadest
+# to narrowest: full > digest-only > none. Unknown or broken classifications
+# always derive to the restrictive end.
+SENSITIVITY_CLASSES: tuple[str, ...] = (
+    "public-reference",
+    "company-private",
+    "collaborative",
+    "personal-local",
+    "unclassified",
+)
+
+MODEL_ACCESS_LEVELS: tuple[str, ...] = ("full", "digest-only", "none")
+
+# The one authoritative privacy-to-sensitivity mapping. Both the access policy
+# (read time) and `migrate` (write time) derive from this table, so a v1 class
+# can never mean one sensitivity when read and another when migrated. Privacy
+# classes absent here carry no sensitivity of their own and derive to
+# "unclassified"; their own access ceiling governs instead.
+PRIVACY_SENSITIVITY: dict[str, str] = {
+    "public-reference": "public-reference",
+    "company-private": "company-private",
+    "personal-local": "personal-local",
+}
+
+ROUTING_MODES: tuple[str, ...] = ("full", "pointer")
+
+ALLOWLIST_STATUSES: tuple[str, ...] = ("approved", "proposed", "none")
+
+CATALOG_VISIBILITIES: tuple[str, ...] = ("full", "redacted", "hidden")
+
 # Privacy classes whose page bodies may be quoted into routed context.
 # digest-only exposes only the digest; pointer-only exposes only paths.
 CONTENT_VISIBLE_PRIVACY: tuple[str, ...] = ("public-reference", "company-private", "personal-local")

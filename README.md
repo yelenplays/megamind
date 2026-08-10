@@ -81,6 +81,38 @@ The full output contract (schemas, truncation, exit codes, error codes) is in
 [docs/axi.md](docs/axi.md). A ready-made demo vault lives in
 [`examples/vault/`](examples/vault/).
 
+## Federation: many wikis, one catalog
+
+Wikis stay separate roots with their own owners, governance, and privacy.
+Megamind projects one generated, read-only fleet catalog from their cards and
+routes substantive requests across it under the host's declared model class:
+
+```sh
+megamind-axi catalog --estate ~/Wikis --emit-projection   # fleet view
+megamind-axi catalog --estate ~/Wikis --check-projection ~/Wikis/CATALOG.md
+megamind-axi preflight "how do we price cleanup offers" --estate ~/Wikis --model-class cloud
+```
+
+- **Wiki cards** (registry schema v2 or a standalone `.megamind/wiki-card.json`)
+  declare purpose, scope and exclusions, owners, sensitivity, local/cloud
+  model access, source policy, freshness expectations, routing triggers and
+  negative triggers, dependencies, budgets, and catalog visibility. Unset or
+  broken classifications default restrictively; v1 registries load unchanged
+  and `megamind-axi migrate` upgrades them in place.
+- **Canonical wiki roots** follow the Karpathy layout: `AGENTS.md`, an
+  immutable human-curated `raw/`, the AI-maintained compiled `wiki/` with
+  `index.md` and `log.md`, and `.megamind/` state. `megamind-axi init <path>
+  --wiki <Name>` scaffolds a new one; `megamind-axi adopt <path>` onboards an
+  existing directory non-destructively (dry-run plan, approval-gated apply,
+  content-verified rollback; existing pages are never moved or rewritten).
+- **Preflight** is catalog-level only: it filters by model access before any
+  path is returned (`full`, `digest-only`, `none`, and pointer modes are all
+  honored), reports `matched`, `ambiguous`, `no-match`, `unavailable`, or
+  `privacy-filtered`, gives exact per-wiki follow-up commands, and emits a
+  deterministic `preflight_id` so a host can prove the consultation happened.
+  It never reads page content, never writes anything, and never calls a model
+  or the network; whether and when to run it is the host's policy.
+
 ## Concepts
 
 **Knowledge types**: `fact`, `decision`, `hypothesis`, `procedure`, `example`,
@@ -91,9 +123,12 @@ The full output contract (schemas, truncation, exit codes, error codes) is in
 `personal-local`, `digest-only` (only the digest is routable), and
 `pointer-only` (only the path is ever returned, never content).
 
-**Registry**: `.megamind/registry.json` lists your wikis, their routing cards,
-digests, indexes, privacy classes, and context budgets. `ROUTER.md` is a
-generated projection of it; `megamind-axi doctor` verifies they never drift.
+**Registry**: `.megamind/registry.json` (schema v2) lists your wikis, their
+routing cards, digests, indexes, privacy and access classes, and context
+budgets. `ROUTER.md` is a generated projection of it; `megamind-axi doctor`
+verifies they never drift. Standalone canonical wikis carry the same card
+fields in `.megamind/wiki-card.json` instead. See
+[CONTEXT.md](CONTEXT.md) for the domain vocabulary.
 
 ## Safety guarantees
 
@@ -104,7 +139,12 @@ generated projection of it; `megamind-axi doctor` verifies they never drift.
   `.megamind/audit/backups/` and an audit record in `.megamind/audit/log.jsonl`.
 - `evolve` is dry-run by default and requires the plan id from the dry run as
   an approval token, so what you apply is exactly what you reviewed. Creating
-  a new top-level wiki additionally requires `--approve-new-wiki`.
+  a new top-level wiki additionally requires `--approve-new-wiki`; the apply
+  then registers the wiki with its card and index skeletons in the same step.
+- `adopt` follows the same gate for onboarding an existing wiki directory and
+  only ever adds files; `adopt --rollback` removes exactly what it created.
+- Access policy is enforced by the card, not the host: unknown or contradictory
+  classifications resolve to the most restrictive value.
 - Re-runs are idempotent: identical captures dedupe, applied plans become
   no-ops, and both are reported as structured successes.
 - No command ever touches the network.
@@ -120,19 +160,24 @@ generated projection of it; `megamind-axi doctor` verifies they never drift.
   [`skills/megamind/`](skills/megamind/)). Setup is explicit, local, and
   zero-network; uninstall by deleting the installed directory.
 
-## Honest limitations (v0.1)
+## Honest limitations
 
 Routing is lexical and deterministic: token overlap against routing cards,
 digests, and indexes with fixed weights. That is a feature (reproducible,
 explainable, offline) and a limitation (no synonym or semantic matching).
-Optional semantic/embedding adapters are deferred to a later release; see
-[docs/roadmap.md](docs/roadmap.md). English stopwords only for now.
+Optional local semantic adapters are deferred to a later release; see
+[docs/roadmap.md](docs/roadmap.md). English stopwords only for now. Preflight
+routes at the catalog level and never loads page content from other roots;
+running it before every substantive request is a host-side policy that no
+host integration enforces yet.
 
 ## Documentation
 
 - [AXI output contract](docs/axi.md) - schemas, formats, exit codes
 - [Architecture](docs/architecture.md) - modules, ladders, scoring weights
 - [Schemas and templates](docs/schemas.md) - registry, cards, pages, proposals
+- [Domain vocabulary](CONTEXT.md) - the settled domain terms
+- [Decision records](docs/adr/) - the hard-to-reverse tradeoffs
 - [Roadmap](docs/roadmap.md)
 - [Contributing](CONTRIBUTING.md) - development setup, tests, style
 - [Security policy](SECURITY.md)

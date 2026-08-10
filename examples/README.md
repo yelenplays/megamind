@@ -1,7 +1,8 @@
 # Examples
 
 `vault/` is a fully synthetic demo vault. Nothing in it describes real people,
-products, or companies. It demonstrates every v0.1 concept:
+products, or companies. Its registry uses schema v2, so it also demonstrates
+the federation card fields. It demonstrates every core concept:
 
 - **Routing**: four registered wikis with routing cards, digests, and indexes.
 - **Privacy boundaries**: `ProductWiki` is `public-reference`, `BrandingWiki`
@@ -27,6 +28,11 @@ megamind-axi route "quantum llama farming"                    # explicit no-matc
 
 megamind-axi review --today 2026-06-01
 megamind-axi doctor
+
+# The same vault as a fleet of one: catalog and model-aware preflight
+megamind-axi catalog --today 2026-06-01
+megamind-axi preflight "what is our brand color palette" --model-class cloud
+megamind-axi preflight "what is our brand color palette" --model-class local
 
 # Capture something new, inspect the proposal, then plan and apply it
 megamind-axi capture --text "Exports gain a rate-limit override for admins." --type decision

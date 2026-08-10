@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from .access import policy_findings
 from .capture import list_proposals
 from .fsops import MEGAMIND_DIR, PathEscapeError, resolve_contained
 from .links import extract_links, page_name_table, resolve_link
@@ -223,14 +224,68 @@ def _check_budgets(registry: Registry, findings: list[Finding]) -> None:
         )
 
 
+def _check_registration(root: Path, registry: Registry, findings: list[Finding]) -> None:
+    """Flag top-level directories that look like wikis but are not registered.
+
+    A wiki-shaped directory (it contains Markdown pages) outside every
+    registered wiki path is invisible to routing, review, and catalog until it
+    is registered, so doctor says so instead of staying green.
+    """
+    root_resolved = root.resolve()
+    registered = [wiki.path.rstrip("/") for wiki in registry.wikis]
+    for child in sorted(root_resolved.iterdir()):
+        if not child.is_dir() or child.is_symlink():
+            continue
+        name = child.name
+        if name.startswith(".") or name == MEGAMIND_DIR:
+            continue
+        if any(name == path or path.startswith(name + "/") for path in registered):
+            continue
+        if any(path.suffix == ".md" for path in child.rglob("*.md")):
+            findings.append(
+                _warning(
+                    "registration",
+                    name,
+                    f"{name} looks like a wiki but is not registered; it is invisible "
+                    "to route, review, and catalog until it is added to the registry",
+                )
+            )
+
+
+def _check_schema_version(registry: Registry, findings: list[Finding]) -> None:
+    if registry.version < 2:
+        findings.append(
+            _warning(
+                "registry",
+                f"{MEGAMIND_DIR}/registry.json",
+                "registry is schema v1; run 'megamind-axi migrate' to upgrade to v2 "
+                "(adds the access-policy card fields with restrictive defaults)",
+            )
+        )
+
+
+def _check_access_policy(registry: Registry, findings: list[Finding]) -> None:
+    for wiki in registry.wikis:
+        for finding in policy_findings(wiki):
+            entry = (
+                _error("access", wiki.path, finding.message)
+                if finding.severity == "error"
+                else _warning("access", wiki.path, finding.message)
+            )
+            findings.append(entry)
+
+
 def run_doctor(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     try:
         registry = load_registry(root)
     except RegistryError as error:
         return [_error("registry", f"{MEGAMIND_DIR}/registry.json", str(error))]
+    _check_schema_version(registry, findings)
     _check_budgets(registry, findings)
     _check_wikis(root, registry, findings)
+    _check_access_policy(registry, findings)
+    _check_registration(root, registry, findings)
     _check_router(root, registry, findings)
     _check_pages(root, registry, findings)
     _check_proposals(root, findings)

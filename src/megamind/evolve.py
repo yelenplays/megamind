@@ -19,7 +19,15 @@ from pathlib import Path
 from .capture import PROPOSALS_DIR
 from .fsops import append_audit, atomic_write, backup_existing, content_hash, resolve_contained
 from .models import Document, parse_document
-from .registry import Registry
+from .registry import (
+    REGISTRY_PATH,
+    ROUTER_FILENAME,
+    ROUTER_HEADER,
+    Registry,
+    WikiEntry,
+    generate_router,
+    serialize_registry,
+)
 
 PROPOSAL_MARKER = "<!-- megamind:proposal:{id} -->"
 
@@ -126,6 +134,135 @@ def _is_inside_registered_wiki(registry: Registry, page: str) -> bool:
     )
 
 
+def _new_wiki_identity(page_rel: str, destination_hint: str) -> tuple[str, str]:
+    """Derive the new wiki's (name, path): the hint, else the page's first segment.
+
+    A wiki is a directory, so a destination that leaves no directory above the
+    page (a bare top-level ``note.md``) is refused here: its wiki path would be
+    the page path itself, which cannot be both a file and a parent directory.
+    """
+    hint = destination_hint.rstrip("/")
+    path = hint if hint and not hint.endswith(".md") else page_rel.split("/", 1)[0]
+    if path.endswith(".md"):
+        raise EvolveError(
+            f"destination {page_rel} leaves no directory for a new wiki; pass "
+            "--dest <WikiName> or --dest <WikiName>/<page>.md"
+        )
+    return path.rsplit("/", 1)[-1], path
+
+
+def _name_keywords(name: str) -> list[str]:
+    """Seed routing keywords from a CamelCase wiki name ('LegalWiki' -> ['legal'])."""
+    words = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", name)
+    keywords = [word.lower() for word in words if word.lower() != "wiki"]
+    return keywords
+
+
+def _new_card(name: str, privacy: str, keywords: list[str]) -> str:
+    keyword_text = ", ".join(keywords)
+    return (
+        "---\n"
+        "megamind: routing-card\n"
+        f"wiki: {name}\n"
+        f"privacy: {privacy}\n"
+        f"keywords: [{keyword_text}]\n"
+        "---\n"
+        "\n"
+        f"# {name} routing card\n"
+        "\n"
+        "Answers: describe the questions this wiki answers.\n"
+        "Does not answer: describe what belongs elsewhere.\n"
+    )
+
+
+def _new_index(name: str, page_link: str, page_label: str) -> str:
+    return (
+        "---\n"
+        "megamind: index\n"
+        f"wiki: {name}\n"
+        "---\n"
+        "\n"
+        f"# {name} index\n"
+        "\n"
+        f"- [{page_label}]({page_link})\n"
+    )
+
+
+def _registration_changes(
+    root: Path,
+    registry: Registry,
+    page_rel: str,
+    destination_hint: str,
+    notes: list[str],
+) -> list[FileChange]:
+    """Changes that register a newly approved top-level wiki in the same apply.
+
+    The registry entry, routing card and index skeletons, and the regenerated
+    router all become plan changes, so the dry-run diff shows them and the
+    plan id covers them. Applying then leaves the wiki visible to route,
+    review, catalog, and doctor in one step. New wikis start with the
+    restrictive company-private posture: content is routable locally, cloud
+    access stays none until an owner sets an explicit policy.
+    """
+    name, wiki_path = _new_wiki_identity(page_rel, destination_hint)
+    existing = registry.wiki_by_name(name)
+    if existing is not None and existing.path != wiki_path:
+        raise EvolveError(
+            f"wiki name {name} is already registered at {existing.path}; "
+            "choose a different destination"
+        )
+    keywords = _name_keywords(name)
+    entry = WikiEntry(
+        name=name,
+        path=wiki_path,
+        privacy="company-private",
+        description="",
+        keywords=keywords,
+        card=f"{wiki_path}/CARD.md",
+        digest="",
+        index=f"{wiki_path}/INDEX.md",
+    )
+    new_registry = Registry(
+        version=registry.version, budgets=registry.budgets, wikis=[*registry.wikis, entry]
+    )
+
+    changes: list[FileChange] = []
+    page_label = page_rel.rsplit("/", 1)[-1].removesuffix(".md").replace("-", " ")
+    skeletons = {
+        entry.card: _new_card(name, entry.privacy, keywords),
+        entry.index: _new_index(name, page_rel[len(wiki_path) + 1 :], page_label),
+    }
+    for rel, content in skeletons.items():
+        if resolve_contained(root, rel).exists():
+            notes.append(f"{rel} already exists: kept as is")
+            continue
+        changes.append(FileChange(path=rel, old=None, new=content))
+
+    registry_text = serialize_registry(new_registry)
+    registry_path = resolve_contained(root, REGISTRY_PATH)
+    old_registry_text = (
+        registry_path.read_text(encoding="utf-8") if registry_path.is_file() else None
+    )
+    if old_registry_text != registry_text:
+        changes.append(
+            FileChange(path=REGISTRY_PATH.as_posix(), old=old_registry_text, new=registry_text)
+        )
+
+    router_text = generate_router(new_registry)
+    router_path = resolve_contained(root, ROUTER_FILENAME)
+    old_router_text = router_path.read_text(encoding="utf-8") if router_path.is_file() else None
+    if old_router_text is not None and ROUTER_HEADER not in old_router_text:
+        notes.append(f"{ROUTER_FILENAME} is hand-edited: not regenerated; doctor will flag it")
+    elif old_router_text != router_text:
+        changes.append(FileChange(path=ROUTER_FILENAME, old=old_router_text, new=router_text))
+
+    notes.append(
+        f"registers new wiki {name} with card/index skeletons and the restrictive "
+        "company-private default (cloud access none until an explicit policy is set)"
+    )
+    return changes
+
+
 def _merge_section(proposal_id: str, document: Document) -> str:
     captured = str(document.frontmatter.get("captured", "unknown-date"))
     knowledge_type = str(document.frontmatter.get("type", "fact"))
@@ -228,6 +365,12 @@ def plan(
             FileChange(path=old_rel, old=old_path.read_text(encoding="utf-8"), new=old_doc.render())
         )
         notes.append(f"{old_rel} will be marked superseded by {page_rel}")
+
+    if creates_new_wiki:
+        # Registration and skeletons are plan changes too: they appear in the
+        # reviewed diff and the plan id covers them, so an approved apply wires
+        # the new wiki into routing in the same step.
+        changes.extend(_registration_changes(root, registry, page_rel, hint, notes))
 
     payload = json.dumps(
         {
