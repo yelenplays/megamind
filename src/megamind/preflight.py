@@ -30,7 +30,7 @@ from .confidence import (
     route_confidence,
 )
 from .fsops import content_hash
-from .routing import tokenize
+from .routing import bounded_names, tokenize
 from .semantic import SemanticBackend, disabled_outcome
 from .semantic import rerank as semantic_rerank
 
@@ -276,11 +276,15 @@ def run_preflight(
             for (score, row, reasons, _signals), confidence in paired
             if confidence >= OFFER_FLOOR
         ]
-        for (_s, row, _r, _sig), confidence in paired:
-            if confidence < OFFER_FLOOR:
-                result.notes.append(
-                    f"below the no-match floor ({OFFER_FLOOR}): omitted {row.get('name')}"
-                )
+        too_weak = [
+            str(row.get("name"))
+            for (_s, row, _r, _sig), confidence in paired
+            if confidence < OFFER_FLOOR
+        ]
+        if too_weak:
+            result.notes.append(
+                f"below the no-match floor ({OFFER_FLOOR}): omitted {bounded_names(too_weak)}"
+            )
 
         # Thresholds, membership, and the authorized set all come from lexical
         # confidence in lexical order, before any reranking. `authorize` names
@@ -315,6 +319,17 @@ def run_preflight(
                     f"top candidates are within the ambiguity band ({AMBIGUITY_BAND}): "
                     "offer a choice instead of loading"
                 )
+                banded = set(authorized)
+                outside = [
+                    str(strong[index][1].get("name"))
+                    for index in range(len(strong))
+                    if index not in banded
+                ]
+                if outside:
+                    result.notes.append(
+                        f"outside the ambiguity band ({AMBIGUITY_BAND}): omitted "
+                        f"{bounded_names(outside)}"
+                    )
             else:
                 offer_indices = list(range(len(strong)))
                 result.notes.append(

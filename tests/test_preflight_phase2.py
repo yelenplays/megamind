@@ -87,6 +87,33 @@ def test_ambiguity_band_offers_near_ties(vault: Path) -> None:
     assert any("ambiguity band" in note for note in result.notes)
 
 
+def test_rows_outside_the_ambiguity_band_are_named(vault: Path) -> None:
+    """Every wiki dropped from the answer is stated, never silently absent."""
+    registry = load_registry(vault)
+    for name, keywords in (
+        ("ZedAlpha", ["zeppelin", "hangar"]),
+        ("ZedBeta", ["zeppelin", "hangar"]),
+        ("ZedGamma", ["zeppelin"]),
+    ):
+        (vault / name).mkdir()
+        registry.wikis.append(
+            WikiEntry(
+                name=name,
+                path=name,
+                privacy="public-reference",
+                keywords=keywords,
+                sensitivity="public-reference",
+            )
+        )
+    save_registry(vault, registry)
+
+    result = run_preflight([_ref(vault)], "zeppelin hangar", "local")
+    assert result.status == "ambiguous"
+    named = [str(offer["name"]) for offer in result.offers]
+    assert named == ["ZedAlpha", "ZedBeta"]
+    assert any("outside the ambiguity band" in note and "ZedGamma" in note for note in result.notes)
+
+
 # --- evidence packets ---------------------------------------------------------
 
 

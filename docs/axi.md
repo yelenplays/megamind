@@ -119,7 +119,9 @@ the full component rationale.
    (`diff_truncated`, `diff_lines_total`, `--full`), doctor findings to 50, and
    every other item list - review sections, catalog wikis, preflight matches
    and filtered entries, adopt file lists - to 20, each with an explicit note
-   and `--full` to lift it.
+   and `--full` to lift it. Notes themselves stay bounded: a note that reports
+   dropped candidates names at most 5 of them and then states how many more
+   there were, so a wide index cannot inflate the packet through `notes`.
 4. **Pre-computed aggregates**: home returns proposal/review/doctor counts;
    review returns an `aggregates` object; route returns context-budget
    accounting; doctor returns error/warning counts.

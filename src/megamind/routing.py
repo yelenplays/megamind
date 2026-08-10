@@ -138,6 +138,11 @@ WEIGHT_DIGEST = 1
 
 MAX_WIKIS_DESCENDED = 3
 
+# Notes are not counted against the context budget, so a note that lists what
+# was dropped carries its own cap: it names this many items and then states how
+# many more there were. Matches the truncation contract in docs/axi.md.
+OMISSION_NAMES = 5
+
 THRESHOLDS: dict[str, float] = {
     "reliance_floor": RELIANCE_FLOOR,
     "offer_floor": OFFER_FLOOR,
@@ -167,6 +172,14 @@ def tokenize(text: str) -> list[str]:
 
 def _token_set(text: str) -> set[str]:
     return set(tokenize(text))
+
+
+def bounded_names(names: list[str]) -> str:
+    """Render dropped items for a single note: the first few, then a count."""
+    shown = names[:OMISSION_NAMES]
+    remaining = len(names) - len(shown)
+    listed = ", ".join(shown)
+    return f"{listed}, and {remaining} more" if remaining else listed
 
 
 @dataclass
@@ -469,12 +482,15 @@ def route(
     # The no-match floor: evidence too weak to rely on or offer is dropped
     # with a note, so a weak hit never degrades into silent content loading.
     kept: list[RouteCandidate] = []
+    too_weak: list[str] = []
     for candidate in candidates:
         if candidate.confidence < OFFER_FLOOR:
-            notes.append(f"below the no-match floor ({OFFER_FLOOR}): omitted {candidate.path}")
+            too_weak.append(candidate.path)
         else:
             kept.append(candidate)
     candidates = kept
+    if too_weak:
+        notes.append(f"below the no-match floor ({OFFER_FLOOR}): omitted {bounded_names(too_weak)}")
 
     # Thresholds always decide on lexical confidence; the optional semantic
     # pass below may reorder but never recomputes them. `authorize` also names
@@ -484,13 +500,15 @@ def route(
     top_confidence = max((candidate.confidence for candidate in candidates), default=None)
     if decision == "load":
         loadable = set(authorized)
-        for index, candidate in enumerate(candidates):
-            if index not in loadable:
-                notes.append(
-                    f"below the reliance floor ({RELIANCE_FLOOR}): omitted {candidate.path}; "
-                    "a load packet carries only candidates that may be opened"
-                )
+        demoted = [
+            candidate.path for index, candidate in enumerate(candidates) if index not in loadable
+        ]
         candidates = [candidates[index] for index in authorized]
+        if demoted:
+            notes.append(
+                f"below the reliance floor ({RELIANCE_FLOOR}): omitted {bounded_names(demoted)}; "
+                "a load packet carries only candidates that may be opened"
+            )
     elif decision == "offer" and top_confidence is not None:
         if top_confidence < RELIANCE_FLOOR:
             notes.append(
@@ -504,6 +522,7 @@ def route(
             )
 
     selected: list[RouteCandidate] = []
+    over_budget: list[str] = []
     context_chars = 0
     for candidate in candidates:
         if len(selected) >= budgets.max_candidates:
@@ -517,11 +536,13 @@ def route(
         exposes_content = candidate.privacy in CONTENT_VISIBLE_PRIVACY or candidate.kind == "digest"
         counts = exposes_content and candidate.kind != "pointer" and candidate.chars > 0
         if counts and selected and context_chars + candidate.chars > budgets.max_context_chars:
-            notes.append(f"context budget reached: omitted {candidate.path}")
+            over_budget.append(candidate.path)
             continue
         selected.append(candidate)
         if counts:
             context_chars += candidate.chars
+    if over_budget:
+        notes.append(f"context budget reached: omitted {bounded_names(over_budget)}")
 
     # Optional local semantic rerank: it runs last, over the packet the lexical
     # ladder already selected, so thresholds, membership, and budgets are all

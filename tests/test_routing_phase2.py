@@ -65,6 +65,43 @@ def test_load_packet_carries_no_sub_floor_candidate(vault: Path) -> None:
     assert any("reliance floor" in note and "EchoWiki" in note for note in result.notes)
 
 
+def test_omission_notes_stay_bounded(vault: Path) -> None:
+    """Notes are not counted against the context budget, so they cap themselves."""
+    from megamind.registry import WikiEntry
+    from megamind.routing import OMISSION_NAMES
+
+    registry = load_registry(vault)
+    weak = [f"- [Widget note {n}](topics/widget-{n}.md) - synthetic" for n in range(12)]
+    links = "\n".join(["- [Alpha widget](topics/alpha.md) - synthetic", *weak])
+    write(vault, "WideWiki/INDEX.md", f"---\nmegamind: index\nwiki: WideWiki\n---\n\n{links}\n")
+    for rel in ["alpha", *[f"widget-{n}" for n in range(12)]]:
+        write(
+            vault,
+            f"WideWiki/topics/{rel}.md",
+            f"---\ntitle: {rel}\ntype: fact\nstatus: active\n---\n\nSynthetic {rel} page.\n",
+        )
+    registry.wikis.append(
+        WikiEntry(
+            name="WideWiki",
+            path="WideWiki",
+            privacy="public-reference",
+            description="Synthetic wide index.",
+            keywords=["widget"],
+            index="WideWiki/INDEX.md",
+        )
+    )
+    save_registry(vault, registry)
+
+    result = route(vault, load_registry(vault), "widget alpha zulu")
+    assert result.decision == "load"
+    assert [candidate.path for candidate in result.candidates] == ["WideWiki/topics/alpha.md"]
+    floor_notes = [note for note in result.notes if "reliance floor" in note]
+    assert len(floor_notes) == 1  # one aggregated note, not one per omitted candidate
+    assert floor_notes[0].count("WideWiki/topics/widget-") == OMISSION_NAMES
+    assert "and 7 more" in floor_notes[0]
+    assert len(result.notes) == 1
+
+
 def test_ambiguity_band_offers_a_choice(vault: Path) -> None:
     registry = load_registry(vault)
     from megamind.registry import WikiEntry
