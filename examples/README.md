@@ -30,9 +30,9 @@ megamind-axi review --today 2026-06-01
 megamind-axi doctor
 
 # The same vault as a fleet of one: catalog and model-aware preflight
-megamind-axi --root examples/vault catalog --today 2026-06-01
-megamind-axi --root examples/vault preflight "what is our brand color palette" --model-class cloud
-megamind-axi --root examples/vault preflight "what is our brand color palette" --model-class local
+megamind-axi catalog --today 2026-06-01
+megamind-axi preflight "what is our brand color palette" --model-class cloud
+megamind-axi preflight "what is our brand color palette" --model-class local
 
 # Capture something new, inspect the proposal, then plan and apply it
 megamind-axi capture --text "Exports gain a rate-limit override for admins." --type decision

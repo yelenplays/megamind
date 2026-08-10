@@ -5,7 +5,8 @@ wikis. Deterministic retrieval ladder, proposal-first evolution, local-only.
 The executable boundary is the `megamind-axi` AXI (TOON-default typed
 documents). Authoritative docs: `README.md` (product), `docs/axi.md` (output
 contract), `docs/architecture.md` (design and scoring weights),
-`docs/schemas.md` (file formats), `docs/roadmap.md` (scope).
+`docs/schemas.md` (file formats), `docs/roadmap.md` (scope), `CONTEXT.md`
+(settled domain vocabulary), `docs/adr/` (hard-to-reverse decisions).
 
 ## Working here
 

@@ -3,7 +3,7 @@
 Megamind grows in deliberate steps. Determinism and the proposal-first safety
 model are non-negotiable at every stage.
 
-## v0.1 (this release): deterministic foundation
+## v0.1 (shipped): deterministic foundation
 
 - Retrieval ladder (card -> digest -> index -> pages) with context budgets
 - Proposal-first capture with dedupe and provenance

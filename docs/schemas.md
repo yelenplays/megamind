@@ -72,12 +72,13 @@ v2 card fields, all optional:
 - `model_access`: `local` and `cloud`, each `full`, `digest-only`, or `none`.
   An empty axis derives from the privacy class: public-reference defaults to
   cloud `full`, personal-local to cloud `digest-only`, company-private to
-  cloud `none` (an explicit owner policy is required; doctor warns until one
-  is set), digest-only to `digest-only` on both axes, pointer-only to `none`
-  on both. Unknown, missing, broken, or unmigrated classifications always
-  derive restrictively, and explicit values that exceed a sensitivity or
-  privacy ceiling are clamped down (doctor reports the contradiction as an
-  `access` error; the restrictive value always wins).
+  cloud `none` (doctor warns until a `company-private` or `collaborative`
+  wiki sets an explicit cloud policy), digest-only to `digest-only` on both
+  axes, pointer-only to `none` on both. Unknown, missing, broken, or
+  unmigrated classifications always derive restrictively, and explicit values
+  that exceed a sensitivity or privacy ceiling are clamped down (doctor
+  reports the contradiction as an `access` error; the restrictive value
+  always wins).
 - `routing_mode`: `full` or `pointer`. Pointer wikis return location metadata
   and zero content. Pointer-only privacy forces pointer mode.
 - `source_policy`: a free-text `summary`, an `allowlist` path pointer, and
