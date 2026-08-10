@@ -252,9 +252,11 @@ def rollback_adoption(target: Path) -> tuple[list[str], list[str]]:
     """Remove exactly what the latest adoption created. Returns (removed, kept).
 
     A created file is removed only while its content still matches the hash
-    recorded at apply time; a file anyone edited since is kept and reported.
-    Directories are removed only when empty. The audit log itself always stays:
-    it is the record that the adoption and the rollback happened.
+    recorded at apply time; a file anyone edited since is kept and reported, as
+    is one that can no longer be read back as text, since an unverifiable file
+    is never assumed to be untouched. Directories are removed only when empty.
+    The audit log itself always stays: it is the record that the adoption and
+    the rollback happened.
 
     The record is validated and every path in it is resolved and contained
     before anything is removed, so a corrupt, truncated, or tampered record
@@ -280,7 +282,11 @@ def rollback_adoption(target: Path) -> tuple[list[str], list[str]]:
         if not path.is_file():
             kept.append(f"{rel} (already gone)")
             continue
-        current = content_hash(path.read_text(encoding="utf-8"))
+        try:
+            current = content_hash(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            kept.append(f"{rel} (unreadable since adoption: kept)")
+            continue
         if current != sha:
             kept.append(f"{rel} (modified since adoption: kept)")
             continue

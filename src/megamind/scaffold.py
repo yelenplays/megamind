@@ -7,6 +7,11 @@ Init also scaffolds canonical single-wiki roots (``init <path> --wiki Name``):
 the Karpathy layout of ``AGENTS.md``, an immutable human-curated ``raw/``
 layer, the AI-maintained compiled ``wiki/`` layer, and ``.megamind/`` state
 headed by the authoritative ``wiki-card.json``.
+
+A directory is one root shape or the other, never both: a registry vault and a
+canonical wiki root disagree about which card is authoritative, and discovery
+would have to guess. Init therefore refuses to add the second shape to a root
+that already carries the first, exactly as adopt does.
 """
 
 from __future__ import annotations
@@ -31,6 +36,13 @@ from .registry import (
 )
 
 STARTER_WIKI = "StarterWiki"
+
+
+class InitError(ValueError):
+    """The initialization request would produce an ambiguous or unsafe root."""
+
+    code = "init_invalid"
+
 
 STARTER_CARD = """---
 megamind: routing-card
@@ -170,6 +182,12 @@ def canonical_card_entry(name: str) -> WikiEntry:
 
 def init_wiki_root(root: Path, name: str) -> InitResult:
     """Scaffold a canonical single-wiki root. Safe to re-run; never overwrites."""
+    if registry_file(root).is_file():
+        raise InitError(
+            "target already has a Megamind registry; it is a registry vault, not a "
+            "canonical wiki root. Run init without --wiki, or add the wiki to the "
+            "registry instead"
+        )
     root.mkdir(parents=True, exist_ok=True)
     result = InitResult(root=root.name or ".", already_initialized=False)
     if card_file(root).is_file():
@@ -214,6 +232,12 @@ def _write_if_missing(root: Path, rel: str, content: str, result: InitResult) ->
 
 def init_vault(root: Path, starter: bool = True) -> InitResult:
     """Initialize a vault at root. Safe to re-run; never overwrites content."""
+    if card_file(root).is_file() and not registry_file(root).is_file():
+        raise InitError(
+            "target already has a canonical wiki card; it is a single-wiki root, not "
+            "a registry vault. Keep using the card, or initialize the vault in a "
+            "separate directory"
+        )
     root.mkdir(parents=True, exist_ok=True)
     result = InitResult(root=root.name or ".", already_initialized=False)
     if registry_file(root).is_file():

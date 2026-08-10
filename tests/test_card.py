@@ -51,6 +51,58 @@ def test_personal_sensitivity_caps_cloud_at_digest_only() -> None:
     assert policy.cloud == "digest-only"
 
 
+def test_unset_sensitivity_is_clamped_like_an_explicit_one() -> None:
+    """An omitted `sensitivity` must never be a way around the cloud ceiling."""
+    explicit = _entry(
+        "personal-local",
+        sensitivity="personal-local",
+        model_access=ModelAccess(local="full", cloud="full"),
+    )
+    derived = _entry("personal-local", model_access=ModelAccess(local="full", cloud="full"))
+    assert effective_policy(derived).cloud == effective_policy(explicit).cloud == "digest-only"
+    assert [f.message for f in policy_findings(derived)] == [
+        f.message for f in policy_findings(explicit)
+    ]
+
+
+def test_unclassified_card_clamps_explicit_cloud_full_to_none() -> None:
+    """A card that classifies nothing cannot hand a cloud model full access."""
+    wiki = _entry("", model_access=ModelAccess(local="full", cloud="full"))
+    policy = effective_policy(wiki)
+    assert (policy.local, policy.cloud) == ("full", "none")
+    assert any(f.severity == "error" and "cloud" in f.message for f in policy_findings(wiki))
+
+
+def test_company_sensitivity_defaults_cloud_to_none_over_a_public_privacy() -> None:
+    """Company/collaborative cloud access needs an explicit policy, never a default."""
+    for sensitivity in ("company-private", "collaborative"):
+        wiki = _entry("public-reference", sensitivity=sensitivity)
+        assert effective_policy(wiki).cloud == "none"
+        assert any("explicit cloud access policy" in f.message for f in policy_findings(wiki))
+        stated = _entry(
+            "public-reference",
+            sensitivity=sensitivity,
+            model_access=ModelAccess(local="full", cloud="full"),
+        )
+        assert effective_policy(stated).cloud == "full"
+
+
+def test_digest_only_privacy_keeps_its_documented_default_without_a_sensitivity() -> None:
+    """The unclassified ceiling must not silently narrow a classified privacy class."""
+    research = _entry("digest-only", model_access=ModelAccess(local="digest-only", cloud="none"))
+    assert effective_policy(research).cloud == "none"
+    derived = _entry("digest-only")
+    policy = effective_policy(derived)
+    assert (policy.sensitivity, policy.local, policy.cloud) == (
+        "unclassified",
+        "digest-only",
+        "digest-only",
+    )
+    assert policy_findings(derived) == []
+    pointer = effective_policy(_entry("pointer-only"))
+    assert (pointer.local, pointer.cloud, pointer.routing_mode) == ("none", "none", "pointer")
+
+
 def test_personal_defaults_to_redacted_catalog_visibility() -> None:
     policy = effective_policy(_entry("personal-local"))
     assert policy.catalog_visibility == "redacted"

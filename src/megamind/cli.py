@@ -42,7 +42,7 @@ from .preflight import MODEL_CLASSES, run_preflight
 from .registry import REGISTRY_PATH, Registry, RegistryError, load_registry, migrate_registry
 from .review import ReviewReport, review
 from .routing import RouteResult, route
-from .scaffold import init_vault, init_wiki_root
+from .scaffold import InitError, init_vault, init_wiki_root
 from .skillpack import skill_files, write_skill
 
 EXECUTABLE = "megamind-axi"
@@ -213,8 +213,6 @@ def cmd_catalog(
     refs = _resolve_roots(estate, root, root_label)
     catalog = build_catalog(refs, today=today)
     rows = visible_rows(catalog)
-    for row in rows:
-        row.pop("sort_key", None)
     notes = list(catalog.notes)
     shown = _capped(rows, full, notes, "wikis")
     doc: Doc = {
@@ -1029,6 +1027,10 @@ _ERROR_HELP: dict[str, list[str]] = {
     "plan_mismatch": [f"Run `{EXECUTABLE} evolve <proposal-id>` again and review the fresh diff"],
     "approval_required": ["Re-run with `--approve-new-wiki` only after explicit human approval"],
     "proposal_not_found": [f"Run `{EXECUTABLE} review` to list existing proposals"],
+    "init_invalid": [
+        f"Run `{EXECUTABLE} init <path>` for a registry vault",
+        f"Run `{EXECUTABLE} init <path> --wiki <Name>` for a canonical single-wiki root",
+    ],
     "capture_invalid": [
         f'Run `{EXECUTABLE} capture --text "<content>" --type '
         "fact|decision|hypothesis|procedure|example|guidance`"
@@ -1070,6 +1072,7 @@ def main(argv: list[str] | None = None) -> int:
         EvolveError,
         AdoptError,
         CardError,
+        InitError,
         PathEscapeError,
     ) as error:
         code = str(getattr(error, "code", "operation_failed"))

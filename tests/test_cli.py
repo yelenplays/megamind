@@ -594,6 +594,17 @@ def test_init_wiki_scaffolds_canonical_root(
     assert doc["status"] == "already_initialized"
 
 
+def test_init_wiki_on_a_registry_vault_is_a_typed_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    code, doc, _ = run_json(capsys, "init", str(vault), "--wiki", "SoloWiki")
+    assert code == 1
+    assert doc["code"] == "init_invalid"
+    assert doc["help"]
+    assert not (vault / ".megamind/wiki-card.json").exists()
+
+
 # --- catalog -------------------------------------------------------------------
 
 

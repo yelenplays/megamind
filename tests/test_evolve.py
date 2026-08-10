@@ -204,6 +204,27 @@ def test_supersede_missing_page_fails(vault: Path) -> None:
         )
 
 
+def test_bare_top_level_page_destination_is_refused_before_any_write(vault: Path) -> None:
+    """A new wiki needs a directory; a loose `note.md` would be its own wiki path."""
+    registry = load_registry(vault)
+    proposal_id = _capture(vault, "# Loose note\n\nSynthetic loose knowledge.")
+    before = {path.relative_to(vault) for path in vault.rglob("*")}
+    with pytest.raises(EvolveError, match="--dest <WikiName>"):
+        plan(vault, registry, proposal_id, destination="loose-note.md")
+    assert {path.relative_to(vault) for path in vault.rglob("*")} == before
+    assert not (vault / "loose-note.md").exists()
+
+    nested = plan(vault, registry, proposal_id, destination="LooseWiki/loose-note.md")
+    assert nested.creates_new_wiki
+    assert [change.path for change in nested.changes] == [
+        "LooseWiki/loose-note.md",
+        "LooseWiki/CARD.md",
+        "LooseWiki/INDEX.md",
+        ".megamind/registry.json",
+        "ROUTER.md",
+    ]
+
+
 def test_uncategorized_proposal_needs_destination(vault: Path) -> None:
     registry = load_registry(vault)
     proposal_id = _capture(vault, "Zeppelin maintenance schedule draft.")

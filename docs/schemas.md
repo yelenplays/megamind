@@ -74,11 +74,14 @@ v2 card fields, all optional:
   cloud `full`, personal-local to cloud `digest-only`, company-private to
   cloud `none` (doctor warns until a `company-private` or `collaborative`
   wiki sets an explicit cloud policy), digest-only to `digest-only` on both
-  axes, pointer-only to `none` on both. Unknown, missing, broken, or
-  unmigrated classifications always derive restrictively, and explicit values
-  that exceed a sensitivity or privacy ceiling are clamped down (doctor
-  reports the contradiction as an `access` error; the restrictive value
-  always wins).
+  axes, pointer-only to `none` on both. A `company-private` or `collaborative`
+  sensitivity defaults cloud to `none` whatever its privacy class implies.
+  Unknown, missing, broken, or unmigrated classifications always derive
+  restrictively, and explicit values that exceed a sensitivity or privacy
+  ceiling are clamped down (doctor reports the contradiction as an `access`
+  error; the restrictive value always wins). Ceilings key on the *derived*
+  sensitivity, so an entry that omits `sensitivity` is clamped exactly like
+  one that spells out the value its privacy class implies.
 - `routing_mode`: `full` or `pointer`. Pointer wikis return location metadata
   and zero content. Pointer-only privacy forces pointer mode.
 - `source_policy`: a free-text `summary`, an `allowlist` path pointer, and
@@ -134,6 +137,12 @@ credentials, secrets, or verbatim sensitive prompts. `megamind-axi adopt
 it detects existing index/hub pages and surrogate digests and points the new
 card at them instead of replacing anything, and `adopt --rollback` removes
 exactly the generated material.
+
+A directory carries one root shape or the other, never both: a registry vault
+and a canonical wiki root disagree about which card is authoritative, so
+discovery would have to guess. Both `init` and `adopt` refuse to add the
+second shape to a root that already carries the first (`init_invalid`,
+`adopt_invalid`).
 
 
 ## Frontmatter subset

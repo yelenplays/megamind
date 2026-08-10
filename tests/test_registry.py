@@ -268,3 +268,31 @@ def test_migrate_upgrades_v1_and_is_idempotent(tmp_path: Path) -> None:
     again, changed_again, _ = migrate_registry(tmp_path)
     assert not changed_again
     assert again.version == 2
+
+
+def test_migrate_writes_the_same_sensitivity_the_access_policy_derives(tmp_path: Path) -> None:
+    """One mapping, two callers: migrate must not invent its own classification."""
+    from megamind.access import effective_policy
+    from megamind.registry import migrate_registry
+
+    wikis = [
+        {"name": name, "path": name, "privacy": privacy}
+        for name, privacy in (
+            ("Pub", "public-reference"),
+            ("Corp", "company-private"),
+            ("Diary", "personal-local"),
+            ("Digest", "digest-only"),
+            ("Box", "pointer-only"),
+        )
+    ]
+    _write_json(tmp_path, ".megamind/registry.json", {"version": 1, "wikis": wikis})
+    before = {
+        str(wiki["name"]): effective_policy(
+            WikiEntry(name=str(wiki["name"]), path=str(wiki["path"]), privacy=str(wiki["privacy"]))
+        ).sensitivity
+        for wiki in wikis
+    }
+    registry, _changed, _notes = migrate_registry(tmp_path)
+    for wiki in registry.wikis:
+        assert (wiki.sensitivity or "unclassified") == before[wiki.name]
+        assert effective_policy(wiki).sensitivity == before[wiki.name]

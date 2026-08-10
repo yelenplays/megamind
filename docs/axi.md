@@ -87,8 +87,8 @@ help[2]:
 
 `usage_error`, `not_initialized`, `registry_invalid`, `card_invalid`,
 `capture_invalid`, `proposal_not_found`, `plan_mismatch`, `approval_required`,
-`evolve_invalid`, `adopt_invalid`, `path_escape`, `frontmatter_invalid`,
-`io_error`. Malformed vault content and
+`evolve_invalid`, `adopt_invalid`, `init_invalid`, `path_escape`,
+`frontmatter_invalid`, `io_error`. Malformed vault content and
 filesystem failures are reported as `frontmatter_invalid` and `io_error`
 documents with exit 1; no invocation ever ends in a traceback. Messages never
 include machine-specific absolute paths from inside the vault model; registry

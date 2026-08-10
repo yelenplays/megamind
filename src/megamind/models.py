@@ -58,6 +58,17 @@ SENSITIVITY_CLASSES: tuple[str, ...] = (
 
 MODEL_ACCESS_LEVELS: tuple[str, ...] = ("full", "digest-only", "none")
 
+# The one authoritative privacy-to-sensitivity mapping. Both the access policy
+# (read time) and `migrate` (write time) derive from this table, so a v1 class
+# can never mean one sensitivity when read and another when migrated. Privacy
+# classes absent here carry no sensitivity of their own and derive to
+# "unclassified"; their own access ceiling governs instead.
+PRIVACY_SENSITIVITY: dict[str, str] = {
+    "public-reference": "public-reference",
+    "company-private": "company-private",
+    "personal-local": "personal-local",
+}
+
 ROUTING_MODES: tuple[str, ...] = ("full", "pointer")
 
 ALLOWLIST_STATUSES: tuple[str, ...] = ("approved", "proposed", "none")

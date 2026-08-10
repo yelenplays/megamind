@@ -20,7 +20,9 @@ Re-running refreshes the generated `ROUTER.md` only while it still carries
 the generated-file header. With `--wiki NAME` it scaffolds a canonical
 single-wiki root instead of a vault (`layout: canonical-wiki`): `AGENTS.md`,
 immutable `raw/`, `wiki/index.md` and `wiki/log.md`, and `.megamind/` state
-headed by `wiki-card.json`.
+headed by `wiki-card.json`. A directory is one shape or the other: adding the
+second shape to a root that already carries the first is refused with
+`init_invalid`.
 
 ## megamind-axi migrate
 
@@ -117,5 +119,5 @@ directory. Setup never makes network calls or edits shell/provider config.
 `megamind/error/v1` with a stable `code` (`usage_error`, `not_initialized`,
 `registry_invalid`, `card_invalid`, `capture_invalid`, `proposal_not_found`,
 `plan_mismatch`, `approval_required`, `evolve_invalid`, `adopt_invalid`,
-`path_escape`, `frontmatter_invalid`, `io_error`), a sanitized `message`, and
-`help[]` with corrective commands.
+`init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`), a sanitized
+`message`, and `help[]` with corrective commands.

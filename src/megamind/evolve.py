@@ -135,12 +135,19 @@ def _is_inside_registered_wiki(registry: Registry, page: str) -> bool:
 
 
 def _new_wiki_identity(page_rel: str, destination_hint: str) -> tuple[str, str]:
-    """Derive the new wiki's (name, path): the hint, else the page's first segment."""
+    """Derive the new wiki's (name, path): the hint, else the page's first segment.
+
+    A wiki is a directory, so a destination that leaves no directory above the
+    page (a bare top-level ``note.md``) is refused here: its wiki path would be
+    the page path itself, which cannot be both a file and a parent directory.
+    """
     hint = destination_hint.rstrip("/")
-    if hint and not hint.endswith(".md"):
-        path = hint
-    else:
-        path = page_rel.split("/", 1)[0]
+    path = hint if hint and not hint.endswith(".md") else page_rel.split("/", 1)[0]
+    if path.endswith(".md"):
+        raise EvolveError(
+            f"destination {page_rel} leaves no directory for a new wiki; pass "
+            "--dest <WikiName> or --dest <WikiName>/<page>.md"
+        )
     return path.rsplit("/", 1)[-1], path
 
 

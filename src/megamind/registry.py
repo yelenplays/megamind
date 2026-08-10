@@ -24,6 +24,7 @@ from .models import (
     CATALOG_VISIBILITIES,
     MODEL_ACCESS_LEVELS,
     PRIVACY_CLASSES,
+    PRIVACY_SENSITIVITY,
     ROUTING_MODES,
     SENSITIVITY_CLASSES,
 )
@@ -523,13 +524,6 @@ def save_registry(root: Path, registry: Registry) -> Path:
     return atomic_write(root, REGISTRY_PATH, serialize_registry(registry))
 
 
-_PRIVACY_SENSITIVITY = {
-    "public-reference": "public-reference",
-    "company-private": "company-private",
-    "personal-local": "personal-local",
-}
-
-
 def migrate_registry(root: Path) -> tuple[Registry, bool, list[str]]:
     """Upgrade a v1 registry to v2 in place. Returns (registry, changed, notes).
 
@@ -544,7 +538,7 @@ def migrate_registry(root: Path) -> tuple[Registry, bool, list[str]]:
         return registry, False, []
     notes: list[str] = []
     for wiki in registry.wikis:
-        wiki.sensitivity = _PRIVACY_SENSITIVITY.get(wiki.privacy, "")
+        wiki.sensitivity = PRIVACY_SENSITIVITY.get(wiki.privacy, "")
         if wiki.privacy == "company-private":
             notes.append(
                 f"{wiki.name}: cloud access left unset (defaults to none); "

@@ -120,6 +120,21 @@ def test_rollback_keeps_files_modified_since_adoption(tmp_path: Path) -> None:
     assert "AGENTS.md" not in removed
 
 
+def test_rollback_keeps_an_unreadable_file_and_still_finishes(tmp_path: Path) -> None:
+    """An unverifiable file is kept, never a reason to abandon the rollback midway."""
+    target = _legacy_wiki(tmp_path)
+    computed = plan_adoption(target)
+    apply_adoption(computed, approved_plan_id=computed.plan_id)
+    agents = target / "AGENTS.md"
+    agents.write_bytes(b"\xff\xfe not valid utf-8")
+    removed, kept = rollback_adoption(target)
+    assert agents.is_file()
+    assert any("AGENTS.md" in entry and "kept" in entry for entry in kept)
+    assert ".megamind/wiki-card.json" in removed
+    assert not (target / ".megamind/wiki-card.json").exists()
+    assert not list((target / ".megamind" / "audit").glob("adoption-*.json"))
+
+
 def _adopted(tmp_path: Path) -> tuple[Path, Path]:
     """An adopted legacy wiki plus the on-disk rollback record it produced."""
     target = _legacy_wiki(tmp_path)

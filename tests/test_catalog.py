@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -111,6 +112,31 @@ def test_hidden_wiki_is_withheld_without_name_or_root(tmp_path: Path) -> None:
     assert "SecretWiki" not in json.dumps(withheld)
     assert str(vault) not in json.dumps(withheld)
     assert withheld[0]["catalog_visibility"] == "hidden"
+
+
+def test_hidden_wikis_sort_last_so_their_position_leaks_no_ranking(tmp_path: Path) -> None:
+    estate = _build_estate(tmp_path)
+    vault = estate / "vault"
+    registry = load_registry(vault)
+    for name in ("AaaSecret", "ZzzSecret"):
+        registry.wikis.append(
+            WikiEntry(
+                name=name,
+                path=name,
+                privacy="personal-local",
+                keywords=[name.lower()],
+                catalog_visibility="hidden",
+            )
+        )
+    save_registry(vault, registry)
+    rows = _rows(estate)
+    statuses = [str(row.get("status", "ok")) for row in rows]
+    assert statuses.count("redacted") == 2
+    assert statuses[-2:] == ["redacted", "redacted"]
+    projection = render_projection(build_catalog(discover_roots(estate)))
+    headings = re.findall(r"^## (.*)$", projection, re.M)
+    assert headings[-2:] == ["(withheld wiki)", "(withheld wiki)"]
+    assert "(withheld wiki)" not in headings[:-2]
 
 
 def test_redacted_wiki_keeps_only_safe_fields(tmp_path: Path) -> None:

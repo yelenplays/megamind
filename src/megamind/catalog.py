@@ -213,12 +213,24 @@ def redact_row(row: dict[str, object]) -> dict[str, object]:
             "status": "redacted",
             "catalog_visibility": "hidden",
             "note": "a wiki is withheld from this projection by its card policy",
-            "sort_key": f"~{content_hash(str(row.get('root')) + str(row.get('name')))}",
         }
     kept = {key: row[key] for key in _REDACTED_KEPT if key in row}
     kept["redacted"] = True
     kept["redacted_fields"] = sorted(set(row) - set(_REDACTED_KEPT))
     return kept
+
+
+def _sort_key(row: dict[str, object]) -> tuple[int, str]:
+    """Order rows by root/name, but sort withheld wikis last and unranked.
+
+    A hidden wiki's position in the projection must not leak where its name
+    sorts, so hidden rows go after every visible row and are ordered among
+    themselves by a content hash of their identity instead of by that identity.
+    """
+    identity = f"{row.get('root')}/{row.get('name')}"
+    if str(row.get("catalog_visibility", "")) == "hidden":
+        return (1, content_hash(identity))
+    return (0, identity)
 
 
 def build_catalog(refs: list[RootRef], today: date | None = None) -> Catalog:
@@ -275,9 +287,7 @@ def build_catalog(refs: list[RootRef], today: date | None = None) -> Catalog:
                 f"{ref.label} carries no Megamind registry and no wiki card: "
                 "nothing to project for this root"
             )
-    catalog.rows.sort(
-        key=lambda row: str(row.get("sort_key") or f"{row.get('root')}/{row.get('name')}")
-    )
+    catalog.rows.sort(key=_sort_key)
     return catalog
 
 

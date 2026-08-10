@@ -108,7 +108,9 @@ visibility. Unset axes derive from the privacy class; unknown, unclassified,
 broken, or unmigrated classifications derive restrictively (cloud `none`).
 Explicit values that contradict a sensitivity or privacy ceiling are clamped
 down and reported as doctor `access` errors; the restrictive value always
-wins, and no host or later routing layer can widen the decision.
+wins, and no host or later routing layer can widen the decision. Ceilings key
+on the derived sensitivity, never the raw field, so leaving `sensitivity`
+unset is never a way to escape a clamp.
 
 ## The fleet catalog and preflight
 
@@ -117,8 +119,10 @@ one generated, read-only projection: stable ordering, a content-hashed
 `catalog_hash`, explicit broken/unreachable/stale/redacted entries, and a
 byte-stable human-readable rendering that `--check-projection` drift-checks
 against the cards. Cards stay authoritative; the catalog is always a
-projection and redaction happens at the projection boundary. Page content is
-never read.
+projection and redaction happens at the projection boundary. Rows sort by
+root and name, except wikis their card withholds entirely: those sort last,
+ordered by a hash of their identity, so a withheld row's position leaks no
+ranking. Page content is never read.
 
 `preflight` routes a substantive request at the catalog level under the host's
 declared model class. Lexical card evidence only (triggers/keywords, name,
