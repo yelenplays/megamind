@@ -172,8 +172,8 @@ def cmd_init(target: str, starter: bool, wiki_name: str | None) -> tuple[Doc, in
         "created": result.created,
         "skipped": result.skipped,
         "help": _help(
-            f"Run `{EXECUTABLE} --root {target}` for the vault home view",
-            f"Run `{EXECUTABLE} --root {target} doctor` to validate the vault",
+            f"Run `{EXECUTABLE} --root {shlex.quote(target)}` for the vault home view",
+            f"Run `{EXECUTABLE} --root {shlex.quote(target)} doctor` to validate the vault",
         ),
     }
     return doc, 0
@@ -351,12 +351,13 @@ def cmd_adopt(
     steps: list[str] = []
     if computed.status != "noop":
         steps.append(
-            f"Run `{EXECUTABLE} adopt {target} --apply --plan-id {computed.plan_id}` "
+            f"Run `{EXECUTABLE} adopt {shlex.quote(target)} "
+            f"--apply --plan-id {shlex.quote(computed.plan_id)}` "
             "after human review of this plan"
         )
     steps.append(
         "Adoption never modifies existing pages; rollback with "
-        f"`{EXECUTABLE} adopt {target} --rollback`"
+        f"`{EXECUTABLE} adopt {shlex.quote(target)} --rollback`"
     )
     doc["help"] = steps
     return doc, 0
@@ -440,7 +441,8 @@ def cmd_capture(
         "destination": result.suggested_destination,
         "reasons": result.route_reasons[:3],
         "help": _help(
-            f"Run `{EXECUTABLE} evolve {result.proposal_id}` to plan applying it (dry run)",
+            f"Run `{EXECUTABLE} evolve {shlex.quote(result.proposal_id)}` "
+            "to plan applying it (dry run)",
             f"Run `{EXECUTABLE} review` to see all open proposals",
         ),
     }
@@ -505,17 +507,21 @@ def cmd_evolve(
     steps: list[str] = []
     if computed.action != "noop":
         apply_cmd = (
-            f"{EXECUTABLE} evolve {computed.proposal_id} --apply --plan-id {computed.plan_id}"
+            f"{EXECUTABLE} evolve {shlex.quote(computed.proposal_id)} "
+            f"--apply --plan-id {shlex.quote(computed.plan_id)}"
         )
         if destination:
-            apply_cmd += f" --dest {destination}"
+            apply_cmd += f" --dest {shlex.quote(destination)}"
         if supersedes:
-            apply_cmd += f" --supersedes {supersedes}"
+            apply_cmd += f" --supersedes {shlex.quote(supersedes)}"
         if computed.creates_new_wiki:
             apply_cmd += " --approve-new-wiki"
         steps.append(f"Run `{apply_cmd}` after human review of this diff")
     if truncated:
-        steps.append(f"Run `{EXECUTABLE} evolve {computed.proposal_id} --full` for the whole diff")
+        steps.append(
+            f"Run `{EXECUTABLE} evolve {shlex.quote(computed.proposal_id)} --full` "
+            "for the whole diff"
+        )
     if not steps:
         steps.append(f"Run `{EXECUTABLE} review` to see what still needs attention")
     doc["help"] = steps
@@ -559,11 +565,12 @@ def cmd_review(root: Path, registry: Registry, today: date | None, full: bool) -
     if report.uncategorized_proposals:
         first = report.uncategorized_proposals[0].rsplit("/", 1)[-1].removesuffix(".md")
         steps.append(
-            f"Run `{EXECUTABLE} evolve {first} --dest <WikiName>` to categorize a proposal"
+            f"Run `{EXECUTABLE} evolve {shlex.quote(first)} --dest <WikiName>` "
+            "to categorize a proposal"
         )
     elif report.open_proposals:
         first = report.open_proposals[0].rsplit("/", 1)[-1].removesuffix(".md")
-        steps.append(f"Run `{EXECUTABLE} evolve {first}` to plan applying a proposal")
+        steps.append(f"Run `{EXECUTABLE} evolve {shlex.quote(first)}` to plan applying a proposal")
     if report.dead_links or report.superseded_still_linked:
         steps.append(f"Run `{EXECUTABLE} doctor` for the full integrity picture")
     if not steps:

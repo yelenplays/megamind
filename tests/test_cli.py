@@ -800,6 +800,9 @@ def test_help_entries_never_leave_a_command_unterminated(
 ) -> None:
     """Every backticked help entry must close its backtick and parse as one command."""
     vault = build_vault(tmp_path)
+    legacy = tmp_path / "Legacy Wiki"
+    legacy.mkdir()
+    (legacy / "README.md").write_text("# Legacy\n", encoding="utf-8")
     for argv in (
         ["--root", str(vault)],
         ["--root", str(vault), "catalog"],
@@ -808,6 +811,8 @@ def test_help_entries_never_leave_a_command_unterminated(
         ["--root", str(vault), "route", "pricing"],
         ["--root", str(vault), "review", "--today", "2026-08-10"],
         ["--root", str(vault), "doctor"],
+        ["adopt", str(legacy)],
+        ["init", str(tmp_path / "New Vault")],
     ):
         _, doc, _ = run_json(capsys, *argv)
         for entry in doc["help"]:
@@ -815,6 +820,62 @@ def test_help_entries_never_leave_a_command_unterminated(
             for command in entry.split("`")[1::2]:
                 if command.startswith("megamind-axi "):
                     assert shlex.split(command)[0] == "megamind-axi", (argv, entry)
+
+
+def _help_command(doc: dict[str, Any], marker: str) -> list[str]:
+    """The argv an agent gets by running the help entry that carries `marker`."""
+    entry = next(item for item in doc["help"] if marker in item)
+    argv = shlex.split(entry.split("`")[1])
+    assert argv[0] == "megamind-axi", entry
+    return argv[1:]
+
+
+def test_adopt_help_commands_run_verbatim_for_a_space_containing_target(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """help[] is the agent's exact next command, so an argv path must survive re-parsing."""
+    target = tmp_path / "Legacy Wiki"
+    target.mkdir()
+    (target / "README.md").write_text("# Legacy\n", encoding="utf-8")
+
+    _, planned, _ = run_json(capsys, "adopt", str(target))
+    apply_argv = _help_command(planned, "--apply")
+    assert str(target) in apply_argv  # the whole path is one argument
+    code, applied, _ = run_json(capsys, *apply_argv)
+    assert code == 0
+    assert applied["status"] == "applied"
+
+    rollback_argv = _help_command(planned, "--rollback")
+    assert str(target) in rollback_argv
+    code, rolled, _ = run_json(capsys, *rollback_argv)
+    assert code == 0
+    assert rolled["status"] == "rolled_back"
+    assert (target / "README.md").is_file()
+
+
+def test_init_help_commands_run_verbatim_for_a_space_containing_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "My Vault"
+    _, doc, _ = run_json(capsys, "init", str(target))
+    home_argv = _help_command(doc, "--root")
+    assert str(target) in home_argv
+    code, home, _ = run_json(capsys, *home_argv)
+    assert code == 0
+    assert home["initialized"] is True
+
+
+def test_evolve_help_command_runs_verbatim_with_a_quoted_destination(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    pid = _capture_id(capsys, vault, "Pricing model gains an annual discount tier.")
+    _, planned, _ = run_json(capsys, "--root", str(vault), "evolve", pid, "--dest", "ProductWiki")
+    apply_argv = _help_command(planned, "--apply")
+    assert "ProductWiki" in apply_argv
+    code, applied, _ = run_json(capsys, "--root", str(vault), *apply_argv)
+    assert code == 0
+    assert applied["status"] == "applied"
 
 
 def test_route_help_shell_quotes_the_query(
