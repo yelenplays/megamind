@@ -16,14 +16,15 @@ with a stable `schema_version`:
 | --- | --- |
 | `megamind/home/v1` | `megamind-axi` (no arguments) |
 | `megamind/init-result/v1` | `init` (vault or `--wiki` canonical root) |
-| `megamind/route-result/v1` | `route` |
+| `megamind/route-result/v2` | `route` |
 | `megamind/capture-result/v1` | `capture` |
 | `megamind/evolve-plan/v1` | `evolve` (dry run) |
 | `megamind/evolve-result/v1` | `evolve --apply` |
 | `megamind/review-report/v1` | `review` |
 | `megamind/doctor-report/v1` | `doctor` |
 | `megamind/catalog/v1` | `catalog` |
-| `megamind/preflight-result/v1` | `preflight` |
+| `megamind/preflight-result/v2` | `preflight` |
+| `megamind/confidence-report/v1` | `assess claim`, `assess answer` |
 | `megamind/adopt-plan/v1` | `adopt` (dry run) |
 | `megamind/adopt-result/v1` | `adopt --apply`, `adopt --rollback` |
 | `megamind/migrate-result/v1` | `migrate` |
@@ -31,12 +32,26 @@ with a stable `schema_version`:
 | `megamind/setup-plan/v1`, `megamind/setup-result/v1` | `setup skill` |
 | `megamind/error/v1` | any failure |
 
+The v2 retrieval documents are additive over their v1 shapes: every v1 field
+keeps its name and meaning, and v2 adds route confidence, thresholds,
+semantic-rerank outcome, and per-candidate freshness (see below).
+
 Example (`megamind-axi route "pricing"` on the examples vault):
 
 ```toon
-schema_version: megamind/route-result/v1
+schema_version: megamind/route-result/v2
 query: pricing
 matched: true
+decision: load
+confidence: 1.0
+thresholds:
+  reliance_floor: 0.75
+  offer_floor: 0.25
+  ambiguity_band: 0.05
+semantic:
+  status: disabled
+  backend: none
+  reason: semantic reranking not enabled
 candidates[1]{path,kind,score,reason}:
   ProductWiki/topics/pricing-v2.md,page,7,"keyword match: pricing"
 context_chars: 446
@@ -45,8 +60,50 @@ max_candidates: 5
 notes[0]:
 help[2]:
   Open `ProductWiki/topics/pricing-v2.md` first; it scored highest
-  "Run `megamind-axi route pricing --fields path,kind,score,privacy,reasons` for detail"
+  "Run `megamind-axi route pricing --fields path,kind,score,confidence,reasons` for detail"
 ```
+
+## Route confidence, thresholds, and the semantic layer
+
+Route, claim, and answer confidence are three separate kinds; the shared
+reliance floor is 0.75. Route confidence is a deterministic blend of the
+strongest per-token routing signal (declared triggers/keywords and index
+labels count full, free text least) and query-token coverage; the rubric
+constants live in `megamind.confidence` and are pinned by calibration
+fixtures. `route` and `preflight` apply fixed thresholds:
+
+- at or above 0.75 (`reliance_floor`) the route may load automatically
+  (`decision: load`, preflight `status: matched`);
+- from 0.25 (`offer_floor`) up to 0.75, or whenever the top candidates sit
+  inside a 0.05 `ambiguity_band`, the route offers choices without loading
+  (`decision: offer`, preflight `status: ambiguous`, no `allows` paths or
+  follow-up commands on offers);
+- below 0.25 the evidence is dropped and the result is a definitive no-match
+  that stays quiet.
+
+The emitted `thresholds` block makes every decision self-describing.
+`unknown` is a first-class confidence value (no evidence to score): it is
+emitted as the literal string, never as a fabricated number, and it never
+meets the floor.
+
+`--semantic` opts into the local char-ngram reranker on both `route` and
+`preflight`. It only reorders candidates the lexical baseline already
+surfaced and model-access filtering already authorized; it never changes
+membership, thresholds, budgets, or access, and it runs fully offline. The
+`semantic` block is typed: `disabled` (default), `ok`, `unavailable`, or
+`error`, with a `reason` whenever it is not `ok`; every non-`ok` state
+returns the untouched lexical order. Candidates additionally carry
+`freshness` (`updated`, `age_days`, `stale`), computed only when `--today` is
+passed and otherwise explicitly unknown.
+
+`assess claim` scores one claim from `--source quality:origin` evidence
+(`primary`, `synthesis`, `hypothesis`, `prior`; `--ineligible-source` counts
+for nothing), `--lifecycle`, `--freshness`, and `--contradicted`; sources
+derived from one origin count once, unresolved contradictions freeze the
+claim below the floor, and stale or undated evidence can never reach it.
+`assess answer --claim SCORE|unknown ...` caps an answer at its weakest
+materially relied-upon claim. Both emit `megamind/confidence-report/v1` with
+the full component rationale.
 
 ## The ten principles, applied
 
@@ -121,6 +178,9 @@ projection via `--emit-projection`, drift-checked with `--check-projection`).
 path is returned, pointer wikis expose location metadata only, digest-only
 wikis allow only their approved digest, and the deterministic `preflight_id`
 binds the request hash, catalog snapshot, model class, and result so a host
-can prove preflight ran without storing the raw request. Statuses are
-definitive: `matched`, `ambiguous`, `no-match`, `unavailable`, and
-`privacy-filtered` are all structured successes with exit 0.
+can prove preflight ran without storing the raw request. The route-confidence
+thresholds above decide the status: a confident match carries per-match
+confidence, freshness, and lexical/semantic evidence; below-floor matches
+become offers that expose no loadable paths. Statuses are definitive:
+`matched`, `ambiguous`, `no-match`, `unavailable`, and `privacy-filtered`
+are all structured successes with exit 0.

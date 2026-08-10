@@ -34,6 +34,15 @@ from .catalog import (
     render_projection,
     visible_rows,
 )
+from .confidence import (
+    LIFECYCLE_CAP,
+    RELIANCE_FLOOR,
+    SOURCE_QUALITIES,
+    Confidence,
+    Source,
+    answer_confidence,
+    claim_confidence,
+)
 from .doctor import run_doctor
 from .evolve import EvolveError, apply_plan, plan
 from .fsops import PathEscapeError
@@ -43,6 +52,7 @@ from .registry import REGISTRY_PATH, Registry, RegistryError, load_registry, mig
 from .review import ReviewReport, review
 from .routing import RouteResult, route
 from .scaffold import InitError, init_vault, init_wiki_root
+from .semantic import NgramBackend, SemanticBackend
 from .skillpack import skill_files, write_skill
 
 EXECUTABLE = "megamind-axi"
@@ -52,7 +62,19 @@ PURPOSE = (
 )
 
 ROUTE_FIELDS_DEFAULT = ["path", "kind", "score", "reason"]
-ROUTE_FIELDS_ALL = ["path", "kind", "score", "wiki", "privacy", "chars", "reason", "reasons"]
+ROUTE_FIELDS_ALL = [
+    "path",
+    "kind",
+    "score",
+    "wiki",
+    "privacy",
+    "chars",
+    "confidence",
+    "freshness",
+    "semantic_score",
+    "reason",
+    "reasons",
+]
 DIFF_LINE_LIMIT = 60
 SECTION_ITEM_LIMIT = 20
 FINDINGS_LIMIT = 50
@@ -253,17 +275,21 @@ def cmd_preflight(
     root_label: str,
     today: date | None,
     full: bool,
+    semantic: SemanticBackend | None = None,
 ) -> tuple[Doc, int]:
     refs = _resolve_roots(estate, root, root_label)
     catalog = build_catalog(refs, today=today)
-    result = run_preflight(refs, request, model_class, catalog)
+    result = run_preflight(refs, request, model_class, catalog, semantic=semantic)
     notes = list(result.notes)
     doc: Doc = {
-        "schema_version": "megamind/preflight-result/v1",
+        "schema_version": "megamind/preflight-result/v2",
         "request": result.request,
         "request_hash": result.request_hash,
         "model_class": result.model_class,
         "status": result.status,
+        "confidence": result.confidence,
+        "thresholds": result.thresholds,
+        "semantic": result.semantic,
         "preflight_id": result.preflight_id,
         "catalog_hash": result.catalog_hash,
         "matches": _capped(result.matches, full, notes, "matches"),
@@ -386,30 +412,50 @@ def _route_row(candidate: Doc, fields: list[str]) -> Doc:
         "wiki": candidate["wiki"],
         "privacy": candidate["privacy"],
         "chars": candidate["chars"],
+        "confidence": candidate["confidence"],
+        "freshness": candidate["freshness"],
+        "semantic_score": candidate["semantic_score"],
         "reason": reasons[0] if reasons else "",
         "reasons": " | ".join(reasons),
     }
     return {field: values[field] for field in fields}
 
 
-def cmd_route(root: Path, registry: Registry, query: str, fields: list[str]) -> tuple[Doc, int]:
-    result: RouteResult = route(root, registry, query)
+def cmd_route(
+    root: Path,
+    registry: Registry,
+    query: str,
+    fields: list[str],
+    today: date | None = None,
+    semantic: SemanticBackend | None = None,
+) -> tuple[Doc, int]:
+    result: RouteResult = route(root, registry, query, today=today, semantic=semantic)
     doc: Doc = {
-        "schema_version": "megamind/route-result/v1",
+        "schema_version": "megamind/route-result/v2",
         "query": query,
         "matched": result.matched,
+        "decision": result.decision,
+        "confidence": result.confidence,
+        "thresholds": result.thresholds,
+        "semantic": result.semantic,
         "candidates": [_route_row(asdict(c), fields) for c in result.candidates],
         "context_chars": result.context_chars,
         "max_context_chars": result.max_context_chars,
         "max_candidates": result.max_candidates,
         "notes": result.notes,
     }
-    if result.matched:
+    if result.decision == "load" and result.candidates:
         best = result.candidates[0]
         doc["help"] = _help(
             f"Open `{best.path}` first; it scored highest",
             f"Run `{EXECUTABLE} route {shlex.quote(query)} "
-            "--fields path,kind,score,privacy,reasons` for detail",
+            "--fields path,kind,score,confidence,reasons` for detail",
+        )
+    elif result.decision == "offer":
+        doc["help"] = _help(
+            "Offer the listed candidates as choices; load nothing until one is picked",
+            f"Route confidence stays below the {RELIANCE_FLOOR} reliance floor or "
+            "inside the ambiguity band",
         )
     else:
         doc["help"] = _help(
@@ -605,6 +651,89 @@ def cmd_doctor(root: Path, full: bool) -> tuple[Doc, int]:
     return doc, 1 if errors else 0
 
 
+def _confidence_doc(kind: str, inputs: Doc, result: Confidence) -> tuple[Doc, int]:
+    doc: Doc = {
+        "schema_version": "megamind/confidence-report/v1",
+        "kind": kind,
+        "score": result.render(),
+        "meets_floor": result.meets_floor,
+        "reliance_floor": RELIANCE_FLOOR,
+        "input": inputs,
+        "components": result.components,
+    }
+    if result.meets_floor:
+        doc["help"] = _help(
+            f"This {kind} reaches the {RELIANCE_FLOOR} reliance floor: it may be relied upon"
+        )
+    elif result.known:
+        doc["help"] = _help(
+            f"This {kind} stays below the {RELIANCE_FLOOR} reliance floor: keep it as raw "
+            "material, hypothesis, or proposal until stronger evidence lifts it"
+        )
+    else:
+        doc["help"] = _help(
+            "Confidence is unknown: there is no evidence to score, and unknown is "
+            "never fabricated into a number"
+        )
+    return doc, 0
+
+
+def _parse_source_spec(spec: str, eligible: bool) -> Source:
+    quality, separator, origin = spec.partition(":")
+    if not separator or not origin.strip() or not quality.strip():
+        raise UsageError(f"source must be <quality>:<origin>, got: {spec!r}")
+    quality = quality.strip()
+    if quality not in SOURCE_QUALITIES:
+        raise UsageError(
+            f"unknown source quality: {quality} (expected one of {', '.join(SOURCE_QUALITIES)})"
+        )
+    return Source(quality=quality, origin=origin.strip(), eligible=eligible)
+
+
+def cmd_assess_claim(
+    sources: list[str],
+    ineligible_sources: list[str],
+    lifecycle: str,
+    freshness: str,
+    contradicted: bool,
+) -> tuple[Doc, int]:
+    parsed = [_parse_source_spec(spec, True) for spec in sources]
+    parsed += [_parse_source_spec(spec, False) for spec in ineligible_sources]
+    result = claim_confidence(
+        parsed,
+        lifecycle="" if lifecycle == "unknown" else lifecycle,
+        freshness=freshness,
+        contradicted=contradicted,
+    )
+    inputs: Doc = {
+        "sources": sources,
+        "ineligible_sources": ineligible_sources,
+        "lifecycle": lifecycle,
+        "freshness": freshness,
+        "contradicted": contradicted,
+    }
+    return _confidence_doc("claim", inputs, result)
+
+
+def cmd_assess_answer(claim_values: list[str]) -> tuple[Doc, int]:
+    claims: list[Confidence] = []
+    for raw in claim_values:
+        if raw == "unknown":
+            claims.append(Confidence(score=None))
+            continue
+        try:
+            score = float(raw)
+        except ValueError:
+            raise UsageError(
+                f"--claim must be a number in [0, 1] or 'unknown', got: {raw!r}"
+            ) from None
+        if not 0.0 <= score <= 1.0:
+            raise UsageError(f"--claim must be a number in [0, 1] or 'unknown', got: {raw!r}")
+        claims.append(Confidence(score=round(score, 4)))
+    result = answer_confidence(claims)
+    return _confidence_doc("answer", {"claims": claim_values}, result)
+
+
 def cmd_config_show(root: Path, root_label: str) -> tuple[Doc, int]:
     registry = load_registry(root)
     doc: Doc = {
@@ -762,6 +891,11 @@ def build_parser() -> AxiParser:
         "--today", default=argparse.SUPPRESS, help="override today's date (ISO)"
     )
     p_preflight.add_argument("--full", action="store_true", help="never truncate result lists")
+    p_preflight.add_argument(
+        "--semantic",
+        action="store_true",
+        help="rerank authorized matches with the local char-ngram backend (lexical stays default)",
+    )
 
     p_adopt = sub.add_parser(
         "adopt",
@@ -799,6 +933,12 @@ def build_parser() -> AxiParser:
         default=None,
         help=f"candidate fields (default {','.join(ROUTE_FIELDS_DEFAULT)}; "
         f"available {','.join(ROUTE_FIELDS_ALL)})",
+    )
+    p_route.add_argument("--today", default=argparse.SUPPRESS, help="override today's date (ISO)")
+    p_route.add_argument(
+        "--semantic",
+        action="store_true",
+        help="rerank surfaced candidates with the local char-ngram backend (lexical stays default)",
     )
 
     p_capture = sub.add_parser(
@@ -858,6 +998,66 @@ def build_parser() -> AxiParser:
     )
     _common_flags(p_doctor)
     p_doctor.add_argument("--full", action="store_true", help="never truncate findings")
+
+    p_assess = sub.add_parser(
+        "assess",
+        help="deterministic claim/answer confidence against the 0.75 reliance floor",
+        epilog=(
+            f"examples:\n"
+            f"  {EXECUTABLE} assess claim --source primary:release-notes "
+            "--source primary:changelog --lifecycle active --freshness fresh\n"
+            f"  {EXECUTABLE} assess answer --claim 0.9 --claim 0.6\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _common_flags(p_assess)
+    assess_sub = p_assess.add_subparsers(dest="assess_command")
+    p_claim = assess_sub.add_parser(
+        "claim", help="score one claim from its sources, lifecycle, freshness, contradictions"
+    )
+    _common_flags(p_claim)
+    p_claim.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        metavar="QUALITY:ORIGIN",
+        help=f"eligible source ({'|'.join(SOURCE_QUALITIES)}); repeat per source",
+    )
+    p_claim.add_argument(
+        "--ineligible-source",
+        action="append",
+        default=[],
+        metavar="QUALITY:ORIGIN",
+        help="source the consuming context may not use; it counts for nothing",
+    )
+    p_claim.add_argument(
+        "--lifecycle",
+        default="unknown",
+        choices=[*sorted(LIFECYCLE_CAP), "unknown"],
+        help="lifecycle state of the claim (default: unknown)",
+    )
+    p_claim.add_argument(
+        "--freshness",
+        default="unknown",
+        choices=["fresh", "stale", "unknown"],
+        help="freshness of the evidence (default: unknown)",
+    )
+    p_claim.add_argument(
+        "--contradicted",
+        action="store_true",
+        help="the claim has an unresolved contradiction (freezes it below the floor)",
+    )
+    p_answer = assess_sub.add_parser(
+        "answer", help="cap an answer at its weakest materially relied-upon claim"
+    )
+    _common_flags(p_answer)
+    p_answer.add_argument(
+        "--claim",
+        action="append",
+        default=[],
+        metavar="SCORE|unknown",
+        help="confidence of one relied-upon claim; repeat per claim",
+    )
 
     p_config = sub.add_parser("config", help="inspect configuration")
     _common_flags(p_config)
@@ -942,6 +1142,7 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             root_label,
             today=_parse_today(getattr(args, "today", None)),
             full=args.full,
+            semantic=NgramBackend() if args.semantic else None,
         )
     if command == "adopt":
         if args.apply and args.rollback:
@@ -967,7 +1168,14 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
                     f"(available: {', '.join(ROUTE_FIELDS_ALL)})"
                 )
         registry = load_registry(root)
-        return cmd_route(root, registry, " ".join(args.query), fields)
+        return cmd_route(
+            root,
+            registry,
+            " ".join(args.query),
+            fields,
+            today=_parse_today(getattr(args, "today", None)),
+            semantic=NgramBackend() if args.semantic else None,
+        )
     if command == "capture":
         registry = load_registry(root)
         if args.text is not None:
@@ -1008,6 +1216,19 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
         )
     if command == "doctor":
         return cmd_doctor(root, full=args.full)
+    if command == "assess":
+        sub_command = getattr(args, "assess_command", None)
+        if sub_command == "claim":
+            return cmd_assess_claim(
+                args.source,
+                args.ineligible_source,
+                args.lifecycle,
+                args.freshness,
+                args.contradicted,
+            )
+        if sub_command == "answer":
+            return cmd_assess_answer(args.claim)
+        raise UsageError("usage: megamind-axi assess claim|answer ...")
     if command == "config":
         if getattr(args, "config_command", None) != "show":
             raise UsageError("usage: megamind-axi config show")

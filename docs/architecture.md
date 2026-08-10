@@ -17,6 +17,8 @@ output boundary (see [axi.md](axi.md)).
 | `megamind.card` | The standalone `.megamind/wiki-card.json` of a canonical wiki root |
 | `megamind.links` | Markdown link and Obsidian wikilink extraction and resolution |
 | `megamind.routing` | The deterministic retrieval ladder |
+| `megamind.confidence` | Route/claim/answer confidence rubrics, the 0.75 reliance floor, and the route thresholds |
+| `megamind.semantic` | Optional local semantic reranking behind the lexical baseline, with typed fallbacks |
 | `megamind.capture` | Proposal-first capture with dedupe and provenance |
 | `megamind.evolve` | Evolution plans, unified diffs, approval-gated apply, new-wiki registration |
 | `megamind.review` | Read-only gardening report |
@@ -64,6 +66,39 @@ content and therefore cost nothing against the budget. Tokenization is
 lowercase word extraction with an English stopword list and naive plural
 stripping. All weights are constants in `routing.py`; changing them is a
 behavior change and needs test updates.
+
+## Confidence and thresholds
+
+`megamind.confidence` owns the three separate confidence kinds and the shared
+0.75 reliance floor. Route confidence blends the strongest per-token signal
+(triggers/keywords and index labels count 1.0, names 0.7, digests and index
+targets 0.5, free text 0.3) with query-token coverage (weights 0.6/0.4), and
+fixed thresholds decide the outcome: at least 0.75 loads automatically, 0.25
+to 0.75 (or top candidates within the 0.05 ambiguity band) offers choices
+without loading, and below 0.25 is a quiet no-match. Claim confidence scores
+one claim from its eligible sources by authority order (primary 0.9,
+synthesis 0.7, hypothesis 0.5, prior 0.2), adds capped corroboration for
+independent origins only (sources derived from one origin count once), and
+applies deterministic caps: unresolved contradictions (0.5), staleness (0.6),
+unknown freshness or lifecycle (0.7), lifecycle state (proposed 0.5, shaky
+0.6, rejected/superseded 0.1). Answer confidence is the weakest materially
+relied-upon claim. `unknown` is first-class everywhere: no evidence means no
+number, and unknown never meets the floor. Every constant is pinned by
+`tests/fixtures/confidence-calibration.json`; `megamind-axi assess
+claim|answer` exposes the rubrics as typed documents.
+
+## Semantic reranking
+
+`--semantic` on `route` and `preflight` enables the local char-ngram
+backend. It blends into the *ordering* only (0.4 semantic, 0.6 normalized
+lexical), over candidates the lexical ladder already surfaced and access
+filtering already authorized, using only text each candidate may already
+expose (pointer candidates contribute none). Thresholds, membership, budgets,
+and access never move. The layer fails typed: `disabled`, `ok`,
+`unavailable`, or `error` with a reason, and every non-`ok` state returns the
+untouched lexical order. The backend is a small protocol, so a future local
+embedding adapter can plug in under the same constraints; cloud embeddings
+and network access remain out of scope permanently.
 
 ## The evolution ladder
 
@@ -125,12 +160,17 @@ ordered by a hash of their identity, so a withheld row's position leaks no
 ranking. Page content is never read.
 
 `preflight` routes a substantive request at the catalog level under the host's
-declared model class. Lexical card evidence only (triggers/keywords, name,
-scope text; negative triggers decline explicitly). Access filtering happens
-before any path is returned; the result states `matched`, `ambiguous`,
-`no-match`, `unavailable`, or `privacy-filtered`, gives exact per-wiki
-follow-up commands where allowed, and carries a deterministic `preflight_id`
-content hash over the request hash, catalog snapshot, model class, and result.
+declared model class. Lexical card evidence only by default (triggers/keywords,
+name, scope text; negative triggers decline explicitly); `--semantic` reranks
+the authorized matches on the same card fields. Access filtering happens
+before any path is returned and before any reranking, so a semantic pass can
+never resurrect an ineligible wiki. The route-confidence thresholds decide
+the result: a confident match states `matched` and gives exact per-wiki
+follow-up commands with per-match confidence, freshness, and lexical/semantic
+evidence; sub-floor or banded matches state `ambiguous` and offer choices
+that carry no loadable paths; `no-match` stays quiet; `unavailable` and
+`privacy-filtered` are explicit. A deterministic `preflight_id` content hash
+binds the request hash, catalog snapshot, model class, and result.
 Preflight never mutates a wiki, never writes a host record, never calls a
 model, and never touches the network; whether and when a host runs preflight
 is the host's own policy.
@@ -156,8 +196,10 @@ is the host's own policy.
 ## Determinism
 
 Commands avoid wall-clock dependence where it matters: proposal ids and plan
-ids are content hashes, and `capture`, `evolve`, `review`, `catalog`,
+ids are content hashes, and `capture`, `evolve`, `route`, `review`, `catalog`,
 `preflight`, and the home view accept `--today` for reproducible date handling
 in tests and benchmarks. `catalog` and `preflight` go further and read no clock
 at all: without `--today` freshness is simply reported as unknown rather than
-computed. The only non-deterministic output is audit timestamps.
+computed. Semantic reranking is equally deterministic: the char-ngram backend
+is a pure function of its inputs and rerank ties keep the lexical order. The
+only non-deterministic output is audit timestamps.

@@ -50,7 +50,7 @@ def test_matched_full_access_returns_card_level_paths(vault: Path) -> None:
 
 def test_follow_up_command_shell_quotes_the_request(vault: Path) -> None:
     """The request is untrusted: the emitted command must stay exactly one command."""
-    request = 'pricing" ; rm -rf ~ #'
+    request = 'pricing product" ; rm -rf ~ #'
     result = run_preflight([_ref(vault)], request, "local")
     assert result.status == "matched"
     follow_up = str(result.matches[0]["follow_up"])

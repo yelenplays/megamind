@@ -37,25 +37,45 @@ model are non-negotiable at every stage.
 - Known limitations: lexical card evidence only, no semantic reranking,
   preflight is host-invoked (no mandatory host enforcement yet)
 
-## v0.3: retrieval depth and ergonomics
+## v0.3 (this release): retrieval and confidence
 
-- Ambiguity band and no-match floor tuning for the per-wiki ladder, evaluated
-  against the benchmark suite
-- Micro-wiki promotion as a first-class evolve action (generate the index,
-  update the parent index, all through the normal plan/apply gate)
-- Multilingual stopword lists and configurable tokenization
+- Route confidence with explicit deterministic thresholds: a fixed 0.75
+  reliance floor, a 0.25 no-match floor, and a 0.05 ambiguity band, applied
+  in both `route` and `preflight`; confident matches load automatically,
+  sub-floor matches offer choices without loading, and weak evidence stays a
+  quiet no-match
+- Claim and answer confidence rubrics (`megamind.confidence`, exposed as
+  `megamind-axi assess claim|answer`): source quality by authority order,
+  corroboration by independent origin only, freshness and lifecycle caps,
+  contradictions frozen below the floor, `unknown` first-class and never
+  fabricated; pinned by calibration fixtures
+- Optional local semantic reranking (`--semantic`): a char-ngram backend
+  behind a small protocol that only reorders already-authorized candidates,
+  never widens access, never touches the network, and returns a typed
+  disabled/ok/unavailable/error outcome with the lexical order intact on any
+  failure
+- Evidence packets carry provenance and freshness: per-candidate route
+  confidence, lexical/card/semantic evidence, and `updated`/`age_days`/`stale`
+  (computed only with `--today`), all inside the existing context budgets
+- `route-result/v2` and `preflight-result/v2` documents (additive over v1)
+- Known limitations: lexical English-only matching stays the default and the
+  baseline; the semantic backend is similarity reranking, not embeddings;
+  preflight is host-invoked (no mandatory host enforcement yet)
+
+## Later / undecided
+
 - Benchmark suite (bench-mini): a frozen synthetic corpus with a tiered query
   set (exact, near, paraphrase, ambiguous, no-match, privacy), canary-string
   leak detection, context-cost accounting, and honest baselines (full-vault
   stuffing, grep-style search) with per-tier reporting and hard safety gates,
   runnable in CI without any hosted API
-- Pluggable adapter interface for local embedding-based re-ranking on top of
-  the deterministic candidate set (the deterministic ladder stays the source
-  of truth and the offline default; adapters only re-order already-authorized
-  candidates and are always optional)
-
-## Later / undecided
-
+- Pluggable local embedding adapters behind the `megamind.semantic` protocol
+  (the deterministic ladder stays the source of truth and the offline
+  default; adapters only re-order already-authorized candidates and are
+  always optional)
+- Micro-wiki promotion as a first-class evolve action (generate the index,
+  update the parent index, all through the normal plan/apply gate)
+- Multilingual stopword lists and configurable tokenization
 - Durable gap records and nomination workflows
 - Structured `wiki/log.md` event emission from Megamind commands
 - Watch mode for continuous capture suggestions

@@ -41,17 +41,23 @@ byte-stable human-readable projection; `--check-projection` compares a
 checked-in projection against the cards and exits 1 on drift or a missing
 file.
 
-## megamind-axi preflight <request...> --model-class local|cloud [--estate DIR] [--today D] [--full]
+## megamind-axi preflight <request...> --model-class local|cloud [--estate DIR] [--today D] [--full] [--semantic]
 
-`megamind/preflight-result/v1`. Catalog-level routing for a substantive
-request under the declared model class: lexical card evidence only, no page
-content, no writes, no network. Access filtering happens before paths are
-returned: `none` wikis move to `filtered[]`, pointer wikis expose location
-metadata only, digest-only wikis allow only their approved digest. `status` is
-`matched`, `ambiguous` (tie; `offers[]` choices, nothing loaded), `no-match`,
-`unavailable`, or `privacy-filtered`. `preflight_id` is a deterministic
-content hash over the request hash, catalog snapshot, model class, and result
-- proof the consultation happened, without storing the raw request.
+`megamind/preflight-result/v2`. Catalog-level routing for a substantive
+request under the declared model class: lexical card evidence by default, no
+page content, no writes, no network. Access filtering happens before paths
+are returned and before any reranking: `none` wikis move to `filtered[]`,
+pointer wikis expose location metadata only, digest-only wikis allow only
+their approved digest. Fixed route-confidence thresholds decide `status`:
+`matched` at or above the 0.75 reliance floor, `ambiguous` below it or inside
+the 0.05 ambiguity band (`offers[]` choices, nothing loaded), `no-match`
+under the 0.25 floor, plus `unavailable` and `privacy-filtered`. Matches
+carry per-match `confidence`, `freshness`, and `evidence` (lexical and
+semantic). `preflight_id` is a deterministic content hash over the request
+hash, catalog snapshot, model class, and result - proof the consultation
+happened, without storing the raw request. `--semantic` reranks the
+authorized matches locally; the `semantic` block states `disabled`, `ok`,
+`unavailable`, or `error` and any non-`ok` state keeps the lexical order.
 
 ## megamind-axi adopt <target> [--name N] [--apply --plan-id ID] [--rollback] [--full]
 
@@ -64,12 +70,32 @@ removes exactly what the last apply created, and only while the content is
 unchanged since creation. Existing pages are never moved, renamed, or
 rewritten.
 
-## megamind-axi route <query...> [--fields ...]
+## megamind-axi route <query...> [--fields ...] [--today D] [--semantic]
 
-`megamind/route-result/v1`. Default candidate fields: `path,kind,score,reason`.
-Available: `path,kind,score,wiki,privacy,chars,reason,reasons`. `kind` is
-`page`, `digest`, `index`, `card`, or `pointer`. No match returns
-`matched: false` and `candidates[0]`, exit 0.
+`megamind/route-result/v2`. Default candidate fields: `path,kind,score,reason`.
+Available: `path,kind,score,wiki,privacy,chars,confidence,freshness,
+semantic_score,reason,reasons`. `kind` is `page`, `digest`, `index`, `card`,
+or `pointer`. `decision` applies the route-confidence thresholds: `load` at
+or above 0.75, `offer` below it or inside the ambiguity band, `no-match`
+under 0.25 (weak candidates are dropped with a note). No match returns
+`matched: false` and `candidates[0]`, exit 0. `--today` makes per-candidate
+`freshness` (`updated`, `age_days`, `stale`) reproducible; without it those
+stay explicitly unknown. `--semantic` enables local char-ngram reranking of
+the surfaced candidates only.
+
+## megamind-axi assess claim|answer [flags]
+
+`megamind/confidence-report/v1`: deterministic confidence against the 0.75
+reliance floor, with the full `components[]` rationale. `assess claim` takes
+`--source <quality>:<origin>` (`primary|synthesis|hypothesis|prior`, repeat
+per source), `--ineligible-source <quality>:<origin>` (counts for nothing),
+`--lifecycle <state|unknown>`, `--freshness fresh|stale|unknown`, and
+`--contradicted`. Sources derived from one origin count once; unresolved
+contradictions freeze the claim below the floor; stale or undated evidence
+can never reach it; no eligible evidence yields `score: unknown`, never a
+fabricated number. `assess answer` takes `--claim <score|unknown>` per
+materially relied-upon claim and returns the weakest (unknown propagates).
+Both exit 0; `meets_floor` states the reliance verdict.
 
 ## megamind-axi capture [--text T | --file F] [--source S] [--type T] [--today D]
 

@@ -67,15 +67,22 @@ Every command accepts `--format json` and `--root <path>`. A query that
 matches nothing is a definitive structured result, not silence:
 
 ```toon
-schema_version: megamind/route-result/v1
+schema_version: megamind/route-result/v2
 query: quantum llama farming
 matched: false
-candidates[0]:
+decision: no-match
 ...
 help[2]:
   Run `megamind-axi config show` to see registered wikis and their keywords
   ...
 ```
+
+Route output carries a `decision`: `load` at or above the 0.75 reliance
+floor, `offer` below it or inside the ambiguity band (choices, nothing
+auto-loads), `no-match` under the 0.25 floor. `--semantic` opts into local
+char-ngram reranking of the authorized candidates; `--today` makes freshness
+(`updated`/`age_days`/`stale`) reproducible. `megamind-axi assess claim` and
+`assess answer` score evidence against the same reliance floor.
 
 The full output contract (schemas, truncation, exit codes, error codes) is in
 [docs/axi.md](docs/axi.md). A ready-made demo vault lives in
@@ -107,11 +114,14 @@ megamind-axi preflight "how do we price cleanup offers" --estate ~/Wikis --model
   content-verified rollback; existing pages are never moved or rewritten).
 - **Preflight** is catalog-level only: it filters by model access before any
   path is returned (`full`, `digest-only`, `none`, and pointer modes are all
-  honored), reports `matched`, `ambiguous`, `no-match`, `unavailable`, or
-  `privacy-filtered`, gives exact per-wiki follow-up commands, and emits a
-  deterministic `preflight_id` so a host can prove the consultation happened.
-  It never reads page content, never writes anything, and never calls a model
-  or the network; whether and when to run it is the host's policy.
+  honored) and applies the route-confidence thresholds: a confident match
+  (`>= 0.75`) reports `matched` with per-match confidence, freshness, and
+  evidence; weaker matches report `ambiguous` (offers with no loadable paths)
+  or a quiet `no-match`; `unavailable` and `privacy-filtered` are explicit.
+  It emits a deterministic `preflight_id` so a host can prove the
+  consultation happened. It never reads page content, never writes anything,
+  and never calls a model or the network; whether and when to run it is the
+  host's policy.
 
 ## Concepts
 
@@ -162,14 +172,19 @@ fields in `.megamind/wiki-card.json` instead. See
 
 ## Honest limitations
 
-Routing is lexical and deterministic: token overlap against routing cards,
-digests, and indexes with fixed weights. That is a feature (reproducible,
-explainable, offline) and a limitation (no synonym or semantic matching).
-Optional local semantic adapters are deferred to a later release; see
-[docs/roadmap.md](docs/roadmap.md). English stopwords only for now. Preflight
-routes at the catalog level and never loads page content from other roots;
-running it before every substantive request is a host-side policy that no
-host integration enforces yet.
+Routing is lexical and deterministic by default: token overlap against
+routing cards, digests, and indexes with fixed weights. That is a feature
+(reproducible, explainable, offline) and a limitation (no synonym matching in
+the baseline). `--semantic` adds optional local char-ngram reranking of
+already-authorized candidates - still fully offline, still deterministic, and
+only ever reordering what the lexical ladder surfaced; embedding-based local
+adapters come later behind the same protocol, and cloud embeddings are out of
+scope permanently. Confidence scores are calibrated rubric outputs, not truth
+guarantees: they never exceed what source quality, corroboration, freshness,
+and contradiction state justify, and `unknown` stays unknown. English
+stopwords only for now. Preflight routes at the catalog level and never loads
+page content from other roots; running it before every substantive request is
+a host-side policy that no host integration enforces yet.
 
 ## Documentation
 

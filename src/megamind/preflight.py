@@ -21,14 +21,30 @@ import shlex
 from dataclasses import dataclass, field
 
 from .catalog import Catalog, RootRef, build_catalog
+from .confidence import (
+    AMBIGUITY_BAND,
+    OFFER_FLOOR,
+    RELIANCE_FLOOR,
+    SIGNAL_STRENGTH,
+    decide,
+    route_confidence,
+)
 from .fsops import content_hash
 from .routing import tokenize
+from .semantic import SemanticBackend, disabled_outcome
+from .semantic import rerank as semantic_rerank
 
 WEIGHT_TRIGGER = 3
 WEIGHT_NAME = 2
 WEIGHT_TEXT = 1
 
 MODEL_CLASSES = ("local", "cloud")
+
+THRESHOLDS: dict[str, float] = {
+    "reliance_floor": RELIANCE_FLOOR,
+    "offer_floor": OFFER_FLOOR,
+    "ambiguity_band": AMBIGUITY_BAND,
+}
 
 
 @dataclass
@@ -42,6 +58,9 @@ class PreflightResult:
     declined: list[dict[str, object]] = field(default_factory=list)
     root_issues: list[dict[str, object]] = field(default_factory=list)
     redacted_count: int = 0
+    confidence: float | None = None
+    thresholds: dict[str, float] = field(default_factory=lambda: dict(THRESHOLDS))
+    semantic: dict[str, object] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     catalog_hash: str = ""
     request_hash: str = ""
@@ -67,9 +86,17 @@ def _access_level(row: dict[str, object], model_class: str) -> str:
     return "none"
 
 
-def _score_row(row: dict[str, object], query_tokens: list[str]) -> tuple[int, list[str]]:
+def _best_signal(signals: dict[str, float], token: str, strength: float) -> None:
+    if strength > signals.get(token, 0.0):
+        signals[token] = strength
+
+
+def _score_row(
+    row: dict[str, object], query_tokens: list[str]
+) -> tuple[int, list[str], dict[str, float]]:
     score = 0
     reasons: list[str] = []
+    signals: dict[str, float] = {}
     trigger_tokens: set[str] = set()
     for item in _str_list(row.get("keywords")) + _str_list(row.get("triggers")):
         trigger_tokens.update(_token_set(item))
@@ -87,13 +114,31 @@ def _score_row(row: dict[str, object], query_tokens: list[str]) -> tuple[int, li
         if token in trigger_tokens:
             score += WEIGHT_TRIGGER
             reasons.append(f"trigger match: {token}")
+            _best_signal(signals, token, SIGNAL_STRENGTH["trigger"])
         if token in name_tokens:
             score += WEIGHT_NAME
             reasons.append(f"name match: {token}")
+            _best_signal(signals, token, SIGNAL_STRENGTH["name"])
         if token in text_tokens:
             score += WEIGHT_TEXT
             reasons.append(f"scope match: {token}")
-    return score, reasons
+            _best_signal(signals, token, SIGNAL_STRENGTH["text"])
+    return score, reasons, signals
+
+
+def _card_text(row: dict[str, object]) -> str:
+    """The card-level text a semantic pass may see: exactly the declared card
+    fields the lexical layer already scores, never page content."""
+    return " ".join(
+        [
+            str(row.get("name", "")),
+            str(row.get("purpose", "")),
+            " ".join(_str_list(row.get("answers"))),
+            " ".join(_str_list(row.get("examples"))),
+            " ".join(_str_list(row.get("keywords"))),
+            " ".join(_str_list(row.get("triggers"))),
+        ]
+    )
 
 
 def _declined(row: dict[str, object], query_tokens: list[str]) -> str | None:
@@ -129,7 +174,11 @@ def _follow_up(row: dict[str, object], request: str, access: str) -> str:
 
 
 def run_preflight(
-    refs: list[RootRef], request: str, model_class: str, catalog: Catalog | None = None
+    refs: list[RootRef],
+    request: str,
+    model_class: str,
+    catalog: Catalog | None = None,
+    semantic: SemanticBackend | None = None,
 ) -> PreflightResult:
     """Route a request at the catalog level. Deterministic and read-only."""
     if catalog is None:
@@ -141,6 +190,7 @@ def run_preflight(
         catalog_hash=catalog.catalog_hash,
         request_hash=content_hash(request),
     )
+    outcome = disabled_outcome()
     query_tokens = tokenize(request)
     if not query_tokens:
         result.status = "no-match"
@@ -148,7 +198,7 @@ def run_preflight(
     for note in catalog.notes:
         result.notes.append(note)
 
-    scored: list[tuple[int, dict[str, object], list[str]]] = []
+    scored: list[tuple[int, dict[str, object], list[str], dict[str, float]]] = []
     for row in catalog.rows:
         status = str(row.get("status", "ok"))
         if status != "ok":
@@ -170,16 +220,16 @@ def run_preflight(
                 {"name": row.get("name"), "root": row.get("root"), "reason": reason}
             )
             continue
-        score, reasons = _score_row(row, query_tokens)
+        score, reasons, signals = _score_row(row, query_tokens)
         if score > 0:
-            scored.append((score, row, reasons))
+            scored.append((score, row, reasons, signals))
 
-    eligible: list[tuple[int, dict[str, object], list[str]]] = []
-    for score, row, reasons in scored:
+    eligible: list[tuple[int, dict[str, object], list[str], dict[str, float]]] = []
+    for score, row, reasons, signals in scored:
         # Pointer mode exposes location metadata and zero content; that is the
         # privacy-safe pointer a "none" access level is still allowed to return.
         if row.get("routing_mode") == "pointer":
-            eligible.append((score, row, reasons))
+            eligible.append((score, row, reasons, signals))
             continue
         access = _access_level(row, model_class)
         if access == "none":
@@ -192,7 +242,7 @@ def run_preflight(
                 }
             )
             continue
-        eligible.append((score, row, reasons))
+        eligible.append((score, row, reasons, signals))
 
     ok_rows = [row for row in catalog.rows if str(row.get("status", "ok")) == "ok"]
     if not catalog.rows:
@@ -215,23 +265,79 @@ def run_preflight(
         result.notes.append("matching wikis are not accessible to this model class")
     else:
         eligible.sort(key=lambda item: (-item[0], str(item[1].get("name"))))
-        top = eligible[0][0]
-        tied = [item for item in eligible if item[0] == top]
-        if len(tied) > 1:
-            result.status = "ambiguous"
-            for score, row, reasons in tied:
-                result.offers.append(
-                    {
-                        "name": row.get("name"),
-                        "root": row.get("root"),
-                        "score": score,
-                        "reasons": reasons[:5],
-                    }
+        confidences = [
+            route_confidence([signals.get(token, 0.0) for token in query_tokens], len(query_tokens))
+            for _score, _row, _reasons, signals in eligible
+        ]
+        # The no-match floor drops evidence too weak to offer, by name only.
+        paired = list(zip(eligible, confidences, strict=True))
+        strong = [
+            (score, row, reasons, signals, confidence)
+            for (score, row, reasons, signals), confidence in paired
+            if confidence >= OFFER_FLOOR
+        ]
+        for (_s, row, _r, _sig), confidence in paired:
+            if confidence < OFFER_FLOOR:
+                result.notes.append(
+                    f"below the no-match floor ({OFFER_FLOOR}): omitted {row.get('name')}"
                 )
-            result.notes.append("top candidates tie: offer a choice instead of loading")
-        else:
+
+        # Optional local semantic rerank over already-authorized rows only.
+        # Filtered wikis never enter this list, so reranking can never
+        # resurrect an ineligible wiki or expose its card beyond what the
+        # lexical layer already scored.
+        keys = [str(row.get("name")) for _s, row, _r, _sig, _c in strong]
+        order, outcome = semantic_rerank(
+            request,
+            keys,
+            [float(score) for score, _r, _re, _si, _c in strong],
+            [_card_text(row) for _s, row, _r, _sig, _c in strong],
+            semantic,
+        )
+        strong = [strong[index] for index in order]
+        semantic_scores = outcome.scores if outcome.status == "ok" else {}
+
+        # Thresholds decide on lexical confidence in lexical order; the
+        # semantic pass may reorder what is shown but never recomputes these.
+        lexical_confs = [
+            confidence
+            for _s, _r, _re, _sig, confidence in sorted(
+                strong, key=lambda item: (-item[0], str(item[1].get("name")))
+            )
+        ]
+        decision, offer_count = decide(lexical_confs)
+        result.confidence = lexical_confs[0] if lexical_confs else None
+
+        def _entry(
+            score: int,
+            row: dict[str, object],
+            reasons: list[str],
+            confidence: float,
+        ) -> dict[str, object]:
+            return {
+                "name": row.get("name"),
+                "root": row.get("root"),
+                "score": score,
+                "confidence": {
+                    "score": confidence,
+                    "meets_floor": confidence >= RELIANCE_FLOOR,
+                },
+                "freshness": row.get("freshness"),
+                "evidence": {
+                    "lexical": reasons[:5],
+                    "semantic": semantic_scores.get(str(row.get("name"))),
+                },
+                "reasons": reasons[:5],
+            }
+
+        if not strong:
+            result.status = "no-match"
+            result.notes.append(
+                f"all matching wikis fall below the no-match floor ({OFFER_FLOOR}): staying quiet"
+            )
+        elif decision == "load":
             result.status = "matched"
-            for score, row, reasons in eligible:
+            for score, row, reasons, _signals, confidence in strong:
                 access = _access_level(row, model_class)
                 paths = row.get("paths", {})
                 assert isinstance(paths, dict)
@@ -244,19 +350,31 @@ def run_preflight(
                     allows = [
                         str(paths[key]) for key in ("card", "digest", "index") if paths.get(key)
                     ]
-                result.matches.append(
-                    {
-                        "name": row.get("name"),
-                        "root": row.get("root"),
-                        "score": score,
-                        "access": access,
-                        "routing_mode": row.get("routing_mode"),
-                        "allows": allows,
-                        "follow_up": _follow_up(row, request, access),
-                        "reasons": reasons[:5],
-                    }
+                entry = _entry(score, row, reasons, confidence)
+                entry["access"] = access
+                entry["routing_mode"] = row.get("routing_mode")
+                entry["allows"] = allows
+                entry["follow_up"] = _follow_up(row, request, access)
+                result.matches.append(entry)
+        else:
+            result.status = "ambiguous"
+            if decision == "offer" and (lexical_confs and lexical_confs[0] >= RELIANCE_FLOOR):
+                shown = strong[:offer_count]
+                result.notes.append(
+                    f"top candidates are within the ambiguity band ({AMBIGUITY_BAND}): "
+                    "offer a choice instead of loading"
                 )
+            else:
+                shown = strong
+                result.notes.append(
+                    f"route confidence {lexical_confs[0]} is below the reliance floor "
+                    f"({RELIANCE_FLOOR}): offer choices, load nothing automatically"
+                )
+            for score, row, reasons, _signals, confidence in shown:
+                result.offers.append(_entry(score, row, reasons, confidence))
+            result.notes.append("offer the listed wikis as choices; load nothing until picked")
 
+    result.semantic = outcome.to_dict()
     proof = {
         "request_hash": result.request_hash,
         "catalog_hash": result.catalog_hash,
