@@ -53,6 +53,21 @@ class ExplodingAvailabilityBackend:
         raise AssertionError("never reached")
 
 
+class TargetedBackend:
+    """An adversarial backend that adores exactly one candidate's text."""
+
+    name = "fake-targeted"
+
+    def __init__(self, marker: str) -> None:
+        self.marker = marker
+
+    def unavailable_reason(self) -> str | None:
+        return None
+
+    def similarity(self, query: str, text: str) -> float:
+        return 1.0 if self.marker in text else 0.0
+
+
 def test_ngram_similarity_is_deterministic_and_bounded() -> None:
     assert ngram_similarity("pricing model", "pricing model") == 1.0
     assert ngram_similarity("", "pricing") == 0.0
@@ -64,28 +79,26 @@ def test_ngram_similarity_is_deterministic_and_bounded() -> None:
 
 
 def test_rerank_disabled_by_default_returns_identity() -> None:
-    order, outcome = rerank("q", ["a", "b"], [2.0, 1.0], ["ta", "tb"], None)
+    order, outcome = rerank("q", [2.0, 1.0], ["ta", "tb"], None)
     assert order == [0, 1]
     assert outcome.status == "disabled"
     assert outcome.to_dict()["reason"]
 
 
 def test_rerank_reorders_by_blend_and_stays_stable() -> None:
-    # b is lexically weaker but semantically identical to the query.
+    # the second candidate is lexically weaker but semantically identical.
     order, outcome = rerank(
         "weekly release train",
-        ["a", "b"],
         [3.0, 2.0],
         ["unrelated content entirely", "weekly release train"],
         NgramBackend(),
     )
     assert outcome.status == "ok"
-    assert outcome.scores["b"] == 1.0
+    assert outcome.scores[1] == 1.0
     assert order == [1, 0]
     # identical inputs rerank identically
     again, _ = rerank(
         "weekly release train",
-        ["a", "b"],
         [3.0, 2.0],
         ["unrelated content entirely", "weekly release train"],
         NgramBackend(),
@@ -93,9 +106,23 @@ def test_rerank_reorders_by_blend_and_stays_stable() -> None:
     assert again == order
 
 
+def test_rerank_scores_identical_candidates_positionally() -> None:
+    """Two candidates may share a path or a wiki name; each keeps its own score."""
+    order, outcome = rerank(
+        "weekly release train",
+        [3.0, 3.0, 3.0],
+        ["weekly release train", "", "unrelated content entirely"],
+        NgramBackend(),
+    )
+    assert outcome.status == "ok"
+    assert outcome.scores == [1.0, 0.0, outcome.scores[2]]
+    assert len(outcome.scores) == 3
+    assert order == [0, 2, 1]
+
+
 def test_rerank_never_raises_for_bad_backends() -> None:
     for backend in (UnavailableBackend(), CorruptBackend(), ExplodingAvailabilityBackend()):
-        order, outcome = rerank("q", ["a"], [1.0], ["text"], backend)
+        order, outcome = rerank("q", [1.0], ["text"], backend)
         assert order == [0]  # lexical order preserved
         assert outcome.status in ("unavailable", "error")
         assert outcome.backend == backend.name
@@ -125,6 +152,47 @@ def test_route_semantic_failure_keeps_lexical_result(vault: Path) -> None:
     assert broken.semantic["status"] == "error"
     assert [c.path for c in broken.candidates] == [c.path for c in plain.candidates]
     assert broken.decision == plain.decision
+
+
+def test_route_semantic_cannot_change_what_survives_the_budget(vault: Path) -> None:
+    """Budgets are applied to the lexical order; the rerank only reorders the packet."""
+    registry = load_registry(vault)
+    registry.budgets.max_candidates = 1
+    save_registry(vault, registry)
+    registry = load_registry(vault)
+
+    plain = route(vault, registry, "brand color palette")
+    assert [c.path for c in plain.candidates] == ["BrandingWiki/topics/color-palette.md"]
+
+    # the backend adores the lower-scoring page that the budget already excluded
+    boosted = route(
+        vault, registry, "brand color palette", semantic=TargetedBackend("Calm, direct, no hype.")
+    )
+    assert boosted.semantic["status"] == "ok"
+    assert [c.path for c in boosted.candidates] == [c.path for c in plain.candidates]
+    assert boosted.context_chars == plain.context_chars
+
+
+def test_route_reads_no_candidate_content_while_semantic_is_disabled(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default path must not pay for a rerank it never runs."""
+    from megamind import routing
+
+    reads: list[str] = []
+    original = routing._read_if_exists
+
+    def _counting(root: Path, rel: str) -> str | None:
+        reads.append(rel)
+        return original(root, rel)
+
+    monkeypatch.setattr(routing, "_read_if_exists", _counting)
+    routing.route(vault, load_registry(vault), "pricing model")
+    plain_reads = list(reads)
+
+    reads.clear()
+    routing.route(vault, load_registry(vault), "pricing model", semantic=NgramBackend())
+    assert len(reads) > len(plain_reads)  # only the opt-in path reads candidate text
 
 
 def test_route_semantic_never_reads_pointer_content(vault: Path) -> None:
@@ -168,6 +236,42 @@ def test_preflight_semantic_reranks_only_authorized_matches(vault: Path) -> None
     assert set(plain_names) == set(boosted_names)  # membership never changes
     assert boosted_names[0] == "BetaWiki"  # the semantically closer card leads
     assert plain_names[0] == "AlphaWiki"  # lexical order is name-tied, Alpha first
+
+
+def test_preflight_semantic_cannot_change_the_offer_set(vault: Path) -> None:
+    """The ambiguity band is picked lexically; the rerank only reorders that band."""
+    registry = load_registry(vault)
+    for name, keywords in (
+        ("ZedAlpha", ["zeppelin", "hangar"]),
+        ("ZedBeta", ["zeppelin", "hangar"]),
+        ("ZedGamma", ["zeppelin"]),
+    ):
+        (vault / name).mkdir()
+        registry.wikis.append(
+            WikiEntry(
+                name=name,
+                path=name,
+                privacy="public-reference",
+                keywords=keywords,
+                purpose=f"Synthetic {name} coverage.",
+                sensitivity="public-reference",
+            )
+        )
+    save_registry(vault, registry)
+
+    plain = run_preflight([_ref(vault)], "zeppelin hangar", "local")
+    assert plain.status == "ambiguous"
+    banded = [str(offer["name"]) for offer in plain.offers]
+    assert banded == ["ZedAlpha", "ZedBeta"]  # ZedGamma sits outside the band
+
+    # the backend adores the out-of-band card; it must not buy its way in
+    boosted = run_preflight(
+        [_ref(vault)], "zeppelin hangar", "local", semantic=TargetedBackend("ZedGamma")
+    )
+    assert boosted.semantic["status"] == "ok"
+    assert [str(offer["name"]) for offer in boosted.offers] == banded
+    assert boosted.matches == []
+    assert "ZedGamma" not in json.dumps(boosted.offers)
 
 
 def test_preflight_semantic_cannot_resurrect_a_filtered_wiki(vault: Path) -> None:

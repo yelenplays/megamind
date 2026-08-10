@@ -75,7 +75,11 @@ behavior change and needs test updates.
 targets 0.5, free text 0.3) with query-token coverage (weights 0.6/0.4), and
 fixed thresholds decide the outcome: at least 0.75 loads automatically, 0.25
 to 0.75 (or top candidates within the 0.05 ambiguity band) offers choices
-without loading, and below 0.25 is a quiet no-match. Claim confidence scores
+without loading, and below 0.25 is a quiet no-match. The floor is applied per
+candidate, not just to the leader: `confidence.authorize` names exactly which
+rows a decision covers, so a `load` never hands out authorization to a weaker
+row riding behind a strong one - `route` omits it from the packet with a note
+and `preflight` demotes it to an offer with no loadable paths. Claim confidence scores
 one claim from its eligible sources by authority order (primary 0.9,
 synthesis 0.7, hypothesis 0.5, prior 0.2), adds capped corroboration for
 independent origins only (sources derived from one origin count once), and

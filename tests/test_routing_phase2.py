@@ -41,6 +41,30 @@ def test_below_no_match_floor_drops_weak_evidence(vault: Path) -> None:
     assert any("no-match floor" in note for note in result.notes)
 
 
+def test_load_packet_carries_no_sub_floor_candidate(vault: Path) -> None:
+    """`load` authorizes opening every returned path, so weak rows must not ride along."""
+    registry = load_registry(vault)
+    from megamind.registry import WikiEntry
+
+    (vault / "EchoWiki").mkdir()
+    registry.wikis.append(
+        WikiEntry(
+            name="EchoWiki",
+            path="EchoWiki",
+            privacy="public-reference",
+            description="Synthetic echo prose that merely mentions pricing.",
+            keywords=["echo"],
+        )
+    )
+    save_registry(vault, registry)
+
+    result = route(vault, load_registry(vault), "pricing")
+    assert result.decision == "load"
+    assert all(candidate.confidence >= 0.75 for candidate in result.candidates)
+    assert "EchoWiki" not in [candidate.wiki for candidate in result.candidates]
+    assert any("reliance floor" in note and "EchoWiki" in note for note in result.notes)
+
+
 def test_ambiguity_band_offers_a_choice(vault: Path) -> None:
     registry = load_registry(vault)
     from megamind.registry import WikiEntry

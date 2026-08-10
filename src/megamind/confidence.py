@@ -129,24 +129,51 @@ def route_confidence(token_signals: list[float], token_count: int) -> float:
 
 
 def decide(confidences: list[float]) -> tuple[str, int]:
-    """Apply the route thresholds to confidence-sorted candidates.
+    """Apply the route thresholds to a set of candidate confidences.
 
     Returns the decision (``load``, ``offer``, or ``no-match``) and how many
-    of the leading candidates an ``offer`` should present (those inside the
-    ambiguity band). The lexical baseline alone feeds this function; semantic
-    reranking may reorder candidates but never recomputes these confidences.
+    of the strongest candidates an ``offer`` should present (those inside the
+    ambiguity band). Confidence order is established here rather than trusted:
+    callers rank candidates by lexical score, and confidence is not monotone in
+    score, so a genuine near-tie can sit anywhere in the caller's list. The
+    lexical baseline alone feeds this function; semantic reranking may reorder
+    candidates but never recomputes these confidences.
     """
     if not confidences:
         return "no-match", 0
-    top = confidences[0]
+    ranked = sorted(confidences, reverse=True)
+    top = ranked[0]
     if top < OFFER_FLOOR:
         return "no-match", 0
     band = 1
-    while band < len(confidences) and confidences[band] >= top - AMBIGUITY_BAND:
+    while band < len(ranked) and ranked[band] >= top - AMBIGUITY_BAND:
         band += 1
     if top >= RELIANCE_FLOOR and band == 1:
         return "load", 1
     return "offer", band
+
+
+def authorize(confidences: list[float]) -> tuple[str, list[int]]:
+    """Decide, and name exactly which candidates the decision authorizes.
+
+    This is the single reliance-floor gate: no caller may hand out load
+    authorization to a candidate the floor did not clear. A ``load`` authorizes
+    only candidates that individually reach ``RELIANCE_FLOOR``, so a weak
+    candidate riding along behind a strong one is never loadable; an ``offer``
+    authorizes the ambiguity band around the strongest candidate; a
+    ``no-match`` authorizes nothing. Returned indices point into
+    ``confidences`` in the caller's own order, so output ordering stays the
+    caller's business.
+    """
+    decision, count = decide(confidences)
+    if decision == "no-match":
+        return decision, []
+    if decision == "load":
+        return decision, [
+            index for index, score in enumerate(confidences) if score >= RELIANCE_FLOOR
+        ]
+    band = sorted(range(len(confidences)), key=lambda index: (-confidences[index], index))[:count]
+    return decision, sorted(band)
 
 
 @dataclass

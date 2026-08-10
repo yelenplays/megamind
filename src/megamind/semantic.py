@@ -85,12 +85,19 @@ class NgramBackend:
 
 @dataclass
 class RerankOutcome:
-    """The typed, inspectable result of a rerank attempt."""
+    """The typed, inspectable result of a rerank attempt.
+
+    ``scores`` is positional: entry *i* is the similarity of candidate *i* in
+    the order the caller supplied. Candidates are never identified by a key
+    here, because caller-side keys (page paths, wiki names) are not guaranteed
+    unique and collapsing two candidates onto one similarity would silently
+    mis-score both.
+    """
 
     status: str
     backend: str
     reason: str = ""
-    scores: dict[str, float] = field(default_factory=dict)
+    scores: list[float] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {"status": self.status, "backend": self.backend}
@@ -105,21 +112,20 @@ def disabled_outcome() -> RerankOutcome:
 
 def rerank(
     query: str,
-    keys: list[str],
     lexical_scores: list[float],
     texts: list[str],
     backend: SemanticBackend | None,
 ) -> tuple[list[int], RerankOutcome]:
     """Blend lexical and semantic scores and return the new ordering.
 
-    ``keys`` identify the candidates in output (paths or names); ``texts``
-    carries only text each candidate is already authorized to expose, and may
-    be empty (such candidates keep a similarity of 0). The returned list is a
-    permutation of ``range(len(keys))``: on any backend problem it is the
-    identity permutation and the outcome says why. This function never raises
-    for backend failures.
+    ``texts`` carries only text each candidate is already authorized to
+    expose, and may be empty (such candidates keep a similarity of 0), aligned
+    positionally with ``lexical_scores``. The returned list is a permutation of
+    ``range(len(lexical_scores))``: on any backend problem it is the identity
+    permutation and the outcome says why. This function never raises for
+    backend failures.
     """
-    identity = list(range(len(keys)))
+    identity = list(range(len(lexical_scores)))
     if backend is None:
         return identity, disabled_outcome()
     try:
@@ -131,10 +137,10 @@ def rerank(
     if reason is not None:
         return identity, RerankOutcome(status="unavailable", backend=backend.name, reason=reason)
     try:
-        scores = {
-            key: round(backend.similarity(query, text), 4) if text else 0.0
-            for key, text in zip(keys, texts, strict=True)
-        }
+        scores = [
+            round(backend.similarity(query, text), 4) if text else 0.0
+            for _lexical, text in zip(lexical_scores, texts, strict=True)
+        ]
     except Exception as error:
         return identity, RerankOutcome(
             status="error", backend=backend.name, reason=f"similarity failed: {error}"
@@ -144,7 +150,7 @@ def rerank(
 
     def blended(index: int) -> float:
         lexical = lexical_scores[index] / peak if peak > 0 else 0.0
-        return (1.0 - SEMANTIC_BLEND) * lexical + SEMANTIC_BLEND * scores[keys[index]]
+        return (1.0 - SEMANTIC_BLEND) * lexical + SEMANTIC_BLEND * scores[index]
 
     # Stable: ties keep the lexical order, so a semantic pass can never
     # introduce nondeterminism or reorder equal-evidence candidates.

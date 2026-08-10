@@ -26,7 +26,7 @@ from .confidence import (
     OFFER_FLOOR,
     RELIANCE_FLOOR,
     SIGNAL_STRENGTH,
-    decide,
+    authorize,
     route_confidence,
 )
 from .fsops import content_hash
@@ -272,8 +272,8 @@ def run_preflight(
         # The no-match floor drops evidence too weak to offer, by name only.
         paired = list(zip(eligible, confidences, strict=True))
         strong = [
-            (score, row, reasons, signals, confidence)
-            for (score, row, reasons, signals), confidence in paired
+            (score, row, reasons, confidence)
+            for (score, row, reasons, _signals), confidence in paired
             if confidence >= OFFER_FLOOR
         ]
         for (_s, row, _r, _sig), confidence in paired:
@@ -282,38 +282,64 @@ def run_preflight(
                     f"below the no-match floor ({OFFER_FLOOR}): omitted {row.get('name')}"
                 )
 
-        # Optional local semantic rerank over already-authorized rows only.
-        # Filtered wikis never enter this list, so reranking can never
-        # resurrect an ineligible wiki or expose its card beyond what the
-        # lexical layer already scored.
-        keys = [str(row.get("name")) for _s, row, _r, _sig, _c in strong]
+        # Thresholds, membership, and the authorized set all come from lexical
+        # confidence in lexical order, before any reranking. `authorize` names
+        # which rows the decision covers, so only a row that itself reached the
+        # reliance floor can ever become a loadable match.
+        lexical_confs = [confidence for _s, _r, _re, confidence in strong]
+        decision, authorized = authorize(lexical_confs)
+        result.confidence = max(lexical_confs) if lexical_confs else None
+
+        match_indices: list[int] = []
+        offer_indices: list[int] = []
+        if not strong:
+            result.status = "no-match"
+            result.notes.append(
+                f"all matching wikis fall below the no-match floor ({OFFER_FLOOR}): staying quiet"
+            )
+        elif decision == "load":
+            result.status = "matched"
+            match_indices = list(authorized)
+            loadable = set(authorized)
+            offer_indices = [index for index in range(len(strong)) if index not in loadable]
+            if offer_indices:
+                result.notes.append(
+                    f"only wikis at or above the reliance floor ({RELIANCE_FLOOR}) are loadable "
+                    "matches; the weaker ones stay offers with no loadable paths"
+                )
+        else:
+            result.status = "ambiguous"
+            if result.confidence is not None and result.confidence >= RELIANCE_FLOOR:
+                offer_indices = list(authorized)
+                result.notes.append(
+                    f"top candidates are within the ambiguity band ({AMBIGUITY_BAND}): "
+                    "offer a choice instead of loading"
+                )
+            else:
+                offer_indices = list(range(len(strong)))
+                result.notes.append(
+                    f"route confidence {result.confidence} is below the reliance floor "
+                    f"({RELIANCE_FLOOR}): offer choices, load nothing automatically"
+                )
+
+        # Optional local semantic rerank over the already-selected packet only.
+        # Filtered wikis never enter this list, so reranking can never resurrect
+        # an ineligible wiki or expose its card beyond what the lexical layer
+        # already scored, and it cannot move a row between matches and offers.
+        shown = sorted(set(match_indices) | set(offer_indices))
         order, outcome = semantic_rerank(
             request,
-            keys,
-            [float(score) for score, _r, _re, _si, _c in strong],
-            [_card_text(row) for _s, row, _r, _sig, _c in strong],
+            [float(strong[index][0]) for index in shown],
+            [_card_text(strong[index][1]) for index in shown],
             semantic,
         )
-        strong = [strong[index] for index in order]
-        semantic_scores = outcome.scores if outcome.status == "ok" else {}
+        semantic_scores: dict[int, float] = {}
+        if outcome.status == "ok":
+            semantic_scores = dict(zip(shown, outcome.scores, strict=True))
+        ranked = [shown[position] for position in order]
 
-        # Thresholds decide on lexical confidence in lexical order; the
-        # semantic pass may reorder what is shown but never recomputes these.
-        lexical_confs = [
-            confidence
-            for _s, _r, _re, _sig, confidence in sorted(
-                strong, key=lambda item: (-item[0], str(item[1].get("name")))
-            )
-        ]
-        decision, offer_count = decide(lexical_confs)
-        result.confidence = lexical_confs[0] if lexical_confs else None
-
-        def _entry(
-            score: int,
-            row: dict[str, object],
-            reasons: list[str],
-            confidence: float,
-        ) -> dict[str, object]:
+        def _entry(index: int) -> dict[str, object]:
+            score, row, reasons, confidence = strong[index]
             return {
                 "name": row.get("name"),
                 "root": row.get("root"),
@@ -325,53 +351,36 @@ def run_preflight(
                 "freshness": row.get("freshness"),
                 "evidence": {
                     "lexical": reasons[:5],
-                    "semantic": semantic_scores.get(str(row.get("name"))),
+                    "semantic": semantic_scores.get(index),
                 },
                 "reasons": reasons[:5],
             }
 
-        if not strong:
-            result.status = "no-match"
-            result.notes.append(
-                f"all matching wikis fall below the no-match floor ({OFFER_FLOOR}): staying quiet"
-            )
-        elif decision == "load":
-            result.status = "matched"
-            for score, row, reasons, _signals, confidence in strong:
-                access = _access_level(row, model_class)
-                paths = row.get("paths", {})
-                assert isinstance(paths, dict)
-                if row.get("routing_mode") == "pointer":
-                    allows: list[str] = []
-                elif access == "digest-only":
-                    digest = str(paths.get("digest") or "")
-                    allows = [digest] if digest else []
-                else:
-                    allows = [
-                        str(paths[key]) for key in ("card", "digest", "index") if paths.get(key)
-                    ]
-                entry = _entry(score, row, reasons, confidence)
-                entry["access"] = access
-                entry["routing_mode"] = row.get("routing_mode")
-                entry["allows"] = allows
-                entry["follow_up"] = _follow_up(row, request, access)
-                result.matches.append(entry)
-        else:
-            result.status = "ambiguous"
-            if decision == "offer" and (lexical_confs and lexical_confs[0] >= RELIANCE_FLOOR):
-                shown = strong[:offer_count]
-                result.notes.append(
-                    f"top candidates are within the ambiguity band ({AMBIGUITY_BAND}): "
-                    "offer a choice instead of loading"
-                )
+        match_set, offer_set = set(match_indices), set(offer_indices)
+        for index in ranked:
+            if index not in match_set:
+                continue
+            row = strong[index][1]
+            access = _access_level(row, model_class)
+            paths = row.get("paths", {})
+            assert isinstance(paths, dict)
+            if row.get("routing_mode") == "pointer":
+                allows: list[str] = []
+            elif access == "digest-only":
+                digest = str(paths.get("digest") or "")
+                allows = [digest] if digest else []
             else:
-                shown = strong
-                result.notes.append(
-                    f"route confidence {lexical_confs[0]} is below the reliance floor "
-                    f"({RELIANCE_FLOOR}): offer choices, load nothing automatically"
-                )
-            for score, row, reasons, _signals, confidence in shown:
-                result.offers.append(_entry(score, row, reasons, confidence))
+                allows = [str(paths[key]) for key in ("card", "digest", "index") if paths.get(key)]
+            entry = _entry(index)
+            entry["access"] = access
+            entry["routing_mode"] = row.get("routing_mode")
+            entry["allows"] = allows
+            entry["follow_up"] = _follow_up(row, request, access)
+            result.matches.append(entry)
+        for index in ranked:
+            if index in offer_set:
+                result.offers.append(_entry(index))
+        if result.offers:
             result.notes.append("offer the listed wikis as choices; load nothing until picked")
 
     result.semantic = outcome.to_dict()

@@ -12,6 +12,7 @@ from megamind.confidence import (
     Confidence,
     Source,
     answer_confidence,
+    authorize,
     claim_confidence,
     decide,
     route_confidence,
@@ -163,3 +164,38 @@ def test_decide_ambiguity_band_offers_instead_of_loading() -> None:
     assert decision == "offer"
     assert count == 2
     assert decide([0.9, 0.9 - AMBIGUITY_BAND - 0.001]) == ("load", 1)
+
+
+def test_decide_ranks_confidences_instead_of_trusting_caller_order() -> None:
+    """Callers rank by lexical score, and confidence is not monotone in score."""
+    # a genuine tie sits behind a weaker row: it must still block the auto-load
+    assert decide([1.0, 0.82, 1.0]) == ("offer", 2)
+    assert decide([0.4, 0.9]) == ("load", 1)
+    assert decide([0.1, 0.2]) == ("no-match", 0)
+
+
+# --- reliance-floor authorization ---------------------------------------------
+
+
+def test_authorize_load_covers_only_candidates_that_reach_the_floor() -> None:
+    decision, covered = authorize([0.95, 0.3, 0.8])
+    assert decision == "load"
+    assert covered == [0, 2]  # input order, and the 0.3 row is never loadable
+
+
+def test_authorize_offer_covers_the_ambiguity_band_in_input_order() -> None:
+    decision, covered = authorize([0.9, 0.4, 0.88])
+    assert decision == "offer"
+    assert covered == [0, 2]
+
+
+def test_authorize_no_match_covers_nothing() -> None:
+    assert authorize([OFFER_FLOOR - 0.01, 0.1]) == ("no-match", [])
+    assert authorize([]) == ("no-match", [])
+
+
+def test_authorize_never_widens_beyond_the_floor() -> None:
+    for confidences in ([0.99, 0.74999], [0.8, 0.0], [1.0, 0.25, 0.5]):
+        decision, covered = authorize(confidences)
+        if decision == "load":
+            assert all(confidences[index] >= RELIANCE_FLOOR for index in covered)

@@ -41,6 +41,22 @@ def test_sub_floor_match_offers_choices_without_loading(vault: Path) -> None:
         assert "follow_up" not in offer
 
 
+def test_sub_floor_wikis_stay_offers_inside_a_confident_match(vault: Path) -> None:
+    """A confident top match never drags weaker wikis into loadable `matches`."""
+    result = run_preflight([_ref(vault)], "pricing synthetic", "local")
+    assert result.status == "matched"
+    assert [str(match["name"]) for match in result.matches] == ["ProductWiki"]
+    for match in result.matches:
+        assert match["confidence"]["meets_floor"] is True  # type: ignore[index]
+        assert "allows" in match and "follow_up" in match
+    assert len(result.offers) > 1  # the weaker wikis are still surfaced, just not loadable
+    for offer in result.offers:
+        assert offer["confidence"]["meets_floor"] is False  # type: ignore[index]
+        assert "allows" not in offer
+        assert "follow_up" not in offer
+    assert "ProductWiki" not in [str(offer["name"]) for offer in result.offers]
+
+
 def test_below_no_match_floor_stays_quiet(vault: Path) -> None:
     result = run_preflight(
         [_ref(vault)], "synthetic aardvark bebop crimson dazzle epsilon", "local"

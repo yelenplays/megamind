@@ -24,7 +24,7 @@ from .confidence import (
     OFFER_FLOOR,
     RELIANCE_FLOOR,
     SIGNAL_STRENGTH,
-    decide,
+    authorize,
     route_confidence,
 )
 from .fsops import resolve_contained
@@ -476,11 +476,22 @@ def route(
             kept.append(candidate)
     candidates = kept
 
-    # Thresholds always decide on lexical confidence, in lexical order; the
-    # optional semantic pass below may reorder but never recomputes them.
-    decision, _offer_count = decide([candidate.confidence for candidate in candidates])
-    top_confidence = candidates[0].confidence if candidates else None
-    if decision == "offer" and top_confidence is not None:
+    # Thresholds always decide on lexical confidence; the optional semantic
+    # pass below may reorder but never recomputes them. `authorize` also names
+    # which candidates the decision covers, so a `load` packet can never carry
+    # a candidate that did not itself clear the reliance floor.
+    decision, authorized = authorize([candidate.confidence for candidate in candidates])
+    top_confidence = max((candidate.confidence for candidate in candidates), default=None)
+    if decision == "load":
+        loadable = set(authorized)
+        for index, candidate in enumerate(candidates):
+            if index not in loadable:
+                notes.append(
+                    f"below the reliance floor ({RELIANCE_FLOOR}): omitted {candidate.path}; "
+                    "a load packet carries only candidates that may be opened"
+                )
+        candidates = [candidates[index] for index in authorized]
+    elif decision == "offer" and top_confidence is not None:
         if top_confidence < RELIANCE_FLOOR:
             notes.append(
                 f"route confidence {top_confidence} is below the reliance floor "
@@ -491,23 +502,6 @@ def route(
                 f"top candidates are within the ambiguity band ({AMBIGUITY_BAND}): "
                 "offer a choice instead of loading"
             )
-
-    # Optional local semantic rerank: reorders only the candidates the lexical
-    # ladder already surfaced, using only text each candidate is already
-    # authorized to expose (pointer candidates get none). Any backend failure
-    # returns the lexical order with a typed, inspectable outcome.
-    keys = [candidate.path for candidate in candidates]
-    texts = [
-        "" if candidate.kind == "pointer" else (_read_if_exists(root, candidate.path) or "")
-        for candidate in candidates
-    ]
-    order, outcome = semantic_rerank(
-        query, keys, [float(candidate.score) for candidate in candidates], texts, semantic
-    )
-    candidates = [candidates[index] for index in order]
-    if outcome.status == "ok":
-        for candidate in candidates:
-            candidate.semantic_score = outcome.scores.get(candidate.path)
 
     selected: list[RouteCandidate] = []
     context_chars = 0
@@ -528,6 +522,28 @@ def route(
         selected.append(candidate)
         if counts:
             context_chars += candidate.chars
+
+    # Optional local semantic rerank: it runs last, over the packet the lexical
+    # ladder already selected, so thresholds, membership, and budgets are all
+    # settled before it can touch anything. It sees only text each candidate is
+    # already authorized to expose (pointer candidates get none), and reads no
+    # content at all while it is disabled. Any backend failure returns the
+    # lexical order with a typed, inspectable outcome.
+    texts = (
+        [
+            "" if candidate.kind == "pointer" else (_read_if_exists(root, candidate.path) or "")
+            for candidate in selected
+        ]
+        if semantic is not None
+        else ["" for _ in selected]
+    )
+    order, outcome = semantic_rerank(
+        query, [float(candidate.score) for candidate in selected], texts, semantic
+    )
+    if outcome.status == "ok":
+        for candidate, similarity in zip(selected, outcome.scores, strict=True):
+            candidate.semantic_score = similarity
+    selected = [selected[index] for index in order]
 
     for candidate in selected:
         _candidate_freshness(root, candidate, today, budgets.stale_days)

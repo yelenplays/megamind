@@ -73,7 +73,9 @@ constants live in `megamind.confidence` and are pinned by calibration
 fixtures. `route` and `preflight` apply fixed thresholds:
 
 - at or above 0.75 (`reliance_floor`) the route may load automatically
-  (`decision: load`, preflight `status: matched`);
+  (`decision: load`, preflight `status: matched`); the floor is per candidate,
+  so a load carries only candidates that reach it themselves - weaker rows are
+  omitted from a route packet and demoted to preflight offers;
 - from 0.25 (`offer_floor`) up to 0.75, or whenever the top candidates sit
   inside a 0.05 `ambiguity_band`, the route offers choices without loading
   (`decision: offer`, preflight `status: ambiguous`, no `allows` paths or
