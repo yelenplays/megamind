@@ -11,7 +11,7 @@ model are non-negotiable at every stage.
 - Review and doctor, synthetic examples vault, Agent Skill
 - Known limitations: lexical English-only routing, no nested-map frontmatter
 
-## v0.2 (this release): federation foundation
+## v0.2 (shipped): federation foundation
 
 - Registry and wiki-card schema v2: purpose, scope boundaries, owners,
   sensitivity, local/cloud model access, routing mode, source policy,

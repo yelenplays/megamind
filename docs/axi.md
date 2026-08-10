@@ -113,8 +113,8 @@ the full component rationale.
    finding lists; wiki page bodies are never dumped into output.
 2. **Minimal default schemas**: route candidates default to
    `path,kind,score,reason`; `--fields` opts into
-   `wiki,privacy,chars,reasons`. Doctor findings carry exactly
-   `check,severity,path,message`.
+   `wiki,privacy,chars,confidence,freshness,semantic_score,reasons`. Doctor
+   findings carry exactly `check,severity,path,message`.
 3. **Content truncation**: evolve diffs are bounded to 60 lines
    (`diff_truncated`, `diff_lines_total`, `--full`), doctor findings to 50, and
    every other item list - review sections, catalog wikis, preflight matches

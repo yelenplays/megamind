@@ -1,8 +1,9 @@
 # Context: Megamind domain language
 
-The settled vocabulary for the federation foundation. Each term means exactly
-this anywhere it appears in the project; the avoid lines name the common
-misreadings. This file covers only what the current release implements.
+The settled vocabulary for the federation foundation and the retrieval and
+confidence layer above it. Each term means exactly this anywhere it appears
+in the project; the avoid lines name the common misreadings. This file covers
+only what the current release implements.
 
 **Knowledge engine**:
 Megamind's role: the deterministic layer that owns wiki cataloging, routing,
