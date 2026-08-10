@@ -471,7 +471,7 @@ def test_unicode_digit_frontmatter_never_tracebacks(
     )
     code, doc, err = run_json(capsys, "--root", str(vault), "route", "pricing", "model")
     assert code == 0
-    assert doc["schema_version"] == "megamind/route-result/v1"
+    assert doc["schema_version"] == "megamind/route-result/v2"
     assert err == ""
 
 
@@ -674,7 +674,13 @@ def test_preflight_matched_document(tmp_path: Path, capsys: pytest.CaptureFixtur
     )
     assert code == 0
     assert err == ""
-    assert doc["schema_version"] == "megamind/preflight-result/v1"
+    assert doc["schema_version"] == "megamind/preflight-result/v2"
+    assert doc["status"] == "matched"
+    assert doc["confidence"] >= 0.75
+    assert doc["thresholds"]["reliance_floor"] == 0.75
+    assert doc["semantic"]["status"] == "disabled"
+    assert doc["matches"][0]["confidence"]["meets_floor"] is True
+    assert doc["matches"][0]["evidence"]["lexical"]
     assert doc["status"] == "matched"
     assert doc["preflight_id"]
     assert doc["matches"][0]["name"] == "ProductWiki"
@@ -894,7 +900,7 @@ def test_route_help_shell_quotes_the_query(
 ) -> None:
     """The query is untrusted: it must land in help[] as a single quoted argument."""
     vault = build_vault(tmp_path)
-    query = 'pricing" ; rm -rf ~ #'
+    query = 'pricing product" ; rm -rf ~ #'
     code, doc, _ = run_json(capsys, "--root", str(vault), "route", query)
     assert code == 0
     entry = next(item for item in doc["help"] if "megamind-axi route" in item)

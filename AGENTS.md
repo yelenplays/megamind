@@ -37,8 +37,13 @@ contract), `docs/architecture.md` (design and scoring weights),
   product contract, not polish.
 - Determinism is product contract: no wall-clock behavior (use the `--today`
   plumbing), no randomness, no network in any command. Routing weights are
-  constants in `src/megamind/routing.py`; changing them changes behavior and
-  needs test updates.
+  constants in `src/megamind/routing.py`; confidence thresholds and rubrics
+  are constants in `src/megamind/confidence.py` pinned by
+  `tests/fixtures/confidence-calibration.json`; the rerank blend is
+  `SEMANTIC_BLEND` in `src/megamind/semantic.py`. Changing any of them
+  changes behavior and needs test updates. Semantic reranking only reorders
+  already-authorized candidates and always fails typed (never silently) back
+  to the lexical order.
 - The packaged skill under `src/megamind/skill/` is the source of truth;
   `skills/megamind/` must be an exact copy (`tests/test_skillpack.py`
   enforces it).

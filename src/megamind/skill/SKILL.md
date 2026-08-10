@@ -16,11 +16,26 @@ permanent changes require the plan id from a dry run as an approval token.
 
 ## Find knowledge
 
-Run `megamind-axi route "<question>"`. Open only the returned candidate
-paths, best first; each row carries a reason and respects context budgets.
-`matched: false` with `candidates[0]` is a definitive no-match: say so
-instead of guessing. Candidates of kind `pointer` must be opened manually and
-never quoted; kind `digest` exposes only summary content.
+Run `megamind-axi route "<question>"`. The `decision` field is authoritative:
+`load` means route confidence reached the 0.75 reliance floor, so open the
+returned candidate paths, best first; `offer` means weaker or ambiguous
+evidence, so present the candidates as choices and load nothing until one is
+picked; `no-match` is definitive, so say so instead of guessing. Candidates
+of kind `pointer` must be opened manually and never quoted; kind `digest`
+exposes only summary content. `--semantic` reranks the surfaced candidates
+locally when phrasing is indirect; check the `semantic.status` field and fall
+back to the lexical order whenever it is not `ok`.
+
+## Score confidence
+
+Route, claim, and answer confidence are separate, and 0.75 is the reliance
+floor for all three. Use `megamind-axi assess claim --source
+<quality>:<origin> [--lifecycle active] [--freshness fresh] [--contradicted]`
+to score one claim from its evidence (sources from one origin count once;
+contradictions and stale or undated evidence stay below the floor), and
+`megamind-axi assess answer --claim <score|unknown> ...` to cap an answer at
+its weakest relied-upon claim. `unknown` is a definitive state, never a
+number to work around.
 
 ## Capture knowledge
 
@@ -68,9 +83,11 @@ fleet catalog is a generated projection of those cards.
   redacted entries are stated explicitly, never silently omitted.
 - `megamind-axi preflight "<request>" --estate <dir> --model-class local|cloud`
   routes a substantive request at the catalog level. It returns card-level
-  matches and exact follow-up commands only; it never returns page content,
-  never writes anything, and honors each card's access policy. A `none` wiki
-  appears under `filtered`, a pointer wiki yields location metadata only, and
+  matches and exact follow-up commands only when route confidence reaches the
+  reliance floor; below it you get `ambiguous` offers (no loadable paths) or
+  a quiet `no-match`. It never returns page content, never writes anything,
+  and honors each card's access policy. A `none` wiki appears under
+  `filtered`, a pointer wiki yields location metadata only, and
   `preflight_id` is the proof the consultation ran. Treat `no-match` as
   definitive: stay quiet about wikis instead of guessing.
 - `megamind-axi adopt <dir>` brings an existing wiki directory under Megamind

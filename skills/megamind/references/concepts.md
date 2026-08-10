@@ -41,8 +41,21 @@ Evolution: idea (proposal) -> topic page -> micro-wiki folder -> top-level
 wiki. Each promotion needs more evidence; the last one always needs explicit
 human approval (`--approve-new-wiki`).
 
+## Confidence
+
+Route, claim, and answer confidence are separate scores in [0, 1] against the
+fixed 0.75 reliance floor. Route confidence blends the strongest per-token
+routing signal with query coverage; the thresholds are 0.75 (load), 0.25
+(offer below, no-match under), and a 0.05 ambiguity band. Claim confidence
+weighs eligible source quality (primary, synthesis, hypothesis, prior),
+independent corroboration (one origin counts once), freshness, lifecycle, and
+contradictions. Answer confidence is the weakest relied-upon claim.
+`unknown` is first-class: no evidence, no number.
+
 ## Determinism
 
 `megamind-axi route` is lexical token overlap with fixed weights and stable tie-breaking.
 Same vault plus same query always gives the same answer. No embeddings, no
-network, no model calls; that also means no synonym matching yet.
+network, no model calls; `--semantic` adds a deterministic local char-ngram
+rerank that only reorders already-authorized candidates and reports a typed
+status, so the lexical baseline is always available.

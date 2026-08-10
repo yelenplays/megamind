@@ -1,0 +1,203 @@
+{
+  "comment": "Calibration fixtures for the claim-confidence rubric in src/megamind/confidence.py. Every case pins the exact score the deterministic rubric must produce; changing a constant in that module must fail this fixture. expected_score null means the confidence stays first-class 'unknown'.",
+  "cases": [
+    {
+      "name": "single eligible primary source, active and fresh",
+      "sources": [{"quality": "primary", "origin": "release-notes"}],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.9
+    },
+    {
+      "name": "two primary sources from one origin count once",
+      "sources": [
+        {"quality": "primary", "origin": "release-notes"},
+        {"quality": "primary", "origin": "release-notes"}
+      ],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.9
+    },
+    {
+      "name": "two independent primary origins corroborate",
+      "sources": [
+        {"quality": "primary", "origin": "release-notes"},
+        {"quality": "primary", "origin": "changelog"}
+      ],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.95
+    },
+    {
+      "name": "three independent origins hit the corroboration cap",
+      "sources": [
+        {"quality": "primary", "origin": "release-notes"},
+        {"quality": "primary", "origin": "changelog"},
+        {"quality": "primary", "origin": "incident-review"}
+      ],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 1.0
+    },
+    {
+      "name": "lone synthesis stays below the reliance floor",
+      "sources": [{"quality": "synthesis", "origin": "wiki-page"}],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.7
+    },
+    {
+      "name": "two independent synthesis origins reach the floor exactly",
+      "sources": [
+        {"quality": "synthesis", "origin": "wiki-page"},
+        {"quality": "synthesis", "origin": "design-doc"}
+      ],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.75
+    },
+    {
+      "name": "labeled hypothesis stays hypothesis-strength",
+      "sources": [{"quality": "hypothesis", "origin": "observation-log"}],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.5
+    },
+    {
+      "name": "unsupported model prior scores lowest",
+      "sources": [{"quality": "prior", "origin": "model-memory"}],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.2
+    },
+    {
+      "name": "hypotheses and priors never corroborate upward",
+      "sources": [
+        {"quality": "hypothesis", "origin": "observation-log"},
+        {"quality": "prior", "origin": "model-memory"}
+      ],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.5
+    },
+    {
+      "name": "stale primary evidence is capped below the floor",
+      "sources": [{"quality": "primary", "origin": "release-notes"}],
+      "lifecycle": "active",
+      "freshness": "stale",
+      "contradicted": false,
+      "expected_score": 0.6
+    },
+    {
+      "name": "unknown freshness is capped below the floor",
+      "sources": [{"quality": "primary", "origin": "release-notes"}],
+      "lifecycle": "active",
+      "freshness": "unknown",
+      "contradicted": false,
+      "expected_score": 0.7
+    },
+    {
+      "name": "proposed lifecycle caps below the floor",
+      "sources": [{"quality": "primary", "origin": "release-notes"}],
+      "lifecycle": "proposed",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.5
+    },
+    {
+      "name": "shaky lifecycle caps below the floor",
+      "sources": [{"quality": "primary", "origin": "release-notes"}],
+      "lifecycle": "shaky",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.6
+    },
+    {
+      "name": "rejected knowledge scores near zero",
+      "sources": [{"quality": "primary", "origin": "release-notes"}],
+      "lifecycle": "rejected",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.1
+    },
+    {
+      "name": "superseded knowledge scores near zero",
+      "sources": [{"quality": "primary", "origin": "release-notes"}],
+      "lifecycle": "superseded",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.1
+    },
+    {
+      "name": "unknown lifecycle caps like unknown freshness",
+      "sources": [{"quality": "primary", "origin": "release-notes"}],
+      "lifecycle": "",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.7
+    },
+    {
+      "name": "unresolved contradiction freezes below the reliance floor",
+      "sources": [
+        {"quality": "primary", "origin": "release-notes"},
+        {"quality": "primary", "origin": "changelog"}
+      ],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": true,
+      "expected_score": 0.5
+    },
+    {
+      "name": "contradiction is the strongest cap when everything is wrong",
+      "sources": [{"quality": "primary", "origin": "release-notes"}],
+      "lifecycle": "shaky",
+      "freshness": "stale",
+      "contradicted": true,
+      "expected_score": 0.5
+    },
+    {
+      "name": "an ineligible source alone leaves confidence unknown",
+      "sources": [{"quality": "primary", "origin": "raw-internal", "eligible": false}],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": null
+    },
+    {
+      "name": "no sources at all leaves confidence unknown",
+      "sources": [],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": null
+    },
+    {
+      "name": "confirmed lifecycle behaves like active",
+      "sources": [{"quality": "primary", "origin": "release-notes"}],
+      "lifecycle": "confirmed",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.9
+    },
+    {
+      "name": "ineligible primary plus eligible hypothesis keeps hypothesis strength",
+      "sources": [
+        {"quality": "primary", "origin": "raw-internal", "eligible": false},
+        {"quality": "hypothesis", "origin": "observation-log"}
+      ],
+      "lifecycle": "active",
+      "freshness": "fresh",
+      "contradicted": false,
+      "expected_score": 0.5
+    }
+  ]
+}

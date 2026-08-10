@@ -1,8 +1,9 @@
 # Context: Megamind domain language
 
-The settled vocabulary for the federation foundation. Each term means exactly
-this anywhere it appears in the project; the avoid lines name the common
-misreadings. This file covers only what the current release implements.
+The settled vocabulary for the federation foundation and the retrieval and
+confidence layer above it. Each term means exactly this anywhere it appears
+in the project; the avoid lines name the common misreadings. This file covers
+only what the current release implements.
 
 **Knowledge engine**:
 Megamind's role: the deterministic layer that owns wiki cataloging, routing,
@@ -68,3 +69,23 @@ The host-side act of consulting the wiki catalog before answering or starting
 a substantive request, with a proof identity showing the consultation
 happened. Megamind supplies the typed result; running it is the host's choice.
 _Avoid_: optional skill trigger, full-catalog prompt injection
+
+**Route confidence**:
+The deterministic score in [0, 1] for how well a wiki or artifact matches a
+request, blended from the strongest per-token routing signal and token
+coverage. Separate from claim confidence (evidence support for one claim) and
+answer confidence (capped at the weakest relied-upon claim).
+_Avoid_: probability of truth, model self-assessment
+
+**Reliance floor**:
+The fixed 0.75 threshold: at or above it a route may load automatically, a
+claim may become active factual knowledge, an answer may be delivered without
+a warning. Below it evidence stays an offer, hypothesis, or raw material; an
+`unknown` confidence never meets it.
+_Avoid_: tunable preference, guarantee of correctness
+
+**Semantic rerank**:
+The optional local similarity pass (`--semantic`) that reorders only the
+candidates the lexical baseline already surfaced and access filtering already
+authorized, with a typed disabled/ok/unavailable/error outcome.
+_Avoid_: retrieval layer, access decision, cloud embeddings
