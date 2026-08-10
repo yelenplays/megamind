@@ -17,6 +17,7 @@ host can prove preflight ran without storing the raw prompt.
 from __future__ import annotations
 
 import json
+import shlex
 from dataclasses import dataclass, field
 
 from .catalog import Catalog, RootRef, build_catalog
@@ -117,7 +118,12 @@ def _follow_up(row: dict[str, object], request: str, access: str) -> str:
             return f"Read only the approved digest {root}/{digest}; nothing else may be loaded"
         return f"{root} allows digest-only access but declares no digest; load nothing"
     if row.get("source") == "registry":
-        return f'Run `megamind-axi --root {root} route "{request}"` for the bounded ladder'
+        # The request is a host-supplied prompt representation: shell-quote it so
+        # the emitted follow-up stays exactly one runnable command.
+        return (
+            f"Run `megamind-axi --root {shlex.quote(root)} route {shlex.quote(request)}` "
+            "for the bounded ladder"
+        )
     index = str(paths.get("index") or "wiki/index.md")
     return f"Open {root}/{index} and follow its links within the context budget"
 

@@ -82,6 +82,15 @@ def test_unreachable_root_is_an_explicit_entry(tmp_path: Path) -> None:
     assert catalog.rows[0]["status"] == "unreachable"
 
 
+def test_root_without_registry_or_card_is_stated(tmp_path: Path) -> None:
+    """An empty single root is a definitive empty state, not a silent zero."""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    catalog = build_catalog([RootRef(label=str(plain), path=plain)])
+    assert catalog.rows == []
+    assert any("no Megamind registry and no wiki card" in note for note in catalog.notes)
+
+
 def test_hidden_wiki_is_withheld_without_name_or_root(tmp_path: Path) -> None:
     estate = _build_estate(tmp_path)
     vault = estate / "vault"

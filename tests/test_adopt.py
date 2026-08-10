@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from megamind.adopt import (
     rollback_adoption,
 )
 from megamind.card import load_wiki_card
+from megamind.fsops import PathEscapeError, content_hash
 from megamind.scaffold import init_vault
 
 
@@ -116,6 +118,67 @@ def test_rollback_keeps_files_modified_since_adoption(tmp_path: Path) -> None:
     assert agents.is_file()
     assert any("AGENTS.md" in entry for entry in kept)
     assert "AGENTS.md" not in removed
+
+
+def _adopted(tmp_path: Path) -> tuple[Path, Path]:
+    """An adopted legacy wiki plus the on-disk rollback record it produced."""
+    target = _legacy_wiki(tmp_path)
+    computed = plan_adoption(target)
+    apply_adoption(computed, approved_plan_id=computed.plan_id)
+    record = next((target / ".megamind" / "audit").glob("adoption-*.json"))
+    return target, record
+
+
+def test_rollback_refuses_a_record_naming_a_path_outside_the_target(tmp_path: Path) -> None:
+    """A tampered record must never make rollback delete outside the adoption root."""
+    target, record = _adopted(tmp_path)
+    victim = tmp_path / "victim.md"
+    victim.write_text("# Pre-existing file outside the wiki\n", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    record.write_text(
+        json.dumps(
+            {
+                "plan_id": "tampered",
+                "files": [
+                    {
+                        "path": "../victim.md",
+                        "sha": content_hash(victim.read_text(encoding="utf-8")),
+                    }
+                ],
+                "directories": ["../outside/"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PathEscapeError, match="escapes root"):
+        rollback_adoption(target)
+    assert victim.is_file()
+    assert outside.is_dir()
+    assert (target / ".megamind/wiki-card.json").is_file()  # nothing was removed
+
+
+def test_rollback_of_a_corrupt_record_is_a_typed_error(tmp_path: Path) -> None:
+    """A truncated record fails as a typed adopt error, never a traceback."""
+    target, record = _adopted(tmp_path)
+    record.write_text('{"plan_id": "abc", "files": [{"path"', encoding="utf-8")
+    with pytest.raises(AdoptError, match="not valid JSON"):
+        rollback_adoption(target)
+    assert (target / ".megamind/wiki-card.json").is_file()
+
+
+def test_rollback_of_a_record_with_a_malformed_entry_is_a_typed_error(tmp_path: Path) -> None:
+    target, record = _adopted(tmp_path)
+    record.write_text(json.dumps({"files": [{"path": "AGENTS.md"}]}), encoding="utf-8")
+    with pytest.raises(AdoptError, match="path and sha"):
+        rollback_adoption(target)
+    record.write_text(json.dumps({"files": [], "directories": [7]}), encoding="utf-8")
+    with pytest.raises(AdoptError, match="malformed directory entry"):
+        rollback_adoption(target)
+    record.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+    with pytest.raises(AdoptError, match="not a JSON object"):
+        rollback_adoption(target)
+    assert (target / ".megamind/wiki-card.json").is_file()
 
 
 def test_rollback_without_adoption_is_a_typed_error(tmp_path: Path) -> None:

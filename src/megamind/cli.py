@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from dataclasses import asdict
 from datetime import date
@@ -237,7 +238,7 @@ def cmd_catalog(
                 f"projection {status}: regenerate it from the cards so they cannot diverge"
             )
     steps = [
-        f'Run `{EXECUTABLE} preflight "<request>" --model-class local --estate <dir> '
+        f'Run `{EXECUTABLE} preflight "<request>" --model-class local --estate <dir>` '
         "to route a request across these wikis",
         f"Run `{EXECUTABLE} catalog --estate <dir> --emit-projection` for the "
         "human-readable projection",
@@ -408,8 +409,8 @@ def cmd_route(root: Path, registry: Registry, query: str, fields: list[str]) -> 
         best = result.candidates[0]
         doc["help"] = _help(
             f"Open `{best.path}` first; it scored highest",
-            f'Run `{EXECUTABLE} route "{query}" --fields path,kind,score,privacy,reasons` '
-            "for detail",
+            f"Run `{EXECUTABLE} route {shlex.quote(query)} "
+            "--fields path,kind,score,privacy,reasons` for detail",
         )
     else:
         doc["help"] = _help(

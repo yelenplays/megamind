@@ -209,6 +209,45 @@ def apply_adoption(computed: AdoptionPlan, approved_plan_id: str) -> list[str]:
     return created
 
 
+def _load_rollback_record(record_file: Path) -> dict[str, object]:
+    """Parse an adoption record. The record is on-disk input, so never trusted."""
+    try:
+        payload = json.loads(record_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise AdoptError(
+            f"adoption record {record_file.name} is not valid JSON: {error}"
+        ) from error
+    if not isinstance(payload, dict):
+        raise AdoptError(f"adoption record {record_file.name} is not a JSON object")
+    return payload
+
+
+def _record_files(record: dict[str, object], name: str) -> list[tuple[str, str]]:
+    entries = record.get("files", [])
+    if not isinstance(entries, list):
+        raise AdoptError(f"adoption record {name} has a malformed files list")
+    files: list[tuple[str, str]] = []
+    for entry in entries:
+        rel = entry.get("path") if isinstance(entry, dict) else None
+        sha = entry.get("sha") if isinstance(entry, dict) else None
+        if not isinstance(rel, str) or not rel or not isinstance(sha, str) or not sha:
+            raise AdoptError(f"adoption record {name} has a file entry without a path and sha")
+        files.append((rel, sha))
+    return files
+
+
+def _record_directories(record: dict[str, object], name: str) -> list[str]:
+    entries = record.get("directories", [])
+    if not isinstance(entries, list):
+        raise AdoptError(f"adoption record {name} has a malformed directories list")
+    directories: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, str) or not entry:
+            raise AdoptError(f"adoption record {name} has a malformed directory entry")
+        directories.append(entry)
+    return directories
+
+
 def rollback_adoption(target: Path) -> tuple[list[str], list[str]]:
     """Remove exactly what the latest adoption created. Returns (removed, kept).
 
@@ -216,36 +255,46 @@ def rollback_adoption(target: Path) -> tuple[list[str], list[str]]:
     recorded at apply time; a file anyone edited since is kept and reported.
     Directories are removed only when empty. The audit log itself always stays:
     it is the record that the adoption and the rollback happened.
+
+    The record is validated and every path in it is resolved and contained
+    before anything is removed, so a corrupt, truncated, or tampered record
+    fails as a typed error with nothing deleted.
     """
     audit_dir = target / MEGAMIND_DIR / "audit"
     records = sorted(audit_dir.glob("adoption-*.json")) if audit_dir.is_dir() else []
     if not records:
         raise AdoptError("no adoption record found; nothing to roll back")
-    record = json.loads(records[-1].read_text(encoding="utf-8"))
+    record_file = records[-1]
+    record = _load_rollback_record(record_file)
+    files = [
+        (rel, sha, resolve_contained(target, rel))
+        for rel, sha in _record_files(record, record_file.name)
+    ]
+    directories = [
+        (rel, resolve_contained(target, rel))
+        for rel in _record_directories(record, record_file.name)
+    ]
     removed: list[str] = []
     kept: list[str] = []
-    for entry in record.get("files", []):
-        rel = str(entry["path"])
-        path = target / rel
+    for rel, sha, path in files:
         if not path.is_file():
             kept.append(f"{rel} (already gone)")
             continue
         current = content_hash(path.read_text(encoding="utf-8"))
-        if current != entry["sha"]:
+        if current != sha:
             kept.append(f"{rel} (modified since adoption: kept)")
             continue
         path.unlink()
         removed.append(rel)
-    for rel in record.get("directories", []):
-        directory = target / rel
+    for rel, directory in directories:
         try:
             directory.rmdir()
             removed.append(rel)
         except OSError:
             kept.append(f"{rel} (not empty: kept)")
     # The rollback record itself is generated material; remove it too.
-    records[-1].unlink()
-    removed.append(f"{MEGAMIND_DIR}/audit/{records[-1].name}")
+    record_file.unlink()
+    removed.append(f"{MEGAMIND_DIR}/audit/{record_file.name}")
     append_audit(
         target,
         "adopt-rollback",

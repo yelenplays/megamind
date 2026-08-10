@@ -45,7 +45,7 @@ max_candidates: 5
 notes[0]:
 help[2]:
   Open `ProductWiki/topics/pricing-v2.md` first; it scored highest
-  "Run `megamind-axi route \"pricing\" --fields path,kind,score,privacy,reasons` for detail"
+  "Run `megamind-axi route pricing --fields path,kind,score,privacy,reasons` for detail"
 ```
 
 ## The ten principles, applied

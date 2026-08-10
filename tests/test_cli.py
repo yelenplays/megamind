@@ -4,6 +4,7 @@ definitive empty states, truncation, help[], structured errors, exit codes."""
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -754,6 +755,26 @@ def test_adopt_missing_directory_is_typed_error(
     assert doc["code"] == "adopt_invalid"
 
 
+def test_adopt_corrupt_rollback_record_is_a_typed_document(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A truncated adoption record must still produce one typed document, not a traceback."""
+    target = tmp_path / "LegacyWiki"
+    target.mkdir()
+    (target / "README.md").write_text("# Legacy\n", encoding="utf-8")
+    _, planned, _ = run_json(capsys, "adopt", str(target))
+    run_json(capsys, "adopt", str(target), "--apply", "--plan-id", planned["plan_id"])
+
+    record = next((target / ".megamind" / "audit").glob("adoption-*.json"))
+    record.write_text('{"files": [{"path"', encoding="utf-8")
+    code, doc, err = run_json(capsys, "adopt", str(target), "--rollback")
+    assert code == 1
+    assert err == ""
+    assert doc["schema_version"] == "megamind/error/v1"
+    assert doc["code"] == "adopt_invalid"
+    assert (target / ".megamind/wiki-card.json").is_file()
+
+
 def test_new_commands_emit_schema_version_and_help(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -769,3 +790,43 @@ def test_new_commands_emit_schema_version_and_help(
         _, doc, _ = run_json(capsys, *argv)
         assert doc["schema_version"].startswith("megamind/"), argv
         assert doc["help"], argv
+
+
+# --- help[] entries are runnable commands ---------------------------------------
+
+
+def test_help_entries_never_leave_a_command_unterminated(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every backticked help entry must close its backtick and parse as one command."""
+    vault = build_vault(tmp_path)
+    for argv in (
+        ["--root", str(vault)],
+        ["--root", str(vault), "catalog"],
+        ["--root", str(vault), "catalog", "--emit-projection"],
+        ["--root", str(vault), "preflight", "pricing", "--model-class", "local"],
+        ["--root", str(vault), "route", "pricing"],
+        ["--root", str(vault), "review", "--today", "2026-08-10"],
+        ["--root", str(vault), "doctor"],
+    ):
+        _, doc, _ = run_json(capsys, *argv)
+        for entry in doc["help"]:
+            assert entry.count("`") % 2 == 0, (argv, entry)
+            for command in entry.split("`")[1::2]:
+                if command.startswith("megamind-axi "):
+                    assert shlex.split(command)[0] == "megamind-axi", (argv, entry)
+
+
+def test_route_help_shell_quotes_the_query(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The query is untrusted: it must land in help[] as a single quoted argument."""
+    vault = build_vault(tmp_path)
+    query = 'pricing" ; rm -rf ~ #'
+    code, doc, _ = run_json(capsys, "--root", str(vault), "route", query)
+    assert code == 0
+    entry = next(item for item in doc["help"] if "megamind-axi route" in item)
+    tokens = shlex.split(entry.split("`")[1])
+    assert query in tokens
+    assert ";" not in tokens
+    assert "rm" not in tokens

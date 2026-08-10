@@ -270,6 +270,11 @@ def build_catalog(refs: list[RootRef], today: date | None = None) -> Catalog:
                 continue
             health = _root_health(ref.path, "wiki-card", today)
             catalog.rows.append(_row_from_entry(ref, entry, "wiki-card", None, today, health))
+        else:
+            catalog.notes.append(
+                f"{ref.label} carries no Megamind registry and no wiki card: "
+                "nothing to project for this root"
+            )
     catalog.rows.sort(
         key=lambda row: str(row.get("sort_key") or f"{row.get('root')}/{row.get('name')}")
     )

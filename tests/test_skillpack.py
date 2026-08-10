@@ -41,6 +41,18 @@ def test_write_skill_creates_and_never_overwrites(tmp_path: Path) -> None:
     assert "megamind/SKILL.md" not in created_again
 
 
+def test_command_reference_sections_are_unique_and_have_bodies() -> None:
+    """A stray duplicate heading silently splits a command's documentation."""
+    text = SKILL_COMMANDS_DOC.read_text(encoding="utf-8")
+    headings = re.findall(r"^## (.*)$", text, re.M)
+    duplicates = sorted({h for h in headings if headings.count(h) > 1})
+    assert not duplicates, f"duplicate sections in commands.md: {duplicates}"
+    for heading in headings:
+        assert _section(SKILL_COMMANDS_DOC, f"## {heading}").strip(), (
+            f"commands.md section `{heading}` has no body"
+        )
+
+
 def _section(doc: Path, heading: str) -> str:
     text = doc.read_text(encoding="utf-8")
     match = re.search(rf"^{re.escape(heading)}$(.*?)(?=^## |\Z)", text, re.M | re.S)

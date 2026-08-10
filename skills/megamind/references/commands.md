@@ -62,8 +62,6 @@ removes exactly what the last apply created, and only while the content is
 unchanged since creation. Existing pages are never moved, renamed, or
 rewritten.
 
-## megamind-axi config show
-
 ## megamind-axi route <query...> [--fields ...]
 
 `megamind/route-result/v1`. Default candidate fields: `path,kind,score,reason`.
