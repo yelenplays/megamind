@@ -203,10 +203,13 @@ string) replaces or clears it.
 A transition to the status a gap already holds is an exact repeat: it appends no
 snapshot, keeps the recorded date, and never rewrites a rejection reason, a
 supersession target, or a cooldown, so `status: unchanged` comes back instead of
-a lifecycle move that did not happen. Anything that would change the record -
-a different reason, a different `--superseded-by`, a different cooldown - is not
-an exact repeat and refuses with `gap_transition_invalid` rather than
-overwriting a terminal fact.
+a lifecycle move that did not happen. Only a field that status actually persists
+can make a repeat inexact - a different `--reason` on `rejected`, a different
+`--superseded-by` on `superseded`, or a different `--cooldown-until` on any
+status - and that refuses with `gap_transition_invalid` rather than overwriting
+a terminal fact. A flag the status does not persist changes nothing, so
+`--reason` on a repeated `open` or `paused` transition stays a no-op instead of
+refusing an edit it was never going to make.
 
 Dates are supplied by the host or CLI, never read from the clock, and every
 date a record carries - `created`, `updated`, `cooldown_until`, each attempt's
@@ -239,9 +242,11 @@ bounds results to 20 sources. Eligible results create a replay-safe
 A result with no eligible source is `status: rejected` before any write, so no
 proposal, audit record, or log event is created: correlation is the idempotency
 key, and a proposal written for an empty result could never be repaired by the
-replay that finally carries a real source. Replaying the same correlation with
-different eligible sources refuses rather than letting the returned document
-claim a citation the stored proposal does not carry. Origins and summaries are
+replay that finally carries a real source. Because correlation alone keys the
+file, a replay is bound to the whole immutable nomination identity: the same
+correlation with a different wiki, topic, or set of eligible sources refuses
+rather than letting the returned document claim an identity or a citation the
+stored proposal does not carry. Origins and summaries are
 redacted only where a credential assignment or a local filesystem path is
 structurally identified, so a cited origin such as
 `https://docs.example.com/home/getting-started` survives intact.
@@ -290,7 +295,14 @@ loss interrupts is therefore always recoverable from the record alone:
   completely, restoring backed-up files and removing created ones, and refuses
   when generated content was edited. It marks the record `rolled_back`, which
   leaves the vault re-plannable: the same criteria produce the same `plan_id`
-  and a fresh apply.
+  and a fresh apply;
+- recovery deletes only the exact files the manifest tracks, and prunes only
+  directories the transaction is recorded as having created and left empty
+  (`created_dirs`, written before the first mutation). Nothing is ever removed
+  recursively. A page authored inside the provisional wiki after the apply is
+  not the transaction's to delete: it is preserved, named in `preserved`, and
+  the result comes back as `status: partial` instead of `rolled_back`. The
+  in-process undo that runs when an apply raises follows the same rule.
 
 Provisional knowledge is not trusted until confidence coverage and a later
 evaluation clear it, and every consumer acts on that: catalog rows carry
@@ -305,7 +317,8 @@ own path (the result degrades to `offer` when nothing trusted remains), and in
 keep a provisional candidate visible as an offer while authorizing loads only
 for trusted ones. This gate runs after the confidence
 thresholds and only narrows them, so it can produce an `offer` at or above the
-reliance floor; `notes` names it as a governance decision and never as a
+reliance floor; the additive `governance_downgrade` boolean states that cause
+as a typed field, and `notes` names it as a governance decision and never as a
 confidence one. Privacy-safe offers and research nominations may still name a
 provisional wiki explicitly.
 

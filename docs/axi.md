@@ -40,8 +40,9 @@ with a stable `schema_version`:
 The v2 retrieval documents are additive over their v1 shapes: every v1 field
 keeps its name and meaning, and v2 adds route confidence, thresholds,
 semantic-rerank outcome, per-candidate freshness (see below), the
-`route-result/v2` `governance[]` sidecar, and the `provisional` governance
-marker on catalog rows and preflight matches and offers.
+`route-result/v2` `governance[]` sidecar and its `governance_downgrade` flag,
+and the `provisional` governance marker on catalog rows and preflight matches
+and offers.
 
 Example (`megamind-axi route "pricing"` on the examples vault):
 
@@ -63,6 +64,7 @@ candidates[1]{path,kind,score,reason}:
   ProductWiki/topics/pricing-v2.md,page,7,"keyword match: pricing"
 governance[1]{path,provisional,trusted,disposition}:
   ProductWiki/topics/pricing-v2.md,false,true,load
+governance_downgrade: false
 context_chars: 446
 max_context_chars: 8000
 max_candidates: 5
@@ -101,10 +103,11 @@ provisional candidate that cleared the floor leaves the `load` packet and
 becomes an offer, and when every candidate that cleared it is provisional the
 whole result degrades to `decision: offer` / `status: ambiguous` with the top
 confidence still at or above the floor and no `ambiguity_band` involved.
-`notes` always distinguishes the two causes - a governance note says
-"governance gate, not a confidence threshold" or "governance downgrade, not a
-confidence downgrade", and never reuses the reliance-floor or ambiguity-band
-wording.
+The cause is a typed field, not prose to parse: `governance_downgrade` is
+`true` exactly when the governance gate, not a threshold, produced the offer.
+`notes` says the same thing in words - a governance note says "governance gate,
+not a confidence threshold" or "governance downgrade, not a confidence
+downgrade", and never reuses the reliance-floor or ambiguity-band wording.
 
 `route-result/v2` therefore carries a `governance[]` sidecar, emitted on every
 route regardless of `--fields`, keyed by each candidate's own root-relative

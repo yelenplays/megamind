@@ -91,8 +91,9 @@ Confidence is necessary but not sufficient: the `governance[]` sidecar
 provisional wikis, which are never an authorized load and can degrade a
 confident result to `offer` on their own. It covers the emitted packet plus
 every provisional candidate a `load` withheld, which stays an `offer` row
-rather than disappearing from the response. `notes` states whether a
-downgrade was a governance or a confidence decision. No match returns
+rather than disappearing from the response. The `governance_downgrade` boolean
+states whether a downgrade was a governance or a confidence decision as a typed
+field, and `notes` says the same in words. No match returns
 `matched: false` and `candidates[0]`, exit 0. `--today` makes per-candidate
 `freshness` (`updated`, `age_days`, `stale`) reproducible; without it those
 stay explicitly unknown. `--semantic` enables local char-ngram reranking of
@@ -159,8 +160,10 @@ and attempts are machine-readable and retain cooldown, rejection, reopen, and
 supersession history. `transition` requires an explicit `--status`, so no
 omitted flag can reopen a gap. An omitted `--cooldown-until` keeps the recorded
 backoff; pass it explicitly to change or clear it. Transitioning to the status
-a gap already holds is an idempotent `status: unchanged` no-op; a repeat that
-would change a rejection reason, supersession target, or cooldown refuses.
+a gap already holds is an idempotent `status: unchanged` no-op; only a field
+that status persists can make it inexact, so a repeat refuses on a different
+`--reason` for `rejected`, a different `--superseded-by` for `superseded`, or a
+different `--cooldown-until`, and ignores a flag the status never stores.
 `--today` and `--cooldown-until` must both be ISO `YYYY-MM-DD` (or, for the
 cooldown, an explicit empty string to clear it); they are validated before any
 write, and replay revalidates every date already in the journal. `list` returns
@@ -180,7 +183,8 @@ typed pause/refusal.
 Validates a host round-trip by stable correlation id and turns eligible
 sources into an immutable-source ingest proposal. Results are bounded and
 idempotent; a result with no eligible source is rejected before any proposal,
-audit, or log write, and a replay that changes the eligible sources refuses.
+audit, or log write, and a replay that changes any part of the nomination
+identity - wiki, topic, or the eligible sources - refuses.
 Megamind performs no network or external action and never writes `raw/`.
 
 ## megamind-axi provision-wiki NAME PATH [criteria flags]
@@ -197,7 +201,9 @@ record commits. Re-running the same apply is a verified `status: noop`, an
 interrupted apply resumes from the manifest (including one whose targets did
 not all reach disk), and `--rollback --plan-id <id>` undoes it completely; a
 plan id from other arguments, stale targets, or edited generated content all
-refuse. It registers the card immediately with
+refuse. Rollback removes only manifest-tracked files and empties only
+directories the transaction created: a page written into the wiki after the
+apply is preserved, listed in `preserved`, and returns `status: partial`. It registers the card immediately with
 `provisional: true`; provisional knowledge is not trusted, so route, catalog,
 and preflight surface it and only ever offer it, never load it. No remote
 repository, collaborators, account action, publication, merge, or spend is

@@ -459,6 +459,9 @@ def cmd_route(
         "semantic": result.semantic,
         "candidates": [_route_row(asdict(c), fields) for c in result.candidates],
         "governance": result.governance,
+        # Typed beside the sidecar so a consumer never has to string-match the
+        # prose in `notes` to tell a governance offer from a confidence one.
+        "governance_downgrade": result.governance_downgrade,
         "context_chars": result.context_chars,
         "max_context_chars": result.max_context_chars,
         "max_candidates": result.max_candidates,
@@ -976,12 +979,21 @@ def _applied_doc(name: str, path: str, plan_id: str, status: str, files: list[st
 
 def cmd_provision_wiki(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc, int]:
     if args.rollback:
-        removed = rollback_provision(root, args.plan_id or "")
+        outcome = rollback_provision(root, args.plan_id or "")
+        entries = ["Re-run provision-wiki without --apply to inspect a fresh plan"]
+        if outcome.preserved:
+            entries.insert(
+                0,
+                "Content written after the apply was preserved, not deleted; review "
+                "`preserved` and remove it yourself if it is no longer wanted",
+            )
         return {
             "schema_version": "megamind/provisional-wiki-result/v1",
-            "status": "rolled_back",
-            "removed": removed,
-            "help": _help("Re-run provision-wiki without --apply to inspect a fresh plan"),
+            "status": outcome.status,
+            "removed": outcome.removed,
+            "preserved": outcome.preserved,
+            "notes": outcome.notes,
+            "help": _help(*entries),
         }, 0
     if args.apply:
         if not args.plan_id:

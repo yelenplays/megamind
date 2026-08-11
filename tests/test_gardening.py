@@ -383,7 +383,7 @@ def test_provision_plan_apply_is_idempotent_and_rollback_verifies_content(tmp_pa
     (tmp_path / "PlanWiki/wiki/index.md").write_text(
         "# PlanWiki compiled index\n", encoding="utf-8"
     )
-    assert rollback_provision(tmp_path, plan.plan_id)
+    assert rollback_provision(tmp_path, plan.plan_id).removed
     assert not (tmp_path / "PlanWiki").exists()
 
 
@@ -467,7 +467,7 @@ def test_an_interrupted_apply_leaves_a_recoverable_transaction(
     assert load_wiki_card(tmp_path / "HaltWiki").name == "HaltWiki"
     # A resumed transaction verifies as a no-op and rolls back completely.
     assert apply_provision_plan(tmp_path, plan, plan.plan_id) == []
-    assert rollback_provision(tmp_path, plan.plan_id)
+    assert rollback_provision(tmp_path, plan.plan_id).removed
     assert not (tmp_path / "HaltWiki").exists()
     assert load_registry(tmp_path).wiki_by_name("HaltWiki") is None
 
@@ -482,7 +482,7 @@ def test_an_interrupted_apply_rolls_back_without_resuming(
         kill_after(patched, 4)
         with pytest.raises(KeyboardInterrupt):
             apply_provision_plan(tmp_path, plan, plan.plan_id)
-    assert rollback_provision(tmp_path, plan.plan_id)
+    assert rollback_provision(tmp_path, plan.plan_id).removed
     assert not (tmp_path / "HaltWiki").exists()
     assert (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8") == before
     with pytest.raises(GardenError, match="already rolled back"):
@@ -572,7 +572,7 @@ def test_a_power_loss_at_every_durability_boundary_stays_recoverable(
             "megamind:event:"
         ) == 1
         assert resume_provision(root, plan.plan_id, "HaltWiki", "HaltWiki") == ("noop", [])
-        assert rollback_provision(root, plan.plan_id)
+        assert rollback_provision(root, plan.plan_id).removed
         assert not (root / "HaltWiki").exists()
         assert (root / ".megamind/registry.json").read_text(encoding="utf-8") == before
 
@@ -603,7 +603,7 @@ def test_an_applied_marker_over_a_lost_target_can_also_roll_back(tmp_path: Path)
     plan = plan_provision_wiki(tmp_path, "LostWiki", "LostWiki", make_criteria())
     apply_provision_plan(tmp_path, plan, plan.plan_id)
     (tmp_path / ".megamind/registry.json").write_text(before, encoding="utf-8")
-    assert rollback_provision(tmp_path, plan.plan_id)
+    assert rollback_provision(tmp_path, plan.plan_id).removed
     assert not (tmp_path / "LostWiki").exists()
     assert (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8") == before
 
@@ -711,3 +711,197 @@ def test_provision_validates_the_registry_plan_before_writing_anything(tmp_path:
     # A retry with the correct relative path is not blocked by an orphan scaffold.
     provision_local_wiki(tmp_path, "ReleaseWiki", "ReleaseWiki", make_criteria())
     assert load_registry(tmp_path).wiki_by_name("ReleaseWiki") is not None
+
+
+def test_rollback_preserves_content_authored_after_the_apply(tmp_path: Path) -> None:
+    """Rollback owns exactly what the transaction wrote. A page authored inside
+    the provisional wiki afterwards is not its to delete."""
+    init_vault(tmp_path, starter=False)
+    before = (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8")
+    plan = plan_provision_wiki(tmp_path, "KeepWiki", "KeepWiki", make_criteria())
+    apply_provision_plan(tmp_path, plan, plan.plan_id)
+    page = tmp_path / "KeepWiki/wiki/topics/rate-limits.md"
+    page.parent.mkdir(parents=True)
+    page.write_text("# rate limits\n", encoding="utf-8")
+    notes = tmp_path / "KeepWiki/NOTES.md"
+    notes.write_text("hand-written\n", encoding="utf-8")
+
+    outcome = rollback_provision(tmp_path, plan.plan_id)
+    assert outcome.status == "partial"
+    assert outcome.preserved == ["KeepWiki/NOTES.md", "KeepWiki/wiki/topics"]
+    assert page.read_text(encoding="utf-8") == "# rate limits\n"
+    assert notes.read_text(encoding="utf-8") == "hand-written\n"
+    # Every tracked file is still undone and the vault is back to its old state.
+    assert not (tmp_path / "KeepWiki/CARD.md").exists()
+    assert not (tmp_path / "KeepWiki/INDEX.md").exists()
+    assert not (tmp_path / "KeepWiki/wiki/log.md").exists()
+    assert not (tmp_path / "KeepWiki/.megamind").exists()
+    assert (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8") == before
+    assert load_registry(tmp_path).wiki_by_name("KeepWiki") is None
+
+
+def test_rollback_prunes_only_directories_the_transaction_created(tmp_path: Path) -> None:
+    """An empty directory the transaction created is pruned; a directory that
+    already existed above the wiki path is never the transaction's to remove."""
+    init_vault(tmp_path, starter=False)
+    (tmp_path / "wikis").mkdir()
+    sibling = tmp_path / "wikis/README.md"
+    sibling.write_text("pre-existing\n", encoding="utf-8")
+    plan = plan_provision_wiki(tmp_path, "NestedWiki", "wikis/NestedWiki", make_criteria())
+    apply_provision_plan(tmp_path, plan, plan.plan_id)
+    assert (tmp_path / "wikis/NestedWiki/.megamind").is_dir()
+
+    outcome = rollback_provision(tmp_path, plan.plan_id)
+    assert (outcome.status, outcome.preserved) == ("rolled_back", [])
+    assert not (tmp_path / "wikis/NestedWiki").exists()
+    assert (tmp_path / "wikis").is_dir()
+    assert sibling.read_text(encoding="utf-8") == "pre-existing\n"
+
+
+def test_rollback_refuses_a_directory_standing_where_a_target_belongs(tmp_path: Path) -> None:
+    """A directory in place of a generated file reads as absent to a text
+    reader. It is content the transaction did not write, so it is refused
+    rather than removed with everything inside it."""
+    init_vault(tmp_path, starter=False)
+    plan = plan_provision_wiki(tmp_path, "SwapWiki", "SwapWiki", make_criteria())
+    apply_provision_plan(tmp_path, plan, plan.plan_id)
+    card = tmp_path / "SwapWiki/CARD.md"
+    card.unlink()
+    card.mkdir()
+    (card / "kept.md").write_text("inside\n", encoding="utf-8")
+
+    with pytest.raises(GardenError, match="rollback refused"):
+        rollback_provision(tmp_path, plan.plan_id)
+    assert (card / "kept.md").read_text(encoding="utf-8") == "inside\n"
+    with pytest.raises(GardenError, match="not idempotent"):
+        resume_provision(tmp_path, plan.plan_id, "SwapWiki", "SwapWiki")
+
+
+def test_an_in_process_undo_preserves_content_it_did_not_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The undo that runs when an apply raises follows the same rule: it removes
+    only what it wrote, so a page that appeared during the transaction stays."""
+    init_vault(tmp_path, starter=False)
+    plan = plan_provision_wiki(tmp_path, "UndoWiki", "UndoWiki", make_criteria())
+    import megamind.gardening as gardening
+
+    original = gardening.atomic_write
+    calls = 0
+    concurrent = tmp_path / "UndoWiki/wiki/topics/rate-limits.md"
+
+    def crash(root: Path, target: str | Path, content: str, **kwargs: object) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 6:
+            concurrent.parent.mkdir(parents=True)
+            concurrent.write_text("written mid-transaction\n", encoding="utf-8")
+            raise OSError("synthetic crash")
+        return original(root, target, content, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(gardening, "atomic_write", crash)
+    with pytest.raises(OSError, match="synthetic crash"):
+        apply_provision_plan(tmp_path, plan, plan.plan_id)
+
+    assert concurrent.read_text(encoding="utf-8") == "written mid-transaction\n"
+    assert load_registry(tmp_path).wiki_by_name("UndoWiki") is None
+    assert not (tmp_path / "UndoWiki/CARD.md").exists()
+    assert not (tmp_path / "UndoWiki/.megamind").exists()
+    assert not (tmp_path / f".megamind/audit/provisional-wiki-{plan.plan_id}.json").exists()
+
+
+def test_provisioning_stays_usable_without_a_directory_flush_primitive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows exposes no directory handle to flush. Durable writes there fall
+    back to the file flush rather than making the whole feature unusable."""
+    import megamind.fsops as fsops
+
+    monkeypatch.setattr(fsops, "DIRECTORY_FSYNC", False)
+    assert fsops.sync_directory(tmp_path) is False
+    init_vault(tmp_path, starter=False)
+    plan = plan_provision_wiki(tmp_path, "WinWiki", "WinWiki", make_criteria())
+    assert apply_provision_plan(tmp_path, plan, plan.plan_id)
+    assert load_registry(tmp_path).wiki_by_name("WinWiki") is not None
+    assert (tmp_path / "WinWiki/CARD.md").is_file()
+    assert rollback_provision(tmp_path, plan.plan_id).removed
+    assert not (tmp_path / "WinWiki").exists()
+
+
+@pytest.mark.parametrize(
+    ("status", "reason", "superseded_by"),
+    [
+        ("open", "reopened after new evidence", ""),
+        ("paused", "waiting on an owner", ""),
+        ("paused", "", "other-gap"),
+    ],
+)
+def test_a_self_transition_ignores_flags_that_status_never_persists(
+    tmp_path: Path, status: str, reason: str, superseded_by: str
+) -> None:
+    """A repeat is only inexact when a field the status actually stores would
+    change; `--reason` outside a rejection changes nothing, so it is a no-op."""
+    store = GapStore(tmp_path)
+    gap = store.create(GapRecord.new("ProductWiki", "Rate limits", today="2026-01-01"))
+    if status != "open":
+        store.transition(gap.gap_id, "nominated", today="2026-01-02")
+        store.transition(gap.gap_id, status, today="2026-01-03")
+    lines = len((tmp_path / ".megamind/gaps.jsonl").read_text(encoding="utf-8").splitlines())
+    unchanged = store.transition(
+        gap.gap_id, status, today="2026-01-04", reason=reason, superseded_by=superseded_by
+    )
+    assert unchanged.status == status
+    assert unchanged.rejection is None
+    assert unchanged.superseded_by == ""
+    assert (
+        len((tmp_path / ".megamind/gaps.jsonl").read_text(encoding="utf-8").splitlines()) == lines
+    )
+
+
+def test_a_replayed_rejection_keeps_its_reason_and_refuses_a_different_one(
+    tmp_path: Path,
+) -> None:
+    store = GapStore(tmp_path)
+    gap = store.create(GapRecord.new("ProductWiki", "Rate limits", today="2026-01-01"))
+    store.transition(gap.gap_id, "rejected", reason="no owner", today="2026-01-02")
+    replay = store.transition(gap.gap_id, "rejected", reason="no owner", today="2026-01-03")
+    assert replay.rejection == {"reason": "no owner", "date": "2026-01-02"}
+    with pytest.raises(InvalidTransition, match="cannot change reason"):
+        store.transition(gap.gap_id, "rejected", reason="a different reason")
+
+
+def test_a_replayed_supersession_refuses_a_different_target(tmp_path: Path) -> None:
+    store = GapStore(tmp_path)
+    gap = store.create(GapRecord.new("ProductWiki", "Rate limits", today="2026-01-01"))
+    store.transition(gap.gap_id, "planned", today="2026-01-02")
+    store.transition(gap.gap_id, "in_progress", today="2026-01-03")
+    store.transition(gap.gap_id, "superseded", superseded_by="newer", today="2026-01-04")
+    assert (
+        store.transition(gap.gap_id, "superseded", superseded_by="newer").superseded_by == "newer"
+    )
+    with pytest.raises(InvalidTransition, match="cannot change superseded_by"):
+        store.transition(gap.gap_id, "superseded", superseded_by="other")
+
+
+@pytest.mark.parametrize("field", ["wiki", "topic"])
+def test_research_result_replay_is_bound_to_the_whole_nomination_identity(
+    tmp_path: Path, field: str
+) -> None:
+    """Correlation alone keys the proposal file, so a replay that renames the
+    wiki or the topic is a different nomination and may not reuse it."""
+    gap = GapRecord.new("A", "topic")
+    wave = plan_research_wave([gap], gap.gap_id, CapacityInput(True, 0, {}, 100, 25))
+    entry = dict(wave.nominations[0])
+    first = make_nomination(wave.wave_id, entry)
+    result = {
+        "correlation_id": first.correlation_id,
+        "sources": [{"origin": "synthetic-source", "eligible": True}],
+    }
+    accepted = ingest_research_result(tmp_path, first, result)
+    stored = json.loads((tmp_path / accepted.ingest_proposal).read_text(encoding="utf-8"))
+
+    renamed = make_nomination(wave.wave_id, {**entry, field: "something else"})
+    with pytest.raises(GardenError, match=f"already ingested with different {field}"):
+        ingest_research_result(tmp_path, renamed, result)
+    assert json.loads((tmp_path / accepted.ingest_proposal).read_text(encoding="utf-8")) == stored
+    assert len(list((tmp_path / ".megamind/proposals").glob("research-ingest-*.json"))) == 1

@@ -827,6 +827,7 @@ def test_provision_rollback_leaves_the_vault_replannable(
     )
     assert code == 0
     assert rolled["status"] == "rolled_back"
+    assert rolled["preserved"] == []
     assert not (vault / "ReleaseWiki").exists()
     assert (vault / ".megamind/registry.json").read_text(encoding="utf-8") == before
     # The rolled-back record does not block re-planning or a fresh apply.
@@ -835,6 +836,54 @@ def test_provision_rollback_leaves_the_vault_replannable(
     code, reapplied, _ = run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
     assert code == 0
     assert reapplied["status"] == "applied"
+
+
+def test_provision_rollback_reports_content_it_preserved(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A page authored after the apply is preserved, named, and turns the
+    outcome into a typed `partial` instead of a silent full rollback."""
+    _, plan, _ = run_json(capsys, *provision_argv(vault))
+    plan_id = str(plan["plan_id"])
+    run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+    page = vault / "ReleaseWiki/wiki/topics/rate-limits.md"
+    page.parent.mkdir(parents=True)
+    page.write_text("# rate limits\n", encoding="utf-8")
+
+    code, rolled, err = run_json(capsys, *provision_argv(vault, "--rollback", "--plan-id", plan_id))
+    assert code == 0
+    assert err == ""
+    assert rolled["status"] == "partial"
+    assert rolled["preserved"] == ["ReleaseWiki/wiki/topics"]
+    assert rolled["notes"] == []
+    assert any("preserved" in entry for entry in rolled["help"])
+    assert page.read_text(encoding="utf-8") == "# rate limits\n"
+    assert not (vault / "ReleaseWiki/CARD.md").exists()
+    assert load_registry(vault).wiki_by_name("ReleaseWiki") is None
+
+
+def test_provision_rollback_renders_identically_in_toon_and_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def prepare(name: str) -> tuple[Path, str]:
+        vault = build_vault(tmp_path / name)
+        _, plan, _ = run_json(capsys, *provision_argv(vault))
+        plan_id = str(plan["plan_id"])
+        run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+        (vault / "ReleaseWiki/NOTES.md").write_text("hand-written\n", encoding="utf-8")
+        return vault, plan_id
+
+    json_vault, json_plan = prepare("a")
+    toon_vault, toon_plan = prepare("b")
+    _, doc, _ = run_json(capsys, *provision_argv(json_vault, "--rollback", "--plan-id", json_plan))
+    code, toon_out, err = run_toon(
+        capsys, *provision_argv(toon_vault, "--rollback", "--plan-id", toon_plan)
+    )
+    assert code == 0
+    assert err == ""
+    assert doc["status"] == "partial"
+    assert doc["preserved"] == ["ReleaseWiki/NOTES.md"]
+    assert toon.encode(doc) == toon_out
 
 
 def test_provision_wiki_refuses_a_canonical_root_without_writing(
@@ -1132,12 +1181,35 @@ def test_governance_sidecar_covers_mixed_trusted_and_provisional_offers(
     assert "reliance floor" not in governance_notes[0]
 
 
+def test_governance_downgrade_is_a_typed_field_in_both_renderings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The cause of an offer is structured, not prose to string-match: a
+    consumer reads `governance_downgrade` and nothing else has to change."""
+    json_vault = provisioned_vault(capsys, build_vault(tmp_path / "a"))
+    toon_vault = provisioned_vault(capsys, build_vault(tmp_path / "b"))
+    expected = {"operations": True, "brand voice palette": False, "pricing model": False}
+    for query, downgrade in expected.items():
+        _, doc, _ = run_json(capsys, "--root", str(json_vault), "route", *query.split())
+        _, toon_out, err = run_toon(capsys, "--root", str(toon_vault), "route", *query.split())
+        assert err == ""
+        assert doc["governance_downgrade"] is downgrade
+        # Additive only: the default candidate columns and the notes are intact.
+        assert list(doc["candidates"][0]) == ["path", "kind", "score", "reason"]
+        assert f"governance_downgrade: {str(downgrade).lower()}" in toon_out
+        assert toon.encode(doc) == toon_out
+    # The typed field agrees with the prose it replaces the need to parse.
+    _, gated, _ = run_json(capsys, "--root", str(json_vault), "route", "operations")
+    assert any("governance downgrade" in note for note in gated["notes"])
+
+
 def test_route_notes_separate_governance_from_confidence_downgrades(
     vault: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     provisioned_vault(capsys, vault)
     _, gated, _ = run_json(capsys, "--root", str(vault), "route", "operations")
     assert gated["decision"] == "offer"
+    assert gated["governance_downgrade"] is True
     assert gated["confidence"] >= gated["thresholds"]["reliance_floor"]
     downgrade = [note for note in gated["notes"] if "governance downgrade" in note]
     assert len(downgrade) == 1
@@ -1172,6 +1244,7 @@ def test_ambiguity_band_offer_is_not_credited_to_the_governance_gate(
     assert code == 0
     assert doc["decision"] == "offer"
     assert doc["confidence"] >= doc["thresholds"]["reliance_floor"]
+    assert doc["governance_downgrade"] is False
     trust = {str(row["path"]): bool(row["provisional"]) for row in doc["governance"]}
     assert sorted(trust.values()) == [False, True]
     # The band produced the offer, so the confidence reason leads and the

@@ -50,18 +50,33 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
-def sync_directory(path: Path) -> None:
+# Flushing a directory entry needs a directory handle, which only POSIX
+# exposes. On Windows ``os.open`` on a directory fails and ``os.fsync`` rejects
+# a directory handle, so there is no equivalent primitive to call: a durable
+# write there is exactly as strong as the file flush that always runs, and no
+# stronger. The flag is module state so a test can exercise the reduced path.
+DIRECTORY_FSYNC = os.name != "nt" and hasattr(os, "O_DIRECTORY")
+
+
+def sync_directory(path: Path) -> bool:
     """Flush a directory entry so a completed rename survives a power loss.
 
     ``os.fsync`` on the file alone only guarantees its bytes; the rename that
     publishes the name is a directory mutation and needs its own flush before a
     write-ahead record can be relied on after an abrupt process or power loss.
+
+    Returns True when the entry was flushed and False on a platform with no
+    directory-flush primitive, so no caller claims a durability guarantee the
+    platform does not actually provide.
     """
-    fd = os.open(path, getattr(os, "O_DIRECTORY", os.O_RDONLY))
+    if not DIRECTORY_FSYNC:
+        return False
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+    return True
 
 
 def atomic_write_path(target: Path, content: str, *, durable: bool = False) -> Path:
@@ -134,6 +149,27 @@ def remove_contained(root: Path, target: str | Path, *, durable: bool = False) -
             resolved.unlink()
     if durable and parent.is_dir():
         sync_directory(parent)
+
+
+def remove_empty_directory(root: Path, target: str | Path, *, durable: bool = False) -> bool:
+    """Remove a contained directory only when it is empty, never recursively.
+
+    ``rmdir`` is the check and the removal in one step, so content that appears
+    between an emptiness test and the removal keeps the directory rather than
+    being destroyed by a racing cleanup. Returns True when the directory was
+    removed and False when it is absent, not a directory, or still holds
+    anything at all.
+    """
+    resolved = resolve_contained(root, target)
+    if resolved.is_symlink() or not resolved.is_dir():
+        return False
+    try:
+        resolved.rmdir()
+    except OSError:
+        return False
+    if durable and resolved.parent.is_dir():
+        sync_directory(resolved.parent)
+    return True
 
 
 def append_audit(

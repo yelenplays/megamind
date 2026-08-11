@@ -6,13 +6,16 @@ from pathlib import Path
 
 import pytest
 
+from megamind import fsops
 from megamind.fsops import (
     PathEscapeError,
     append_audit,
     atomic_write,
     backup_existing,
     content_hash,
+    remove_empty_directory,
     resolve_contained,
+    sync_directory,
 )
 
 
@@ -91,3 +94,32 @@ def test_atomic_write_replaces_existing(tmp_path: Path) -> None:
     atomic_write(tmp_path, "page.md", "new\n")
     assert (tmp_path / "page.md").read_text(encoding="utf-8") == "new\n"
     assert os.listdir(tmp_path) == ["page.md"]
+
+
+def test_sync_directory_reports_whether_the_platform_flushed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POSIX flushes the directory entry; a platform without a directory handle
+    (Windows) says so instead of raising, and durable writes still work."""
+    assert sync_directory(tmp_path) is (os.name != "nt")
+    monkeypatch.setattr(fsops, "DIRECTORY_FSYNC", False)
+    assert sync_directory(tmp_path) is False
+    atomic_write(tmp_path, "a/page.md", "durable\n", durable=True)
+    assert (tmp_path / "a/page.md").read_text(encoding="utf-8") == "durable\n"
+    assert backup_existing(tmp_path, "a/page.md", durable=True) is not None
+
+
+def test_remove_empty_directory_never_removes_a_directory_with_content(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "kept").mkdir()
+    (tmp_path / "kept/page.md").write_text("content\n", encoding="utf-8")
+    (tmp_path / "empty").mkdir()
+    assert remove_empty_directory(tmp_path, "kept") is False
+    assert (tmp_path / "kept/page.md").is_file()
+    assert remove_empty_directory(tmp_path, "empty", durable=True) is True
+    assert not (tmp_path / "empty").exists()
+    assert remove_empty_directory(tmp_path, "empty") is False
+    assert remove_empty_directory(tmp_path, "kept/page.md") is False
+    with pytest.raises(PathEscapeError):
+        remove_empty_directory(tmp_path, "../outside")

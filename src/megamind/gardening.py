@@ -12,7 +12,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .card import card_file, serialize_wiki_card
@@ -24,6 +24,7 @@ from .fsops import (
     backup_existing,
     content_hash,
     remove_contained,
+    remove_empty_directory,
     resolve_contained,
 )
 from .registry import (
@@ -389,12 +390,20 @@ class GapStore:
             # recorded date, and never rewrites a terminal rejection or
             # supersession. Anything that would change the record is not an
             # exact repeat, so it refuses instead of overwriting silently.
+            # Only a field this status actually persists can conflict: a reason
+            # is stored on a rejection and `superseded_by` on a supersession, so
+            # passing either to any other status changes nothing and its replay
+            # has to stay a true no-op rather than refusing on a phantom edit.
             conflicts: list[str] = []
             if cooldown is not None and cooldown != record.cooldown_until:
                 conflicts.append("cooldown_until")
-            if reason and _short(reason) != (record.rejection or {}).get("reason", ""):
+            if (
+                status == "rejected"
+                and reason
+                and _short(reason) != (record.rejection or {}).get("reason", "")
+            ):
                 conflicts.append("reason")
-            if superseded_by and superseded_by != record.superseded_by:
+            if status == "superseded" and superseded_by and superseded_by != record.superseded_by:
                 conflicts.append("superseded_by")
             if conflicts:
                 raise InvalidTransition(
@@ -672,16 +681,26 @@ def ingest_research_result(
     }
     path = resolve_contained(root, proposal_rel)
     if path.exists():
-        # The returned document points at this file, so it may never claim a
-        # citation the file does not carry: divergence refuses, it never wins.
+        # The returned document points at this file, so it may never claim an
+        # identity or a citation the file does not carry: divergence refuses, it
+        # never wins. Correlation alone keys the file, so the whole immutable
+        # nomination identity is bound here, not the eligible sources alone; a
+        # replay that renames the wiki or the topic is a different nomination.
         try:
             stored = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise GardenError(f"existing ingest proposal is unreadable: {error}") from error
-        if not isinstance(stored, Mapping) or stored.get("sources") != eligible:
+        if not isinstance(stored, Mapping):
+            raise GardenError("existing ingest proposal is not a JSON object")
+        diverged = sorted(
+            set(stored).symmetric_difference(proposal)
+            | {key for key in proposal if key in stored and stored[key] != proposal[key]}
+        )
+        if diverged:
             raise GardenError(
                 f"correlation {nomination.correlation_id} was already ingested with different "
-                "eligible sources; nominate a new correlation instead of rewriting the proposal"
+                f"{', '.join(diverged)}; nominate a new correlation instead of rewriting the "
+                "proposal"
             )
     else:
         atomic_write(root, proposal_rel, json.dumps(proposal, sort_keys=True, indent=2) + "\n")
@@ -920,6 +939,17 @@ def plan_provision_wiki(
 
 PROVISION_MANIFEST_SCHEMA = "megamind/provisional-wiki-rollback/v1"
 PROVISION_STATES = ("pending", "applied", "rolled_back")
+MAX_PRESERVED = 20
+
+
+@dataclass(frozen=True)
+class RollbackOutcome:
+    """What a recovery actually did, so a partial undo is never read as a full one."""
+
+    status: str  # "rolled_back" | "partial"
+    removed: list[str]
+    preserved: list[str]
+    notes: list[str] = field(default_factory=list)
 
 
 def _manifest_rel(plan_id: str) -> Path:
@@ -952,6 +982,7 @@ def _read_manifest(root: Path, plan_id: str) -> dict[str, Any] | None:
         raise GardenError("provisional wiki transaction manifest is invalid")
     plan = manifest.get("plan")
     created = manifest.get("created")
+    created_dirs = manifest.get("created_dirs", [])
     backups = manifest.get("backups")
     if (
         manifest.get("state") not in PROVISION_STATES
@@ -962,6 +993,8 @@ def _read_manifest(root: Path, plan_id: str) -> dict[str, Any] | None:
         or not isinstance(plan.get("changes"), list)
         or not isinstance(created, list)
         or not all(isinstance(item, str) for item in created)
+        or not isinstance(created_dirs, list)
+        or not all(isinstance(item, str) for item in created_dirs)
         or not isinstance(backups, dict)
         or not all(isinstance(value, str) for value in backups.values())
     ):
@@ -1027,12 +1060,93 @@ def _target_state(current: str | None, old: str | None, new: str, appendable: bo
     return TARGET_FOREIGN
 
 
+def _is_regular_file(root: Path, rel: str) -> bool:
+    """Whether a target is still the plain file the transaction wrote."""
+    path = resolve_contained(root, rel)
+    return not path.exists() or path.is_file()
+
+
 def _target_states(root: Path, manifest: Mapping[str, Any]) -> dict[str, str]:
     log_rel = _log_rel(manifest)
-    return {
-        rel: _target_state(_read_text(root, rel), old, new, rel == log_rel)
-        for rel, old, new in _manifest_changes(manifest)
-    }
+    states: dict[str, str] = {}
+    for rel, old, new in _manifest_changes(manifest):
+        # A directory standing where a target belongs reads as absent through
+        # the text reader, which would let a removal treat it as a file. It is
+        # content the transaction did not write, so it is foreign like any other.
+        if not _is_regular_file(root, rel):
+            states[rel] = TARGET_FOREIGN
+            continue
+        states[rel] = _target_state(_read_text(root, rel), old, new, rel == log_rel)
+    return states
+
+
+def _remove_target(root: Path, rel: str) -> bool:
+    """Remove one tracked target, never a directory that took its place."""
+    if not _is_regular_file(root, rel):
+        return False
+    remove_contained(root, rel, durable=True)
+    return True
+
+
+def _wiki_dirs(rels: Iterable[str], base: str) -> list[str]:
+    """Every directory at or under the wiki path that a target needs, deepest first.
+
+    Root-relative and normalized, so the same directory named two ways ("a/b"
+    and "./a/b/") is one entry. Directories outside the wiki path are excluded:
+    the transaction may have created them, but it cannot prove it did.
+    """
+    base_path = PurePosixPath(base)
+    dirs: set[PurePosixPath] = {base_path}
+    for rel in rels:
+        for parent in PurePosixPath(rel).parents:
+            if parent == base_path or base_path in parent.parents:
+                dirs.add(parent)
+    return [d.as_posix() for d in sorted(dirs, key=lambda d: (-len(d.parts), d.as_posix()))]
+
+
+def _transaction_dirs(manifest: Mapping[str, Any]) -> list[str]:
+    """Directories the transaction is known to have created, deepest first.
+
+    ``created_dirs`` is recorded before the first mutation, so it proves which
+    directories were absent when the transaction started. A record written
+    without it falls back to the directories its own targets required, which is
+    the same set for every plan this module produces.
+    """
+    base = str(manifest["plan"]["path"])
+    known = _wiki_dirs((rel for rel, _old, _new in _manifest_changes(manifest)), base)
+    recorded = manifest.get("created_dirs")
+    if recorded is None:
+        return known
+    proven = {str(rel) for rel in recorded}
+    return [rel for rel in known if rel in proven]
+
+
+def _prune_transaction_dirs(root: Path, manifest: Mapping[str, Any]) -> list[str]:
+    """Remove transaction-created directories that are empty; keep the rest.
+
+    Cleanup is never recursive. A directory that still holds anything the
+    transaction did not itself create is left exactly as it is, and the foreign
+    entries are returned so the recovery can report what it preserved instead of
+    silently destroying content that was authored after the apply.
+    """
+    created = _transaction_dirs(manifest)
+    owned = set(created)
+    preserved: set[str] = set()
+    for rel in created:
+        if remove_empty_directory(root, rel, durable=True):
+            continue
+        try:
+            path = resolve_contained(root, rel)
+        except PathEscapeError:
+            continue
+        if not path.is_dir() or path.is_symlink():
+            continue
+        preserved.update(
+            entry
+            for entry in (f"{rel}/{child.name}" for child in path.iterdir())
+            if entry not in owned
+        )
+    return sorted(preserved)
 
 
 def _undo(root: Path, manifest: Mapping[str, Any], written: list[str]) -> None:
@@ -1042,8 +1156,8 @@ def _undo(root: Path, manifest: Mapping[str, Any], written: list[str]) -> None:
         if isinstance(restore, str):
             atomic_write(root, rel, restore, durable=True)
         else:
-            remove_contained(root, rel, durable=True)
-    remove_contained(root, str(manifest["plan"]["path"]), durable=True)
+            _remove_target(root, rel)
+    _prune_transaction_dirs(root, manifest)
     remove_contained(root, _manifest_rel(str(manifest["plan"]["plan_id"])), durable=True)
 
 
@@ -1203,6 +1317,14 @@ def apply_provision_plan(root: Path, plan: ProvisionPlan, approved_plan_id: str)
         # The intended set, so a rollback after a crash covers every target the
         # transaction was still allowed to touch, written or not.
         "created": [rel for rel, _old, _new in resolved_changes],
+        # Recorded before the first mutation, so recovery can prove which
+        # directories this transaction created and may therefore prune. A
+        # directory that already existed is never a transaction artifact.
+        "created_dirs": [
+            rel
+            for rel in _wiki_dirs((rel for rel, _old, _new in resolved_changes), plan.path)
+            if not resolve_contained(root, rel).exists()
+        ],
         "backups": backups,
         "backup_files": backup_files,
     }
@@ -1218,8 +1340,14 @@ def apply_provision_plan(root: Path, plan: ProvisionPlan, approved_plan_id: str)
         raise
 
 
-def rollback_provision(root: Path, plan_id: str) -> list[str]:
-    """Undo an applied or interrupted transaction, refusing on tampered content."""
+def rollback_provision(root: Path, plan_id: str) -> RollbackOutcome:
+    """Undo an applied or interrupted transaction, refusing on tampered content.
+
+    Only the exact files the manifest tracks are restored or removed, and only
+    directories the transaction created and left empty are pruned. Content
+    authored inside the provisional wiki after the apply is never the
+    transaction's to delete: it survives, and the outcome says so.
+    """
     manifest = _read_manifest(root, plan_id)
     if manifest is None:
         raise GardenError(f"provisional wiki rollback manifest not found: {plan_id}")
@@ -1239,15 +1367,23 @@ def rollback_provision(root: Path, plan_id: str) -> list[str]:
         restore = backups.get(rel)
         if isinstance(restore, str):
             atomic_write(root, rel, restore, durable=True)
-        else:
-            remove_contained(root, rel, durable=True)
+        elif not _remove_target(root, rel):
+            continue
         removed.append(rel)
-    remove_contained(root, str(manifest["plan"]["path"]), durable=True)
+    preserved = _prune_transaction_dirs(root, manifest)
+    notes: list[str] = []
+    if len(preserved) > MAX_PRESERVED:
+        notes.append(f"preserved entries truncated to {MAX_PRESERVED} of {len(preserved)}")
+        preserved = preserved[:MAX_PRESERVED]
     manifest["state"] = "rolled_back"
     manifest["created"] = []
     _write_manifest(root, manifest)
-    append_audit(root, "provisional-wiki-rollback", {"plan_id": plan_id, "removed": removed})
-    return removed
+    append_audit(
+        root,
+        "provisional-wiki-rollback",
+        {"plan_id": plan_id, "removed": removed, "preserved": preserved},
+    )
+    return RollbackOutcome("partial" if preserved else "rolled_back", removed, preserved, notes)
 
 
 def provision_local_wiki(
