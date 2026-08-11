@@ -166,6 +166,34 @@ def test_matches_carry_confidence_freshness_and_evidence(vault: Path) -> None:
     assert "topics/" not in json.dumps(match)
 
 
+def test_offers_carry_the_same_renamed_evidence_without_a_load_path(vault: Path) -> None:
+    """An offer gets the identical evidence shape, never the old `lexical` field."""
+    result = run_preflight([_ref(vault)], "knowledge base", "local")
+    assert result.status == "ambiguous"
+    assert result.offers
+    for offer in result.offers:
+        evidence = offer["evidence"]
+        assert isinstance(evidence, dict)
+        assert set(evidence) == {
+            "routing_class",
+            "coverage",
+            "signal_counts",
+            "provenance",
+            "lexical_classes",
+            "semantic",
+        }
+        assert "lexical" not in evidence
+        classes = evidence["lexical_classes"]
+        assert isinstance(classes, list)
+        assert classes and set(classes) <= {"trigger", "name", "scope"}
+        evidence_json = json.dumps(evidence)
+        assert all(token not in evidence_json for token in ("knowledge", "base"))
+        assert str(vault) not in evidence_json
+        # an offer is unauthorized to load, so it carries no path and no budget
+        assert "allows" not in offer and "follow_up" not in offer
+        assert "context_budget" not in offer
+
+
 def test_signal_counts_are_tallied_with_the_reasons_they_describe(vault: Path) -> None:
     """The counts come from the scorer itself, not from parsing reason wording."""
     registry = load_registry(vault)

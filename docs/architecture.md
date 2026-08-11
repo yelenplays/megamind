@@ -177,14 +177,13 @@ and card-only provenance without request-derived tokens or page content;
 `evidence.lexical_classes` is the fired subset of those counts and contains
 only deterministic signal-class labels, while `reasons` keeps its literal
 lexical strings. Only an authorized match whose follow-up hands out a load
-path carries the budget; sub-floor or banded matches state
-`ambiguous` and offer the same evidence as choices that carry neither a
-loadable path nor a budget. `no-match` stays quiet; `unavailable` and
-`privacy-filtered` are explicit. A deterministic `preflight_id` content hash
-binds the request hash, catalog snapshot, model class, and result.
-Preflight never mutates a wiki, never writes a host record, never calls a
-model, and never touches the network; whether and when a host runs preflight
-is the host's own policy.
+path carries the budget; sub-floor or banded matches state `ambiguous` and
+offer the same evidence as choices that carry neither a loadable path nor a
+budget. `no-match` stays quiet; `unavailable` and `privacy-filtered` are
+explicit. A deterministic `preflight_id` content hash binds the request hash,
+catalog snapshot, model class, and result. Preflight never mutates a wiki,
+never writes a host record, never calls a model, and never touches the
+network; whether and when a host runs preflight is the host's own policy.
 
 ## Safety model
 

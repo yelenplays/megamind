@@ -148,11 +148,11 @@ The summary preserves routing class, coverage, and card provenance without
 including raw request-derived tokens, page content, roots, or paths. The
 sibling `matches[].reasons` keeps its v2 semantics of up to five literal
 lexical reason strings, and confidence and freshness remain authoritative
-alongside it. `evidence.semantic` is unchanged, but
-`evidence.lexical_classes` contains only deterministic signal-class labels and
-never repeats those reason strings, so request-derived tokens live in `reasons`
-only. There is exactly one class list: `lexical_classes` is the fired subset of
-`signal_counts`, in the fixed `trigger`, `name`, `scope` order.
+alongside it. `evidence.semantic` is unchanged, but `evidence.lexical_classes`
+contains only deterministic signal-class labels and never repeats those reason
+strings, so request-derived tokens live in `reasons` only. There is exactly one
+class list: `lexical_classes` is the fired subset of `signal_counts`, in the
+fixed `trigger`, `name`, `scope` order.
 
 The schema version stays `preflight-result/v2` and the proof identity is
 unchanged: `preflight_id` continues to bind the request hash, catalog hash,

@@ -190,10 +190,10 @@ and offer entries carry a bounded, privacy-safe `evidence` summary of the
 routing class, numeric coverage, per-class signal counts, and card-only
 provenance; it never includes request-derived tokens or page content, and
 `reasons`, confidence, freshness, and semantic fallback semantics are
-unchanged. [schemas.md](schemas.md) owns
-the packet's field-level shape and its v2 compatibility notes. The
-route-confidence thresholds above decide the status: a confident match carries
-per-match confidence, freshness, and this evidence summary; below-floor matches
-become offers that expose no loadable paths. Statuses are definitive:
-`matched`, `ambiguous`, `no-match`, `unavailable`, and `privacy-filtered`
-are all structured successes with exit 0.
+unchanged. [schemas.md](schemas.md) owns the packet's field-level shape and
+its v2 compatibility notes. The route-confidence thresholds above decide the
+status: a confident match carries per-match confidence, freshness, and this
+evidence summary; below-floor matches become offers that expose no loadable
+paths. Statuses are definitive: `matched`, `ambiguous`, `no-match`,
+`unavailable`, and `privacy-filtered` are all structured successes with
+exit 0.
