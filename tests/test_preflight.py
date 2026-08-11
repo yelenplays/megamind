@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shlex
 import socket
 from datetime import date
 from pathlib import Path
@@ -48,17 +47,13 @@ def test_matched_full_access_returns_card_level_paths(vault: Path) -> None:
     assert "route" in str(best["follow_up"])
 
 
-def test_follow_up_command_shell_quotes_the_request(vault: Path) -> None:
-    """The request is untrusted: the emitted command must stay exactly one command."""
-    request = 'pricing product" ; rm -rf ~ #'
+def test_follow_up_does_not_echo_the_request(vault: Path) -> None:
+    """Follow-up guidance never preserves raw request text or shell syntax."""
+    request = "pricing product request-canary"
     result = run_preflight([_ref(vault)], request, "local")
     assert result.status == "matched"
     follow_up = str(result.matches[0]["follow_up"])
-    command = follow_up.split("`")[1]
-    tokens = shlex.split(command)
-    assert tokens[-1] == request  # the whole request is a single argument
-    assert ";" not in tokens
-    assert "rm" not in tokens
+    assert "request-canary" not in follow_up
 
 
 def test_cloud_none_wiki_is_privacy_filtered(vault: Path) -> None:
@@ -246,6 +241,7 @@ def test_preflight_covers_canonical_card_roots(tmp_path: Path) -> None:
     assert match["name"] == "SoloWiki"
     assert match["allows"] == ["wiki/index.md"]
     assert "wiki/index.md" in str(match["follow_up"])
+    assert "context_budget" not in match
 
     cloud = run_preflight(discover_roots(estate), "cider press care", "cloud")
     assert cloud.status == "privacy-filtered"  # unclassified: cloud none

@@ -113,6 +113,39 @@ level of a JSON object with `"schema": "megamind/wiki-card/v2"` and
 and cloud-restrictive until the owner classifies it. Malformed cards raise
 `card_invalid`.
 
+### Preflight match packet
+
+`preflight-result/v2` carries `context_budget` only on an authorized `matches[]`
+entry. It is the card's exact numeric `max_candidates` and/or
+`max_context_chars` override, not a host-generated estimate. Offers, filtered,
+redacted, broken-root, unavailable, and no-match outcomes carry no budget or
+load path.
+
+Each authorized match also carries a bounded `evidence` summary:
+
+```json
+{
+  "routing_class": "lexical-card",
+  "coverage": {"matched_terms": 2, "request_terms": 3, "ratio": 0.6667},
+  "signal_classes": ["trigger", "scope"],
+  "signal_counts": {"trigger": 1, "name": 0, "scope": 1},
+  "provenance": {
+    "source": "registry-card",
+    "scope": "declared card metadata only",
+    "page_content": false
+  },
+  "lexical": ["trigger", "scope"],
+  "semantic": null
+}
+```
+
+The summary preserves routing class, coverage, and card provenance without
+including raw request-derived tokens, page content, roots, or paths. Confidence
+and freshness remain authoritative alongside it. The existing v2 schema and
+proof identity are unchanged: `preflight_id` continues to bind the request
+hash, catalog hash, model class, and result, so repeated inputs remain
+byte-stable.
+
 ## Canonical wiki root
 
 `megamind-axi init <path> --wiki <Name>` scaffolds the canonical layout:

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from megamind.catalog import RootRef
 from megamind.preflight import run_preflight
-from megamind.registry import WikiEntry, load_registry, save_registry
+from megamind.registry import ContextBudget, WikiEntry, load_registry, save_registry
 from megamind.semantic import NgramBackend
 
 TODAY = date(2026, 8, 10)
@@ -129,10 +129,64 @@ def test_matches_carry_confidence_freshness_and_evidence(vault: Path) -> None:
     assert set(freshness) == {"half_life_days", "last_confirmed", "stale"}
     evidence = match["evidence"]
     assert isinstance(evidence, dict)
-    assert any("trigger match: pricing" in r for r in evidence["lexical"])  # type: ignore[operator]
+    assert evidence["routing_class"] == "lexical-card"
+    assert evidence["lexical"] == ["trigger", "scope"]
+    assert evidence["coverage"] == {"matched_terms": 1, "request_terms": 2, "ratio": 0.5}
+    assert evidence["provenance"] == {
+        "source": "registry-card",
+        "scope": "declared card metadata only",
+        "page_content": False,
+    }
+    assert "pricing" not in json.dumps(evidence)
     assert evidence["semantic"] is None  # semantic disabled: no fabricated score
+    assert "pricing" not in json.dumps(match["reasons"])
     # the packet stays card-level: no page content path is ever handed out
     assert "topics/" not in json.dumps(match)
+
+
+def test_authorized_matches_preserve_card_context_budgets(vault: Path) -> None:
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    research = registry.wiki_by_name("ResearchDigest")
+    assert product is not None and research is not None
+    product.context_budget = ContextBudget(max_candidates=2, max_context_chars=2345)
+    research.context_budget = ContextBudget(max_candidates=1, max_context_chars=987)
+    save_registry(vault, registry)
+
+    for model_class in ("local", "cloud"):
+        full = run_preflight([_ref(vault)], "pricing", model_class)
+        assert full.status == "matched"
+        assert full.matches[0]["access"] == "full"
+        assert full.matches[0]["context_budget"] == {
+            "max_candidates": 2,
+            "max_context_chars": 2345,
+        }
+
+    for model_class in ("local", "cloud"):
+        digest = run_preflight([_ref(vault)], "research interview", model_class)
+        assert digest.status == "matched"
+        assert digest.matches[0]["access"] == "digest-only"
+        assert digest.matches[0]["context_budget"] == {
+            "max_candidates": 1,
+            "max_context_chars": 987,
+        }
+
+    offer = run_preflight([_ref(vault)], "knowledge base", "local")
+    assert offer.status == "ambiguous"
+    assert all("context_budget" not in item for item in offer.offers)
+
+    filtered = run_preflight([_ref(vault)], "brand color palette", "cloud")
+    assert filtered.status == "privacy-filtered"
+    assert all("context_budget" not in item for item in filtered.filtered)
+
+    no_match = run_preflight([_ref(vault)], "quantum llama", "local")
+    assert no_match.status == "no-match"
+    assert no_match.matches == [] and no_match.offers == []
+
+    broken = run_preflight([RootRef(label="missing", path=vault / "missing")], "pricing", "local")
+    assert broken.status == "unavailable"
+    assert broken.matches == [] and broken.offers == []
+    assert all("context_budget" not in item for item in broken.root_issues)
 
 
 def test_freshness_stays_unknown_without_a_reference_date(vault: Path) -> None:

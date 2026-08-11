@@ -182,9 +182,15 @@ projection via `--emit-projection`, drift-checked with `--check-projection`).
 path is returned, pointer wikis expose location metadata only, digest-only
 wikis allow only their approved digest, and the deterministic `preflight_id`
 binds the request hash, catalog snapshot, model class, and result so a host
-can prove preflight ran without storing the raw request. The route-confidence
-thresholds above decide the status: a confident match carries per-match
-confidence, freshness, and lexical/semantic evidence; below-floor matches
-become offers that expose no loadable paths. Statuses are definitive:
+can prove preflight ran without storing the raw request. Authorized `matches`
+carry the card's numeric `context_budget` exactly as declared; offers, filtered,
+withheld, broken, and other non-authorized outcomes never carry a budget or
+load path. Match `evidence` is a bounded privacy-safe summary of the routing
+class, numeric coverage, signal classes/counts, and card-only provenance. It
+never includes request-derived tokens or page content. Confidence, freshness,
+and semantic fallback semantics are unchanged. The route-confidence thresholds
+above decide the status: a confident match carries per-match confidence,
+freshness, and this evidence summary; below-floor matches become offers that
+expose no loadable paths. Statuses are definitive:
 `matched`, `ambiguous`, `no-match`, `unavailable`, and `privacy-filtered`
 are all structured successes with exit 0.

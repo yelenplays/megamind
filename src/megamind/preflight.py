@@ -17,7 +17,6 @@ host can prove preflight ran without storing the raw prompt.
 from __future__ import annotations
 
 import json
-import shlex
 from dataclasses import dataclass, field
 
 from .catalog import Catalog, RootRef, build_catalog
@@ -151,7 +150,7 @@ def _declined(row: dict[str, object], query_tokens: list[str]) -> str | None:
     return None
 
 
-def _follow_up(row: dict[str, object], request: str, access: str) -> str:
+def _follow_up(row: dict[str, object], access: str) -> str:
     root = str(row.get("root", ""))
     paths = row.get("paths", {})
     assert isinstance(paths, dict)
@@ -163,14 +162,65 @@ def _follow_up(row: dict[str, object], request: str, access: str) -> str:
             return f"Read only the approved digest {root}/{digest}; nothing else may be loaded"
         return f"{root} allows digest-only access but declares no digest; load nothing"
     if row.get("source") == "registry":
-        # The request is a host-supplied prompt representation: shell-quote it so
-        # the emitted follow-up stays exactly one runnable command.
+        # Do not echo the host request into a result or runnable command. The
+        # host already retains its privacy-safe request representation and can
+        # invoke the bounded ladder with that value when it chooses to proceed.
         return (
-            f"Run `megamind-axi --root {shlex.quote(root)} route {shlex.quote(request)}` "
-            "for the bounded ladder"
+            f"Run `megamind-axi --root {root} route <the original request>` for the bounded ladder"
         )
     index = str(paths.get("index") or "wiki/index.md")
     return f"Open {root}/{index} and follow its links within the context budget"
+
+
+def _evidence_summary(
+    row: dict[str, object],
+    query_tokens: list[str],
+    reasons: list[str],
+    signals: dict[str, float],
+    semantic_score: float | None,
+) -> dict[str, object]:
+    """Return bounded card provenance without echoing request tokens.
+
+    The lexical scorer still uses the exact same reasons and signals for
+    confidence. Only the public packet changes: signal classes and numeric
+    coverage explain the route without retaining query-derived words or page
+    content.
+    """
+    classes = ("trigger", "name", "scope")
+    counts = {
+        signal_class: sum(1 for reason in reasons if reason.startswith(f"{signal_class} match:"))
+        for signal_class in classes
+    }
+    return {
+        "routing_class": "lexical-card",
+        "coverage": {
+            "matched_terms": len(signals),
+            "request_terms": len(query_tokens),
+            "ratio": round(len(signals) / len(query_tokens), 4) if query_tokens else 0.0,
+        },
+        "signal_classes": [signal_class for signal_class in classes if counts[signal_class]],
+        "signal_counts": counts,
+        "provenance": {
+            "source": "canonical-card" if row.get("source") == "wiki-card" else "registry-card",
+            "scope": "declared card metadata only",
+            "page_content": False,
+        },
+        "lexical": [signal_class for signal_class in classes if counts[signal_class]],
+        "semantic": semantic_score,
+    }
+
+
+def _context_budget(row: dict[str, object]) -> dict[str, int] | None:
+    """Return only numeric card budget values for an authorized match."""
+    value = row.get("context_budget")
+    if not isinstance(value, dict):
+        return None
+    budget = {
+        key: value[key]
+        for key in ("max_candidates", "max_context_chars")
+        if key in value and isinstance(value[key], int) and not isinstance(value[key], bool)
+    }
+    return budget or None
 
 
 def run_preflight(
@@ -272,8 +322,8 @@ def run_preflight(
         # The no-match floor drops evidence too weak to offer, by name only.
         paired = list(zip(eligible, confidences, strict=True))
         strong = [
-            (score, row, reasons, confidence)
-            for (score, row, reasons, _signals), confidence in paired
+            (score, row, reasons, signals, confidence)
+            for (score, row, reasons, signals), confidence in paired
             if confidence >= OFFER_FLOOR
         ]
         too_weak = [
@@ -290,7 +340,7 @@ def run_preflight(
         # confidence in lexical order, before any reranking. `authorize` names
         # which rows the decision covers, so only a row that itself reached the
         # reliance floor can ever become a loadable match.
-        lexical_confs = [confidence for _s, _r, _re, confidence in strong]
+        lexical_confs = [confidence for _s, _r, _re, _sig, confidence in strong]
         decision, authorized = authorize(lexical_confs)
         result.confidence = max(lexical_confs) if lexical_confs else None
 
@@ -354,7 +404,7 @@ def run_preflight(
         ranked = [shown[position] for position in order]
 
         def _entry(index: int) -> dict[str, object]:
-            score, row, reasons, confidence = strong[index]
+            score, row, reasons, signals, confidence = strong[index]
             return {
                 "name": row.get("name"),
                 "root": row.get("root"),
@@ -364,11 +414,22 @@ def run_preflight(
                     "meets_floor": confidence >= RELIANCE_FLOOR,
                 },
                 "freshness": row.get("freshness"),
-                "evidence": {
-                    "lexical": reasons[:5],
-                    "semantic": semantic_scores.get(index),
-                },
-                "reasons": reasons[:5],
+                "evidence": _evidence_summary(
+                    row,
+                    query_tokens,
+                    reasons,
+                    # The signals are kept internal for confidence and reduced
+                    # to counts/classes in the public evidence summary.
+                    signals,
+                    semantic_scores.get(index),
+                ),
+                # Keep the v2 key, but make its values safe provenance classes
+                # rather than request-derived reason text.
+                "reasons": [
+                    signal_class
+                    for signal_class in ("trigger", "name", "scope")
+                    if any(reason.startswith(f"{signal_class} match:") for reason in reasons)
+                ],
             }
 
         match_set, offer_set = set(match_indices), set(offer_indices)
@@ -390,7 +451,10 @@ def run_preflight(
             entry["access"] = access
             entry["routing_mode"] = row.get("routing_mode")
             entry["allows"] = allows
-            entry["follow_up"] = _follow_up(row, request, access)
+            entry["follow_up"] = _follow_up(row, access)
+            budget = _context_budget(row)
+            if budget is not None:
+                entry["context_budget"] = budget
             result.matches.append(entry)
         for index in ranked:
             if index in offer_set:
@@ -399,6 +463,9 @@ def run_preflight(
             result.notes.append("offer the listed wikis as choices; load nothing until picked")
 
     result.semantic = outcome.to_dict()
+    # The public packet is additive, but proof inputs stay stable: the card
+    # budget is already covered by catalog_hash and the evidence summary is a
+    # deterministic function of the request hash, catalog, and model class.
     proof = {
         "request_hash": result.request_hash,
         "catalog_hash": result.catalog_hash,
