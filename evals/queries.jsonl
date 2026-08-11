@@ -1,0 +1,20 @@
+{"schema":"megamind/benchmark-query-set/v1","version":"release-mini-v1","frozen":true}
+{"id":"q01","tier":"exact","query":"release","expected_wikis":["ProductWiki"],"model_class":"local","expect_status":"matched","expect_loaded":["ProductWiki/topics/release.md"]}
+{"id":"q02","tier":"exact","query":"onboarding","expected_wikis":["ProductWiki"],"model_class":"local","expect_status":"matched","expect_loaded":["ProductWiki/topics/onboarding.md"]}
+{"id":"q03","tier":"exact","query":"research","expected_wikis":["DigestWiki"],"model_class":"local","expect_status":"matched","expect_loaded":["DigestWiki/DIGEST.md"]}
+{"id":"q04","tier":"exact","query":"release Ablauf","expected_wikis":["ProductWiki"],"model_class":"local","expect_status":"matched","expect_loaded":["ProductWiki/topics/release.md"]}
+{"id":"q05","tier":"near","query":"onboarding tour","expected_wikis":["ProductWiki"],"model_class":"local","expect_status":"matched","expect_loaded":["ProductWiki/topics/onboarding.md"]}
+{"id":"q06","tier":"near","query":"historic archive","expected_wikis":["ArchiveWiki"],"model_class":"local","expect_status":"matched","expect_loaded":[]}
+{"id":"q07","tier":"near","query":"notification","expected_wikis":["ProvisionalWiki"],"model_class":"local","expect_status":"ambiguous","expect_loaded":[]}
+{"id":"q08","tier":"near","query":"product pricing release onboarding notes","expected_wikis":["ProductWiki"],"model_class":"local","expect_status":"matched","expect_loaded":["ProductWiki/topics/onboarding.md","ProductWiki/topics/pricing.md","ProductWiki/topics/release.md"]}
+{"id":"q09","tier":"paraphrase","query":"release rollout","expected_wikis":["ProductWiki"],"model_class":"local","expect_status":"matched","expect_loaded":["ProductWiki/topics/release.md"]}
+{"id":"q10","tier":"paraphrase","query":"people leave soon after signup","expected_wikis":["ProductWiki"],"model_class":"local","expect_status":"no-match","expect_loaded":[]}
+{"id":"q11","tier":"ambiguous","query":"pricing","expected_wikis":["OpsWiki","ProductWiki"],"model_class":"local","expect_status":"ambiguous","expect_loaded":[]}
+{"id":"q12","tier":"ambiguous","query":"team plan pricing","expected_wikis":["OpsWiki","ProductWiki"],"model_class":"local","expect_status":"ambiguous","expect_loaded":[]}
+{"id":"q13","tier":"no-match","query":"sourdough astronomy","expected_wikis":[],"model_class":"local","expect_status":"no-match","expect_loaded":[]}
+{"id":"q14","tier":"no-match","query":"payroll vacation","expected_wikis":[],"model_class":"local","expect_status":"no-match","expect_loaded":[]}
+{"id":"q15","tier":"privacy","query":"private journal","expected_wikis":["PersonalWiki"],"model_class":"cloud","expect_status":"privacy-filtered","expect_loaded":[]}
+{"id":"q16","tier":"privacy","query":"weekly routine","expected_wikis":["PersonalWiki"],"model_class":"local","expect_status":"matched","expect_loaded":["PersonalWiki/topics/routine.md"]}
+{"id":"q17","tier":"privacy","query":"archive history","expected_wikis":["ArchiveWiki"],"model_class":"cloud","expect_status":"matched","expect_loaded":[]}
+{"id":"q18","tier":"privacy","query":"research study","expected_wikis":["DigestWiki"],"model_class":"cloud","expect_status":"matched","expect_loaded":["DigestWiki/DIGEST.md"]}
+{"id":"q19","tier":"privacy","query":"pricing controls","expected_wikis":["OpsWiki","ProductWiki"],"model_class":"cloud","expect_status":"matched","expect_loaded":["ProductWiki/topics/pricing.md"]}

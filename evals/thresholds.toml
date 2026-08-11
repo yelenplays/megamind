@@ -1,0 +1,26 @@
+# Preregistered release gates. Thresholds are only meaningful for the exact
+# inputs they were frozen against, so [binding] names them by digest. Changing a
+# fixture, query set, or task set without updating this block is refused, not
+# silently accepted. Never edit a released threshold in place: add a version.
+
+[binding]
+benchmark_version = "release-mini-v1"
+corpus_sha256 = "f0ec3368849822b54bc6bbfa0245ffe64538a8bfbe353b9d7de2bb26257ab730"
+queries_sha256 = "5b1e0688cb8c8f7a2acfcffe35791366ce7ed5bd8f660fa028d8040610903337"
+task_set_version = "synthetic-value-v1"
+task_set_sha256 = "da35737a8472a0eaf090353cc3373192ce8bed7e12b1230a5853bb345e81e2d6"
+
+[release]
+exact_accuracy_min = 1.00
+near_accuracy_min = 0.75
+no_match_accuracy_min = 1.00
+privacy_accuracy_min = 1.00
+canary_leaks_max = 0
+budget_violations_max = 0
+model_access_violations_max = 0
+contract_violations_max = 0
+
+[promotion]
+improvement_min = 0.05
+adjacent_regression_max = 0.05
+provenance_regression_max = 0.00

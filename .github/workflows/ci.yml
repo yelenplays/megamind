@@ -26,6 +26,10 @@ jobs:
           pip install -e . pytest
       - name: Test
         run: pytest
+      - name: Frozen release benchmark
+        run: |
+          megamind-axi bench run --fixtures evals/fixtures/release-mini --queries evals/queries.jsonl --thresholds evals/thresholds.toml --out /tmp/megamind-bench.json --repeat --format json
+          megamind-axi bench check --results /tmp/megamind-bench.json --thresholds evals/thresholds.toml --format json
 
   lint:
     runs-on: ubuntu-latest

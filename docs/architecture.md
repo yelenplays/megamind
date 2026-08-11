@@ -1,17 +1,19 @@
 # Architecture
 
 Megamind is a small, dependency-free Python package behind the `megamind-axi`
-executable. Every command runs locally, deterministically, and without network
-access. Internally everything is plain typed Python objects; the CLI builds
-one typed document per invocation and renders it as TOON or JSON only at the
-output boundary (see [axi.md](axi.md)).
+executable. Every command runs locally and without network access, and every
+command but `experiment keygen` is deterministic (see
+[Determinism](#determinism) for that one exception). Internally everything is
+plain typed Python objects; the CLI builds one typed document per invocation
+and renders it as TOON or JSON only at the output boundary (see
+[axi.md](axi.md)).
 
 ## Modules
 
 | Module | Responsibility |
 | --- | --- |
 | `megamind.models` | Knowledge types, lifecycle states, privacy and access classes, frontmatter parse/serialize (deterministic YAML subset) |
-| `megamind.fsops` | Path containment, atomic writes, backups, audit log. Every write goes through here |
+| `megamind.fsops` | Path containment, atomic writes, backups, audit log, owner-only secret files. Every write goes through here |
 | `megamind.registry` | `.megamind/registry.json` (schema v1/v2) load/save/validate/migrate; generated `ROUTER.md` projection |
 | `megamind.access` | Model-access policy: derives and clamps the binding local/cloud access, routing mode, and catalog visibility for every card |
 | `megamind.card` | The standalone `.megamind/wiki-card.json` of a canonical wiki root |
@@ -28,6 +30,7 @@ output boundary (see [axi.md](axi.md)).
 | `megamind.catalog` | The generated read-only fleet catalog and its drift-checked projection |
 | `megamind.preflight` | Catalog-level, model-access-aware routing for substantive requests |
 | `megamind.gardening` | Durable gaps, one-hop host plans, research bridge, safe event log, provisional local-wiki qualification |
+| `megamind.evaluation` | Frozen release benchmark over the public CLI, and the host-executed three-arm plan/validate/score/record contract. No model, worker, or network code |
 | `megamind.toon` | TOON encoder; the output boundary renders typed dicts |
 | `megamind.skillpack` | Packaged Agent Skill source for `setup skill` |
 | `megamind.cli` | The `megamind-axi` AXI boundary: typed documents, TOON/JSON, exits |
@@ -207,6 +210,23 @@ until confidence coverage and evaluation pass. `provisional` is read back by
 every consumer: catalog, route, and preflight surface it, and none of them ever
 turns a provisional wiki into an authorized load.
 
+## Evaluation
+
+`megamind.evaluation` measures the shipped interfaces rather than its own
+internals: the release benchmark shells out to the real `megamind-axi preflight`
+and `route` for every frozen query and refuses to score an invocation that
+exited non-zero or answered with an unexpected schema. Routing accuracy is
+measured on what the ladder surfaced; context, canary, and access metrics are
+measured only on what the declared model class actually authorizes, which the
+`access` module re-derives independently as a cross-check. Thresholds are
+preregistered against the corpus, query-set, and task-set digests they gate.
+
+The three-arm contract is planning and arithmetic only. The host executes the
+arms; Megamind freezes the inputs, blinds the conditions behind opaque labels
+under the host's private blinding key, validates the returned outputs, seals
+the blind scores before it unblinds, and appends a bounded safe audit event.
+See `docs/evaluation.md` and ADR 0009.
+
 ## Safety model
 
 - `fsops.resolve_contained` resolves symlinks first and rejects any path that
@@ -217,7 +237,13 @@ turns a provisional wiki into an authorized load.
 - Every mutating action inside a vault appends a JSON line to
   `.megamind/audit/log.jsonl`. Containment, backup, and audit are vault
   policies layered on top of the bare atomic-write primitive, so `setup skill`,
-  which writes into a destination outside any vault, gets atomicity only.
+  which writes into a destination outside any vault, gets atomicity only. The
+  evaluation surfaces use the same primitive, but only after refusing any
+  destination that resolves inside an evaluated root or inside any vault. The
+  blinding key is the exception: `fsops.create_private_file` creates it
+  owner-only from its first syscall and refuses to replace an existing key,
+  because a secret must never exist under broader permissions, not even
+  between a write and a `chmod`.
 - The registry stores only root-relative paths, so vaults stay portable and
   never leak machine-specific locations.
 - `doctor` re-checks the invariants: containment, unsafe symlinks, router
@@ -239,4 +265,7 @@ at all: without `--today` freshness is simply reported as unknown rather than
 computed, and a gap record, wave id, or provisioning plan keeps an empty date
 rather than inventing one. Semantic reranking is equally deterministic: the
 char-ngram backend is a pure function of its inputs and rerank ties keep the
-lexical order. The only non-deterministic output is audit timestamps.
+lexical order. The only non-deterministic outputs are audit timestamps and
+`experiment keygen`, the one command that draws on OS entropy: a blinding key
+must be unpredictable or the published commitment is enumerable. Planning,
+validation, and scoring stay fully deterministic once that frozen key exists.

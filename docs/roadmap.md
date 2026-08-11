@@ -62,7 +62,7 @@ model are non-negotiable at every stage.
   baseline; the semantic backend is similarity reranking, not embeddings;
   preflight is host-invoked (no mandatory host enforcement yet)
 
-## v0.4 (this release): governed autonomous gardening
+## v0.4: governed autonomous gardening
 
 - Durable semantic-identity gap journals for missing, weak, stale, and
   contradictory coverage, with priority, attempts, cooldowns, rejection,
@@ -94,13 +94,47 @@ model are non-negotiable at every stage.
   once confidence coverage and a later evaluation clear it, with no command
   behind it
 
+## v0.5 (this release): Phase 4 evaluation
+
+- Frozen, publishable synthetic release benchmark (`bench run|check`) over real
+  public CLI interfaces, with tier-specific routing, privacy/access, pointer and
+  digest, canary, context, repeatability, and honest local baseline metrics
+- Thresholds are preregistered against the exact inputs they gate: every
+  threshold file names the benchmark version and the corpus, query-set, and
+  task-set digests it binds to, and a missing, stale, or tampered identity is
+  refused instead of scored
+- Declared model access is enforced for every model class: a route candidate is
+  only counted as loaded once preflight authorizes it for the declared class,
+  so pointer-only, digest-only, cloud-restricted, and provisional wikis are
+  surfaced without ever entering the authorized context
+- Versioned machine-readable task sets, rubrics, thresholds, canonical results,
+  and bounded safe evaluation audit records
+- Isolated three-arm evaluation contract
+  (`experiment keygen|plan|validate|score|record`) for no-wiki, current-wiki,
+  and updated-wiki conditions. The host supplies arm outputs; Megamind never
+  invokes a model, worker, network, account, or service
+- Conditions are assigned to blind labels by a keyed HMAC permutation of the
+  frozen public identity under the host's private blinding key, which `keygen`
+  writes and no public artifact carries. The grader packet holds only blind
+  identities and the rubric; the unblinding map is a separate host artifact,
+  and scoring seals the blind scores before it reads that map
+- Frozen provenance digests, cross-arm contamination checks, authorized-context
+  accounting, rollback-required and unsettled outcomes, and restrictive
+  provisional governance
+- The frozen fixture is generated, not hand-written: `evals/gen_corpus.py` is
+  the only source of its bytes and a test requires an exact match
+- Known limitations, all deliberate boundaries: the frozen corpus is
+  synthetic, so the release benchmark measures routing mechanism and safety
+  rather than general model quality; Megamind plans, validates, and scores,
+  while the host owns model execution and its blind grading controls; a
+  passing evaluation is evidence, not promotion, so a provisional wiki
+  stays untrusted until a deliberate card edit; and value on real wikis,
+  along with generalization beyond the frozen corpus, is left to the
+  governed Phase 5 pilot
+
 ## Later / undecided
 
-- Benchmark suite (bench-mini): a frozen synthetic corpus with a tiered query
-  set (exact, near, paraphrase, ambiguous, no-match, privacy), canary-string
-  leak detection, context-cost accounting, and honest baselines (full-vault
-  stuffing, grep-style search) with per-tier reporting and hard safety gates,
-  runnable in CI without any hosted API
+- Larger bench-mid corpus and seeded scale curves
 - Pluggable local embedding adapters behind the `megamind.semantic` protocol
   (the deterministic ladder stays the source of truth and the offline
   default; adapters only re-order already-authorized candidates and are

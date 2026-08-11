@@ -17,6 +17,7 @@ import argparse
 import json
 import shlex
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
@@ -44,6 +45,24 @@ from .confidence import (
     claim_confidence,
 )
 from .doctor import run_doctor
+from .evaluation import (
+    EvaluationError,
+    check_benchmark,
+    evaluation_roots,
+    guard_output_path,
+    load_plan,
+    load_unblinding_map,
+    plan_experiment,
+    read_blinding_key,
+    read_json,
+    record_evaluation,
+    run_benchmark,
+    score_sealed,
+    seal_experiment,
+    validate_outputs,
+    write_blinding_key,
+    write_document,
+)
 from .evolve import EvolveError, apply_plan, plan
 from .fsops import PathEscapeError
 from .gardening import (
@@ -1123,6 +1142,130 @@ def cmd_setup_skill(dest: str | None) -> tuple[Doc, int]:
     return doc, 0
 
 
+REPEAT_HASH_SEED = "524287"
+
+
+def _guard_evaluation_outs(raw: Sequence[str | None], forbidden: Sequence[Path] = ()) -> None:
+    """Refuse an unsafe destination before any work runs or any artifact lands.
+
+    Checking every destination up front keeps a partially written artifact set
+    and a recorded audit event out of the failure path.
+    """
+    for value in raw:
+        if value:
+            guard_output_path(Path(value), forbidden)
+
+
+def _unsettled_guard_map(plan: Doc, map_path: Path, *, required: bool) -> Doc | None:
+    """The map, read only to derive the roots an unsettled result must avoid.
+
+    With nothing to write there is nothing to contain, so an unreadable map
+    still yields the typed unsettled document. With a destination to protect,
+    the map is the only artifact naming the arm snapshots, so a map that cannot
+    be validated is refused rather than written around.
+    """
+    try:
+        return load_unblinding_map(plan, map_path)
+    except EvaluationError:
+        if required:
+            raise
+        return None
+
+
+def _evaluation_out(document: Doc, raw: str | None, forbidden: Sequence[Path] = ()) -> Doc:
+    if raw:
+        write_document(Path(raw), document, forbidden_roots=forbidden)
+    return document
+
+
+def cmd_bench(args: argparse.Namespace) -> tuple[Doc, int]:
+    if args.bench_command == "run":
+        fixtures = Path(args.fixtures)
+        _guard_evaluation_outs([args.out], [fixtures])
+        result = run_benchmark(fixtures, Path(args.queries), Path(args.thresholds))
+        if args.repeat:
+            # The measured pass inherits the caller's hash seed; the repeat forces
+            # a different one, so an identical document proves the ladder itself
+            # is seed-independent rather than merely pinned.
+            repeated = run_benchmark(
+                fixtures, Path(args.queries), Path(args.thresholds), hash_seed=REPEAT_HASH_SEED
+            )
+            if json.dumps(result, sort_keys=True) != json.dumps(repeated, sort_keys=True):
+                raise EvaluationError("benchmark repeatability check failed")
+        return _evaluation_out(result, args.out, [fixtures]), 0
+    _guard_evaluation_outs([args.out])
+    result = check_benchmark(Path(args.results), Path(args.thresholds))
+    return _evaluation_out(result, args.out), 0 if result["status"] == "passed" else 1
+
+
+def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
+    action = args.experiment_command
+    if action == "keygen":
+        return write_blinding_key(Path(args.out)), 0
+    if action == "plan":
+        arm_roots = [Path(args.no_wiki), Path(args.current_wiki), Path(args.updated_wiki)]
+        evaluated = [*arm_roots, Path(args.output_root)]
+        _guard_evaluation_outs([args.out, args.grader_out, args.map_out], evaluated)
+        blinding_key = read_blinding_key(Path(args.blinding_key_file))
+        result, grader, unblinding = plan_experiment(
+            Path(args.tasks),
+            arm_roots[0],
+            arm_roots[1],
+            arm_roots[2],
+            Path(args.rubric),
+            Path(args.thresholds),
+            args.model,
+            args.tools,
+            args.effort,
+            args.seed,
+            Path(args.output_root),
+            blinding_key,
+        )
+        # The grader packet and the unblinding map are separate artifacts on
+        # purpose: whoever grades the arms must never hold the map.
+        write_document(Path(args.grader_out), grader, forbidden_roots=evaluated)
+        write_document(Path(args.map_out), unblinding, forbidden_roots=evaluated, mode=0o600)
+        return _evaluation_out(result, args.out, evaluated), 0
+    if action == "record":
+        audit_root = Path(args.audit_root)
+        _guard_evaluation_outs([args.out], [audit_root])
+        score = read_json(Path(args.score), "evaluation score")
+        if not isinstance(score, dict):
+            raise EvaluationError("evaluation score must be an object")
+        result = record_evaluation(audit_root, score)
+        return _evaluation_out(result, args.out, [audit_root]), 0
+    plan_path = Path(args.plan)
+    outputs = [Path(path) for path in args.outputs]
+    if action == "validate":
+        plan = load_plan(plan_path)
+        forbidden = evaluation_roots(plan)
+        _guard_evaluation_outs([args.out], forbidden)
+        result = validate_outputs(plan, outputs)
+        return _evaluation_out(result, args.out, forbidden), 0 if result["status"] == "valid" else 1
+    if action == "score":
+        # Sealing runs first and touches no unblinding artifact. Only once the
+        # blind grades are fixed is the map opened, the protected roots derived
+        # from it, the destination checked, and the result unblinded and written.
+        sealed = seal_experiment(plan_path, outputs)
+        map_path = Path(args.unblinding_map)
+        if sealed.unsettled is not None:
+            # An incomplete set stays typed and blind, but still may not write
+            # into an arm snapshot, and only the map names those roots.
+            partial = _unsettled_guard_map(sealed.plan, map_path, required=bool(args.out))
+            forbidden = evaluation_roots(sealed.plan, partial)
+            _guard_evaluation_outs([args.out], forbidden)
+            return _evaluation_out(sealed.unsettled, args.out, forbidden), 1
+        unblinding = load_unblinding_map(sealed.plan, map_path)
+        forbidden = evaluation_roots(sealed.plan, unblinding)
+        _guard_evaluation_outs([args.out], forbidden)
+        result = score_sealed(sealed, unblinding)
+        return (
+            _evaluation_out(result, args.out, forbidden),
+            0 if result["status"] == "promoted" else 1,
+        )
+    raise UsageError("unknown experiment action")
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
@@ -1493,6 +1636,101 @@ def build_parser() -> AxiParser:
     p_provision.add_argument("--rollback", action="store_true", help="rollback an applied plan")
     p_provision.add_argument("--today", default=argparse.SUPPRESS)
 
+    p_bench = sub.add_parser(
+        "bench",
+        help="run or check the frozen synthetic release benchmark",
+        epilog=(
+            f"example: {EXECUTABLE} bench run --fixtures evals/fixtures/release-mini "
+            "--queries evals/queries.jsonl --thresholds evals/thresholds.toml --out results.json"
+        ),
+    )
+    _common_flags(p_bench)
+    bench_sub = p_bench.add_subparsers(dest="bench_command")
+    p_bench_run = bench_sub.add_parser(
+        "run", help="invoke the real public CLI over synthetic fixtures"
+    )
+    _common_flags(p_bench_run)
+    p_bench_run.add_argument("--fixtures", required=True)
+    p_bench_run.add_argument("--queries", required=True)
+    p_bench_run.add_argument("--thresholds", required=True)
+    p_bench_run.add_argument("--out", default=None)
+    p_bench_run.add_argument(
+        "--repeat", action="store_true", help="rerun and require byte-identical canonical output"
+    )
+    p_bench_check = bench_sub.add_parser("check", help="check frozen release gates")
+    _common_flags(p_bench_check)
+    p_bench_check.add_argument("--results", required=True)
+    p_bench_check.add_argument("--thresholds", required=True)
+    p_bench_check.add_argument("--out", default=None)
+
+    p_experiment = sub.add_parser(
+        "experiment",
+        aliases=["eval", "evaluation"],
+        help="plan, validate, score, and record a host-executed three-arm evaluation",
+    )
+    _common_flags(p_experiment)
+    experiment_sub = p_experiment.add_subparsers(dest="experiment_command")
+    p_exp_keygen = experiment_sub.add_parser(
+        "keygen",
+        help="write a new private 256-bit blinding key file (mode 0600)",
+        epilog=f"example: {EXECUTABLE} experiment keygen --out blinding.key",
+    )
+    _common_flags(p_exp_keygen)
+    p_exp_keygen.add_argument("--out", required=True, help="destination for the new key file")
+    p_exp_plan = experiment_sub.add_parser(
+        "plan", help="freeze task, model, rubric, threshold, and arm inputs"
+    )
+    _common_flags(p_exp_plan)
+    p_exp_plan.add_argument("--tasks", required=True)
+    p_exp_plan.add_argument("--no-wiki", required=True)
+    p_exp_plan.add_argument("--current-wiki", required=True)
+    p_exp_plan.add_argument("--updated-wiki", required=True)
+    p_exp_plan.add_argument("--rubric", required=True)
+    p_exp_plan.add_argument("--thresholds", required=True)
+    p_exp_plan.add_argument("--model", required=True)
+    p_exp_plan.add_argument("--tools", default="none")
+    p_exp_plan.add_argument("--effort", default="fixed")
+    p_exp_plan.add_argument("--seed", type=int, required=True)
+    p_exp_plan.add_argument("--output-root", required=True)
+    p_exp_plan.add_argument("--out", required=True)
+    p_exp_plan.add_argument(
+        "--grader-out", required=True, help="blind grader packet: labels and rubric only"
+    )
+    p_exp_plan.add_argument(
+        "--map-out", required=True, help="host-only unblinding map, kept apart from the grader"
+    )
+    p_exp_plan.add_argument(
+        "--blinding-key-file",
+        required=True,
+        help="file holding the host's private blinding key (never copied into the plan)",
+    )
+    p_exp_validate = experiment_sub.add_parser(
+        "validate", help="validate blinded, isolated host arm outputs"
+    )
+    _common_flags(p_exp_validate)
+    p_exp_validate.add_argument("--plan", required=True)
+    p_exp_validate.add_argument("--outputs", nargs="+", required=True)
+    p_exp_validate.add_argument("--out", default=None)
+    p_exp_score = experiment_sub.add_parser(
+        "score", help="score validated outputs and apply frozen promotion gates"
+    )
+    _common_flags(p_exp_score)
+    p_exp_score.add_argument("--plan", required=True)
+    p_exp_score.add_argument("--outputs", nargs="+", required=True)
+    p_exp_score.add_argument(
+        "--unblinding-map",
+        required=True,
+        help="host execution artifact mapping blind labels to conditions",
+    )
+    p_exp_score.add_argument("--out", default=None)
+    p_exp_record = experiment_sub.add_parser(
+        "record", help="append a bounded safe evaluation audit event"
+    )
+    _common_flags(p_exp_record)
+    p_exp_record.add_argument("--score", required=True)
+    p_exp_record.add_argument("--audit-root", required=True)
+    p_exp_record.add_argument("--out", default=None)
+
     p_setup = sub.add_parser("setup", help="explicit opt-in integrations (local, zero-network)")
     _common_flags(p_setup)
     setup_sub = p_setup.add_subparsers(dest="setup_command")
@@ -1704,6 +1942,20 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
         if args.rollback and not args.plan_id:
             raise UsageError("provision-wiki --rollback requires --plan-id")
         return cmd_provision_wiki(args, root, _garden_today(args))
+    if command == "bench":
+        if getattr(args, "bench_command", None) not in {"run", "check"}:
+            raise UsageError("usage: megamind-axi bench run|check ...")
+        return cmd_bench(args)
+    if command in {"experiment", "eval", "evaluation"}:
+        if getattr(args, "experiment_command", None) not in {
+            "keygen",
+            "plan",
+            "validate",
+            "score",
+            "record",
+        }:
+            raise UsageError("usage: megamind-axi experiment keygen|plan|validate|score|record ...")
+        return cmd_experiment(args)
     if command == "setup":
         if getattr(args, "setup_command", None) != "skill":
             raise UsageError("usage: megamind-axi setup skill [--dest DIR]")
@@ -1734,6 +1986,10 @@ _ERROR_HELP: dict[str, list[str]] = {
     "garden_invalid": [
         f"Run `{EXECUTABLE} doctor` to validate governed records",
         "Check the typed gap, capacity, or bridge fields and retry",
+    ],
+    "evaluation_invalid": [
+        "Check the frozen fixture, query set, task set, rubric, and threshold digests",
+        f"Run `{EXECUTABLE} bench run --help` or `{EXECUTABLE} experiment plan --help` for inputs",
     ],
     "gap_not_found": [f"Run `{EXECUTABLE} gap list` to inspect durable gap ids"],
     "gap_transition_invalid": [
@@ -1779,6 +2035,7 @@ def main(argv: list[str] | None = None) -> int:
         InitError,
         PathEscapeError,
         GardenError,
+        EvaluationError,
     ) as error:
         code = str(getattr(error, "code", "operation_failed"))
         exit_code = 2 if code in {"not_initialized", "registry_invalid"} else 1

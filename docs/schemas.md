@@ -353,6 +353,72 @@ as a typed field, and `notes` names it as a governance decision and never as a
 confidence one. Privacy-safe offers and research nominations may still name a
 provisional wiki explicitly.
 
+## Evaluation schemas (Phase 4)
+
+Release inputs are immutable by version and safe to publish. A task set is
+an object with `schema: megamind/evaluation-task-set/v1`, `frozen: true`, a
+`version`, and unique pre-authored task objects. A benchmark query set is
+JSONL whose first record is a `megamind/benchmark-query-set/v1` header with
+`frozen: true` and a `version`; a file without that header has no provenance
+and is refused. Each following record carries an `id`, a `tier`, a `query`,
+the `expected_wikis`, and a `model_class`, and may pin `expect_status` and
+`expect_loaded` as behavior contracts.
+
+Threshold files are deterministic TOML (or JSON) and are hashed into every
+result. A `[binding]` section is mandatory: it names the
+`benchmark_version`, `corpus_sha256`, `queries_sha256`, `task_set_version`,
+and `task_set_sha256` the gates were preregistered against, every `*_sha256`
+is a 64-character hex digest, and a missing, stale, or tampered binding is
+refused rather than defaulted. `[release]` must preregister all eight
+release gates and `[promotion]` all three promotion gates: unknown keys and
+missing keys are both refused, accuracy floors and regression tolerances
+must be finite numbers in `[0.0, 1.0]`, and the `*_max` counters must be
+non-negative whole numbers. `megamind/benchmark-result/v1` contains
+`benchmark_version` (taken from the query-set header, never a literal),
+`corpus_sha256`, `queries_sha256`, `thresholds_sha256`, per-tier aggregates,
+per-query canonical rows with separate `candidates` and authorized `loaded`
+sets, safety counts, and honest local baselines. It has no wall-clock field.
+`benchmark-check/v1` reports each gate and failed gate names; a tier with no
+queries scores zero so an absent tier fails closed.
+
+`megamind/evaluation-plan/v1` freezes the task-set, rubric, threshold,
+model, tools, effort, and execution seed. It assigns opaque arm labels and
+distinct output roots, carries an `identity_id` over everything the
+commitments commit to, lists `snapshot_commitments` as a sorted set never
+tied to a label, and carries `blinding` with the scheme, a keyed assignment
+commitment, and a `key_id` fingerprint. It never names a condition beside a
+label, never carries the blinding key, and never carries a raw snapshot
+digest: the empty no-wiki tree hashes to a key-free public constant, so a
+raw digest would identify that condition on its own.
+`megamind/evaluation-grader-packet/v1` carries only the blind labels, the
+task prompts, the rubric, and the same commitment.
+`megamind/evaluation-unblinding-map/v1` is a separate host artifact, written
+mode 0600, holding the private `blinding_key`, the label-to-condition
+`assignments`, and per-arm `snapshots` (root, digest, and commitment). It is
+accepted only when it belongs to the plan by `plan_id` and `identity_id`,
+carries the key the plan's `key_id` names, opens the plan's assignment
+commitment, re-derives the same assignment, and opens every planned snapshot
+commitment, so a substituted, re-keyed, replayed, or edited map is refused.
+Host arm output is `megamind/evaluation-arm-output/v1`; it must carry the
+plan/task versions, opaque label, session id, a `snapshot_commitment` drawn
+from the planned set and no raw `wiki_sha256`, every task exactly once, the
+actual non-negative `authorized_context_chars`, provenance, and zero
+privacy/model access violations. Validation rejects malformed output, stale
+or tampered inputs, missing tasks, duplicate arms, commitments that do not
+cover the planned set exactly once, path escapes, leakage, or cross-arm
+contamination, and needs no map or key. Scoring returns
+`megamind/evaluation-score/v1`, sealing the per-label blind scores as
+`blind_scores_sha256` before the map is opened at all: promotion requires
+improved target outcomes, no material adjacent regression, provenance within
+the preregistered `provenance_regression_max` tolerance, and zero new safety
+violations. Failure is `rollback-required` with a non-empty `rollback_ref`;
+incomplete or unvalidated input is a typed `unsettled` document naming
+`missing_arms`, and is never promoted. `experiment record` appends
+`megamind/evaluation-record/v1` to an audit JSONL journal with a
+deterministic hash-chain event, bounded safe summary, and rollback
+reference. Prompts, answers, canaries, secrets, and sensitive content are
+never copied to the event.
+
 ## Canonical wiki root
 
 `megamind-axi init <path> --wiki <Name>` scaffolds the canonical layout:

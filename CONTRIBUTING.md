@@ -27,7 +27,9 @@ mypy            # strict, configured in pyproject.toml
 
 - **Determinism**: same vault plus same input must always produce the same
   output. No wall-clock dependence in behavior (use `--today` plumbing), no
-  randomness, no network in core commands.
+  randomness, no network in core commands. The one sanctioned exception is
+  `experiment keygen`, whose blinding key must be unpredictable; see
+  [docs/evaluation.md](docs/evaluation.md).
 - **Safety model**: every write goes through `megamind.fsops` (containment,
   atomic write, backup, audit). Dry-run stays the default for anything that
   mutates existing wiki content; approval tokens gate applies. Do not weaken
@@ -35,8 +37,9 @@ mypy            # strict, configured in pyproject.toml
 - **Zero runtime dependencies**: the core package uses the standard library
   only. Optional integrations belong behind extras (see the roadmap).
 - **Tests first**: behavior changes come with tests; bug fixes come with a
-  test that fails before the fix. The synthetic examples vault is pinned by
-  tests; regenerate it deliberately, never let it drift.
+  test that fails before the fix. The synthetic examples vault and the frozen
+  evaluation fixture are pinned by tests; regenerate them deliberately, never
+  let them drift.
 - **Synthetic content only**: examples, tests, fixtures, and docs must never
   contain real personal data, private paths, or company information.
 - **Style**: ruff-formatted, 100-column lines, typed throughout. Prefer plain

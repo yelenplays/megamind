@@ -35,6 +35,12 @@ with a stable `schema_version`:
 | `megamind/research-wave/v1` | `research-wave` |
 | `megamind/research-result/v1` | `research-result` |
 | `megamind/provisional-wiki-result/v1` | `provision-wiki` |
+| `megamind/benchmark-result/v1`, `megamind/benchmark-check/v1` | `bench run`, `bench check` |
+| `megamind/evaluation-key/v1` | `experiment keygen` |
+| `megamind/evaluation-plan/v1`, `megamind/evaluation-grader-packet/v1`, `megamind/evaluation-unblinding-map/v1` | `experiment plan` |
+| `megamind/evaluation-validation/v1` | `experiment validate` |
+| `megamind/evaluation-score/v1` | `experiment score` |
+| `megamind/evaluation-record/v1` | `experiment record` |
 | `megamind/error/v1` | any failure |
 
 The v2 retrieval documents are additive over their v1 shapes: every v1 field
@@ -202,14 +208,70 @@ the full component rationale.
 `capture_invalid`, `proposal_not_found`, `plan_mismatch`, `approval_required`,
 `evolve_invalid`, `adopt_invalid`, `init_invalid`, `path_escape`,
 `frontmatter_invalid`, `io_error`, `garden_invalid`, `gap_not_found`,
-`gap_transition_invalid`, `provision_recovery_required`. Malformed vault
-content and filesystem failures are reported as `frontmatter_invalid` and
-`io_error` documents with exit 1; no invocation ever ends in a traceback.
+`gap_transition_invalid`, `provision_recovery_required`, `evaluation_invalid`.
+Malformed vault content and filesystem failures are reported as
+`frontmatter_invalid` and `io_error` documents with exit 1; malformed frozen
+evaluation inputs are `evaluation_invalid`; no invocation ever ends in a
+traceback.
 `provision_recovery_required` is the one failure that deliberately leaves
 durable state: an apply that could not fully undo itself keeps its transaction
 record so the retry or the explicit rollback stays available. Messages never
 include machine-specific absolute paths from inside the vault model; registry
 paths are always root-relative.
+
+## Evaluation contract
+
+`bench run` invokes the public `preflight` and `route` commands over the
+checked-in synthetic release fixture and emits tier-specific canonical
+metrics, context accounting, safety counts, and honest local baselines. A
+query set without a registered `megamind/benchmark-query-set/v1` header is
+refused, and the emitted `benchmark_version` is the version that header
+declares. Thresholds are preregistered against the exact corpus, query-set,
+and task-set digests they gate, and `bench run`, `bench check`, and
+`experiment plan` all refuse a missing, stale, or tampered binding. A route
+candidate is only counted as loaded once preflight authorizes it for the
+declared model class, for every model class.
+
+Every gate is validated for key, type, finiteness, and range before anything
+is scored, checked, or written, so a malformed threshold file is a typed
+`evaluation_invalid` document rather than a coercion traceback. The measured
+invocations inherit the caller's `PYTHONHASHSEED` instead of pinning it, and
+`--repeat` reruns under a different explicit seed and requires a
+byte-identical document.
+
+`bench check` applies the versioned machine-readable gates; a tier with no
+queries scores zero rather than crashing, so an absent tier fails closed.
+`experiment keygen` writes the host's private 256-bit blinding key, creating
+the file mode 0600 from its first syscall, refusing to overwrite an existing
+key, and leaving no partial file behind on failure; it is the single command
+that draws on OS entropy, and everything downstream stays deterministic once
+the frozen key exists. `experiment plan` freezes a task-set digest,
+prompt/model/tools/effort inputs, rubric, thresholds, execution seed, and
+three isolated wiki snapshots, and emits three separate artifacts under that
+key - a machine-generated 256-bit value supplied in its own mode-0600 file:
+the plan, a grader packet carrying only blind identities, the rubric, and a
+keyed commitment, and a host-only unblinding map holding the key, the
+assignment, and the snapshot roots. Neither public artifact carries inputs
+sufficient to derive the label-to-condition mapping, and no artifact outside
+the map carries a raw snapshot digest, so the constant empty-tree hash
+cannot identify the no-wiki arm. The host supplies opaque-label arm outputs;
+`experiment validate` needs no map or key and rejects malformed, incomplete,
+cross-arm, contaminated, or wrong-provenance outputs. `experiment score`
+seals the blind per-label scores before it opens the unblinding artifact at
+all, accepts the map only if it opens the plan's commitments under the key
+the plan names, then applies only the frozen rubric and promotion rules. An
+incomplete arm set is sealed the same way and returns a typed `unsettled`
+document, never a traceback and never a promotion; the map is then opened
+only to derive the roots an `--out` destination must stay outside of, so
+with no destination to protect an unreadable map still yields `unsettled`,
+while with one an unvalidated map is refused rather than written around. No
+assignment ever reaches the result. `experiment record` appends a bounded
+safe audit event with a non-empty rollback reference when needed. Every
+evaluation output destination is refused when it resolves inside an
+evaluated root - fixture, snapshot, arm output tree, or audit root - or
+inside any vault, and every check runs before anything is written so a
+refusal leaves nothing partially written. None of these commands invokes a
+model, worker, network, account, or external service.
 
 ## Testing the contract
 

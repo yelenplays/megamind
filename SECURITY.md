@@ -17,6 +17,9 @@ root. Reports we especially care about:
 - Approval bypasses: applying changes without a matching plan id, or creating
   top-level wikis without `--approve-new-wiki`
 - Non-atomic or destructive write paths that can corrupt user content
+- Evaluation blinding leaks: a blinding key, an unblinding map, or an arm's
+  condition recoverable from a plan, grader packet, arm output, or audit
+  event, or an evaluation artifact written into a vault or an evaluated root
 
 ## Reporting
 
@@ -30,5 +33,9 @@ Please give us reasonable time to fix before public disclosure.
 
 Megamind executes no network calls, no shell-outs, and no model inference in
 core commands; reports about those surfaces likely concern your environment
-rather than this project. Vaults themselves may contain untrusted Markdown;
-Megamind treats page content as data, never as code.
+rather than this project. The one process Megamind ever spawns is the release
+benchmark measuring the shipped interfaces: `bench run` runs this project's
+own CLI (`sys.executable -m megamind.cli`, no shell) over its frozen synthetic
+fixture. No command invokes a model, worker, account, or external service.
+Vaults themselves may contain untrusted Markdown; Megamind treats page content
+as data, never as code.

@@ -107,6 +107,41 @@ def atomic_write_path(target: Path, content: str, *, durable: bool = False) -> P
     return target
 
 
+def create_private_file(target: Path, content: str, *, durable: bool = False) -> Path:
+    """Create a new owner-only file, private from its very first syscall.
+
+    The primitive for content that must never be readable by anyone else, not
+    even transiently: ``O_CREAT | O_EXCL`` with mode 0600 means the bytes only
+    ever exist behind owner-only permissions, and there is no later ``chmod``
+    window to lose them through. Unlike ``atomic_write_path`` it refuses to
+    replace an existing file rather than renaming over it, because silently
+    destroying a secret is worse than failing. A failed write closes the handle
+    and removes the partial file.
+
+    Everything that is not a secret should use ``atomic_write`` or
+    ``atomic_write_path`` instead; those replace idempotently, which is what
+    ordinary content wants.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        payload = content.encode("utf-8")
+        written = 0
+        while written < len(payload):
+            written += os.write(handle, payload[written:])
+        os.fsync(handle)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(handle)
+        with contextlib.suppress(OSError):
+            os.unlink(target)
+        raise
+    os.close(handle)
+    if durable:
+        sync_directory(target.parent)
+    return target
+
+
 def atomic_write(root: Path, target: str | Path, content: str, *, durable: bool = False) -> Path:
     """Write content atomically to a root-contained path, creating parent dirs."""
     resolved = resolve_contained(root, target)

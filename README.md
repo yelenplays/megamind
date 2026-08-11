@@ -174,6 +174,36 @@ megamind-axi research-result --nomination-json <json> --result-json <json>
 [docs/schemas.md](docs/schemas.md) owns the record formats and
 [docs/architecture.md](docs/architecture.md) the design.
 
+## Evaluation: a frozen benchmark and blinded three-arm runs
+
+Megamind measures itself offline and never runs the model under test. Both
+surfaces are planning and arithmetic only: the host executes, Megamind freezes
+the inputs, validates, scores, and records.
+
+```sh
+megamind-axi bench run --fixtures evals/fixtures/release-mini \
+  --queries evals/queries.jsonl --thresholds evals/thresholds.toml --repeat
+megamind-axi experiment keygen --out blinding.key   # the private blinding key
+megamind-axi experiment plan --tasks evals/experiment-tasks-v1.json ...
+```
+
+- **Release benchmark** (`bench run|check`) drives the real `preflight` and
+  `route` commands over a frozen synthetic fixture, reporting exact, near,
+  paraphrase, ambiguous, no-match, and privacy tiers separately, plus
+  authorized-context accounting, canary and model-access safety counts,
+  repeatability, and honest local grep/full-vault baselines. Thresholds are
+  preregistered against the corpus, query-set, and task-set digests they gate,
+  so a post-hoc change to them is visible instead of silent.
+- **Three-arm value evaluation** (`experiment keygen|plan|validate|score|record`)
+  runs identical pre-authored tasks under no-wiki, current-wiki, and
+  updated-wiki conditions with isolated snapshots, sessions, caches, and
+  outputs. Conditions sit behind blind labels, the host executes the arms and
+  returns opaque-label outputs, and scoring seals the blind scores before it
+  unblinds. The result is `promoted`, `rollback-required`, or `unsettled`.
+
+[docs/evaluation.md](docs/evaluation.md) owns the contract. The evidence is
+about routing, context, and safety; neither surface claims model quality.
+
 ## Concepts
 
 **Knowledge types**: `fact`, `decision`, `hypothesis`, `procedure`, `example`,
@@ -194,8 +224,10 @@ fields in `.megamind/wiki-card.json` instead. See
 ## Safety guarantees
 
 - All vault writes are contained to the vault root; path traversal and
-  symlinks that escape the root are rejected. The only write outside a vault is
-  `setup skill --dest`, which goes exactly where you point it.
+  symlinks that escape the root are rejected. The only writes outside a vault
+  are `setup skill --dest` and the evaluation artifacts, which go exactly where
+  you point them; an evaluation destination inside any vault or inside an
+  evaluated root is refused before anything is written.
 - Writes are atomic; every mutation of an existing file leaves a backup under
   `.megamind/audit/backups/` and an audit record in `.megamind/audit/log.jsonl`.
 - `evolve` is dry-run by default and requires the plan id from the dry run as
@@ -242,6 +274,7 @@ a host-side policy that no host integration enforces yet.
 - [AXI output contract](docs/axi.md) - schemas, formats, exit codes
 - [Architecture](docs/architecture.md) - modules, ladders, scoring weights
 - [Schemas and templates](docs/schemas.md) - registry, cards, pages, proposals
+- [Evaluation contract](docs/evaluation.md) - release benchmark, three-arm runs
 - [Domain vocabulary](CONTEXT.md) - the settled domain terms
 - [Decision records](docs/adr/) - the hard-to-reverse tradeoffs
 - [Roadmap](docs/roadmap.md)

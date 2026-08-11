@@ -1,10 +1,10 @@
 # Context: Megamind domain language
 
 The settled vocabulary for the federation foundation, the retrieval and
-confidence layer above it, and the governed gardening layer above that. Each
-term means exactly this anywhere it appears
-in the project; the avoid lines name the common misreadings. This file covers
-only what the current release implements.
+confidence layer above it, the governed gardening layer above that, and the
+evaluation surfaces that measure them. Each term means exactly this anywhere
+it appears in the project; the avoid lines name the common misreadings. This
+file covers only what the current release implements.
 
 **Knowledge engine**:
 Megamind's role: the deterministic layer that owns wiki cataloging, routing,
@@ -113,3 +113,29 @@ A locally created wiki that passed every qualification criterion but is not
 trusted active knowledge yet: it is surfaced and may be offered, never an
 authorized load, until confidence coverage and an evaluation pass clear it.
 _Avoid_: draft wiki, private wiki
+
+**Release benchmark**:
+The frozen offline measurement of the shipped `route` and `preflight`
+interfaces over a synthetic corpus: routing tiers, authorized context, and
+safety counts against preregistered thresholds. Evidence about retrieval,
+never a claim about model quality.
+_Avoid_: model benchmark, leaderboard score
+
+**Arm**:
+One condition of a three-arm evaluation - no-wiki, current-wiki, or
+updated-wiki - with its own isolated snapshot, session, cache, and output
+root. The host executes it; Megamind only freezes, validates, and scores it.
+_Avoid_: variant rollout, experiment run
+
+**Blind label**:
+The opaque arm identity every artifact outside the host's unblinding map uses
+in place of a condition. Conditions are assigned to labels by a keyed
+permutation under the host's private blinding key.
+_Avoid_: condition name, random tag
+
+**Promotion outcome**:
+The typed verdict of a scored evaluation: `promoted` only for improved target
+outcomes with no material adjacent regression, preserved provenance, and zero
+new safety violations; otherwise `rollback-required`, or `unsettled` when the
+evidence is incomplete. Evidence, not authorization to publish or dispatch.
+_Avoid_: deployment, approval, release gate
