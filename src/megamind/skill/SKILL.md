@@ -1,6 +1,6 @@
 ---
 name: megamind
-description: Route questions to the right Markdown wiki pages and garden knowledge safely with the megamind-axi executable. Use when the user asks where knowledge lives in their vault or wiki, wants to capture a note or decision from a conversation, asks to update or supersede outdated wiki pages, wants duplicates, stale pages, or dead links found, or asks to validate a Megamind vault. Works locally on Markdown and Obsidian vaults with no embeddings or network.
+description: Route questions to the right Markdown wiki pages and garden knowledge safely with the megamind-axi executable. Use when the user asks where knowledge lives in their vault or wiki, wants to capture a note or decision from a conversation, asks to update or supersede outdated wiki pages, wants duplicates, stale pages, or dead links found, wants gardening of knowledge gaps (recording a missing, weak, stale, or contradictory gap, planning a research wave over one, or filing a host research result), asks about provisional wikis or wants a qualified new local wiki provisioned, or asks to validate a Megamind vault. Works locally on Markdown and Obsidian vaults with no embeddings or network.
 ---
 
 # Megamind
