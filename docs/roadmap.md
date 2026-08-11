@@ -87,6 +87,12 @@ model are non-negotiable at every stage.
 - Machine-readable `gap`, `research-wave`, `research-result`, and
   `provision-wiki` AXI documents, with v1 retrieval and federation behavior
   unchanged
+- Known limitations, all deliberate boundaries: a wave stops at the direct gap
+  plus at most two first-order topics and defers the rest as nominations;
+  capacity is enforced from host-supplied measurements and is never measured by
+  Megamind; promotion out of `provisional` stays a deliberate card edit, made
+  once confidence coverage and a later evaluation clear it, with no command
+  behind it
 
 ## Later / undecided
 
