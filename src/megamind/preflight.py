@@ -17,6 +17,7 @@ host can prove preflight ran without storing the raw prompt.
 from __future__ import annotations
 
 import json
+import shlex
 from dataclasses import dataclass, field
 
 from .catalog import Catalog, RootRef, build_catalog
@@ -38,6 +39,10 @@ WEIGHT_NAME = 2
 WEIGHT_TEXT = 1
 
 MODEL_CLASSES = ("local", "cloud")
+
+# The one owner of the lexical signal classes. `_score_row` emits reasons for
+# exactly these classes and every derived summary reads them back from here.
+SIGNAL_CLASSES = ("trigger", "name", "scope")
 
 THRESHOLDS: dict[str, float] = {
     "reliance_floor": RELIANCE_FLOOR,
@@ -90,6 +95,20 @@ def _best_signal(signals: dict[str, float], token: str, strength: float) -> None
         signals[token] = strength
 
 
+def _reason(signal_class: str, token: str) -> str:
+    return f"{signal_class} match: {token}"
+
+
+def _signal_counts(reasons: list[str]) -> dict[str, int]:
+    """Count reasons per signal class, reading the classes from one owner."""
+    counts = dict.fromkeys(SIGNAL_CLASSES, 0)
+    for reason in reasons:
+        signal_class = reason.split(" match:", 1)[0]
+        if signal_class in counts:
+            counts[signal_class] += 1
+    return counts
+
+
 def _score_row(
     row: dict[str, object], query_tokens: list[str]
 ) -> tuple[int, list[str], dict[str, float]]:
@@ -109,19 +128,18 @@ def _score_row(
             ]
         )
     )
+    buckets: dict[str, tuple[set[str], int, float]] = {
+        "trigger": (trigger_tokens, WEIGHT_TRIGGER, SIGNAL_STRENGTH["trigger"]),
+        "name": (name_tokens, WEIGHT_NAME, SIGNAL_STRENGTH["name"]),
+        "scope": (text_tokens, WEIGHT_TEXT, SIGNAL_STRENGTH["text"]),
+    }
     for token in query_tokens:
-        if token in trigger_tokens:
-            score += WEIGHT_TRIGGER
-            reasons.append(f"trigger match: {token}")
-            _best_signal(signals, token, SIGNAL_STRENGTH["trigger"])
-        if token in name_tokens:
-            score += WEIGHT_NAME
-            reasons.append(f"name match: {token}")
-            _best_signal(signals, token, SIGNAL_STRENGTH["name"])
-        if token in text_tokens:
-            score += WEIGHT_TEXT
-            reasons.append(f"scope match: {token}")
-            _best_signal(signals, token, SIGNAL_STRENGTH["text"])
+        for signal_class in SIGNAL_CLASSES:
+            candidates, weight, strength = buckets[signal_class]
+            if token in candidates:
+                score += weight
+                reasons.append(_reason(signal_class, token))
+                _best_signal(signals, token, strength)
     return score, reasons, signals
 
 
@@ -150,7 +168,7 @@ def _declined(row: dict[str, object], query_tokens: list[str]) -> str | None:
     return None
 
 
-def _follow_up(row: dict[str, object], access: str) -> str:
+def _follow_up(row: dict[str, object], request: str, access: str) -> str:
     root = str(row.get("root", ""))
     paths = row.get("paths", {})
     assert isinstance(paths, dict)
@@ -162,11 +180,12 @@ def _follow_up(row: dict[str, object], access: str) -> str:
             return f"Read only the approved digest {root}/{digest}; nothing else may be loaded"
         return f"{root} allows digest-only access but declares no digest; load nothing"
     if row.get("source") == "registry":
-        # Do not echo the host request into a result or runnable command. The
-        # host already retains its privacy-safe request representation and can
-        # invoke the bounded ladder with that value when it chooses to proceed.
+        # `help[]` steps are executable with runtime values filled in. Both the
+        # root and the host-supplied request are untrusted text, so shell-quote
+        # each so the emitted follow-up stays exactly one runnable command.
         return (
-            f"Run `megamind-axi --root {root} route <the original request>` for the bounded ladder"
+            f"Run `megamind-axi --root {shlex.quote(root)} route {shlex.quote(request)}` "
+            "for the bounded ladder"
         )
     index = str(paths.get("index") or "wiki/index.md")
     return f"Open {root}/{index} and follow its links within the context budget"
@@ -182,15 +201,13 @@ def _evidence_summary(
     """Return bounded card provenance without echoing request tokens.
 
     The lexical scorer still uses the exact same reasons and signals for
-    confidence. Only the public packet changes: signal classes and numeric
+    confidence, and `matches[].reasons` still carries them verbatim. This
+    additive summary is the privacy-minimized view: signal classes and numeric
     coverage explain the route without retaining query-derived words or page
     content.
     """
-    classes = ("trigger", "name", "scope")
-    counts = {
-        signal_class: sum(1 for reason in reasons if reason.startswith(f"{signal_class} match:"))
-        for signal_class in classes
-    }
+    counts = _signal_counts(reasons)
+    classes = [signal_class for signal_class in SIGNAL_CLASSES if counts[signal_class]]
     return {
         "routing_class": "lexical-card",
         "coverage": {
@@ -198,14 +215,14 @@ def _evidence_summary(
             "request_terms": len(query_tokens),
             "ratio": round(len(signals) / len(query_tokens), 4) if query_tokens else 0.0,
         },
-        "signal_classes": [signal_class for signal_class in classes if counts[signal_class]],
+        "signal_classes": list(classes),
         "signal_counts": counts,
         "provenance": {
             "source": "canonical-card" if row.get("source") == "wiki-card" else "registry-card",
             "scope": "declared card metadata only",
             "page_content": False,
         },
-        "lexical": [signal_class for signal_class in classes if counts[signal_class]],
+        "lexical": list(classes),
         "semantic": semantic_score,
     }
 
@@ -423,13 +440,7 @@ def run_preflight(
                     signals,
                     semantic_scores.get(index),
                 ),
-                # Keep the v2 key, but make its values safe provenance classes
-                # rather than request-derived reason text.
-                "reasons": [
-                    signal_class
-                    for signal_class in ("trigger", "name", "scope")
-                    if any(reason.startswith(f"{signal_class} match:") for reason in reasons)
-                ],
+                "reasons": reasons[:5],
             }
 
         match_set, offer_set = set(match_indices), set(offer_indices)
@@ -451,10 +462,14 @@ def run_preflight(
             entry["access"] = access
             entry["routing_mode"] = row.get("routing_mode")
             entry["allows"] = allows
-            entry["follow_up"] = _follow_up(row, access)
-            budget = _context_budget(row)
-            if budget is not None:
-                entry["context_budget"] = budget
+            entry["follow_up"] = _follow_up(row, request, access)
+            # A budget only bounds what a load path may consume, so it belongs
+            # to an authorized entry that actually carries one. Pointer wikis
+            # and digest-only wikis without a digest never do.
+            if access != "none" and allows:
+                budget = _context_budget(row)
+                if budget is not None:
+                    entry["context_budget"] = budget
             result.matches.append(entry)
         for index in ranked:
             if index in offer_set:

@@ -171,11 +171,12 @@ before any path is returned and before any reranking, so a semantic pass can
 never resurrect an ineligible wiki. The route-confidence thresholds decide
 the result: a confident match states `matched` and gives exact per-wiki
 follow-up commands with per-match confidence, freshness, the exact card
-`context_budget`, and a bounded lexical/semantic evidence summary. That
-summary reports routing class, numeric coverage, signal classes/counts, and
-card-only provenance without request-derived tokens or page content. Only
-authorized matches carry the budget or load paths; sub-floor or banded matches
-state `ambiguous` and offer choices without either. `no-match` stays quiet;
+`context_budget`, and an additive bounded lexical/semantic evidence summary.
+That summary reports routing class, numeric coverage, signal classes/counts,
+and card-only provenance without request-derived tokens or page content, while
+`reasons` keeps its literal lexical strings. Only an authorized match that
+carries a load path carries the budget; sub-floor or banded matches state
+`ambiguous` and offer choices without either. `no-match` stays quiet;
 `unavailable` and `privacy-filtered` are explicit. A deterministic
 `preflight_id` content hash
 binds the request hash, catalog snapshot, model class, and result.

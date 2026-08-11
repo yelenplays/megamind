@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 import socket
 from datetime import date
 from pathlib import Path
 
 import pytest
 
+from conftest import build_vault
 from megamind.catalog import discover_roots
 from megamind.preflight import run_preflight
 from megamind.registry import WikiEntry, load_registry, save_registry
@@ -47,13 +49,31 @@ def test_matched_full_access_returns_card_level_paths(vault: Path) -> None:
     assert "route" in str(best["follow_up"])
 
 
-def test_follow_up_does_not_echo_the_request(vault: Path) -> None:
-    """Follow-up guidance never preserves raw request text or shell syntax."""
-    request = "pricing product request-canary"
+def test_follow_up_command_shell_quotes_the_request(vault: Path) -> None:
+    """The request is untrusted: the emitted command must stay exactly one command."""
+    request = 'pricing product" ; rm -rf ~ #'
     result = run_preflight([_ref(vault)], request, "local")
     assert result.status == "matched"
     follow_up = str(result.matches[0]["follow_up"])
-    assert "request-canary" not in follow_up
+    command = follow_up.split("`")[1]
+    tokens = shlex.split(command)
+    assert tokens[-1] == request  # the whole request is a single argument
+    assert ";" not in tokens
+    assert "rm" not in tokens
+
+
+def test_follow_up_command_shell_quotes_the_root(tmp_path: Path) -> None:
+    """A root path with a space stays one `--root` argument, so the command runs."""
+    estate = tmp_path / "My Wikis"
+    estate.mkdir()
+    root = build_vault(estate)
+    result = run_preflight([_ref(root)], "pricing", "local")
+    assert result.status == "matched"
+    command = str(result.matches[0]["follow_up"]).split("`")[1]
+    tokens = shlex.split(command)
+    assert tokens[:2] == ["megamind-axi", "--root"]
+    assert tokens[2] == str(root)  # the whole root path is a single argument
+    assert tokens[3] == "route"
 
 
 def test_cloud_none_wiki_is_privacy_filtered(vault: Path) -> None:

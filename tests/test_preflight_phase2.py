@@ -139,7 +139,8 @@ def test_matches_carry_confidence_freshness_and_evidence(vault: Path) -> None:
     }
     assert "pricing" not in json.dumps(evidence)
     assert evidence["semantic"] is None  # semantic disabled: no fabricated score
-    assert "pricing" not in json.dumps(match["reasons"])
+    # `reasons` keeps its v2 semantics: literal lexical reason strings
+    assert match["reasons"] == ["trigger match: pricing", "scope match: pricing"]
     # the packet stays card-level: no page content path is ever handed out
     assert "topics/" not in json.dumps(match)
 
@@ -187,6 +188,53 @@ def test_authorized_matches_preserve_card_context_budgets(vault: Path) -> None:
     assert broken.status == "unavailable"
     assert broken.matches == [] and broken.offers == []
     assert all("context_budget" not in item for item in broken.root_issues)
+
+
+def test_matches_without_a_load_path_never_carry_a_budget(vault: Path) -> None:
+    """A budget bounds a load path, so an entry with no path never ships one."""
+    registry = load_registry(vault)
+    archive = registry.wiki_by_name("ArchiveBox")
+    research = registry.wiki_by_name("ResearchDigest")
+    assert archive is not None and research is not None
+    archive.context_budget = ContextBudget(max_candidates=4, max_context_chars=4321)
+    research.context_budget = ContextBudget(max_candidates=3, max_context_chars=3210)
+    research.digest = ""  # digest-only access with no approved digest to load
+    save_registry(vault, registry)
+
+    pointer = run_preflight([_ref(vault)], "archive history", "local")
+    assert pointer.status == "matched"
+    assert pointer.matches[0]["name"] == "ArchiveBox"
+    assert pointer.matches[0]["access"] == "none"
+    assert pointer.matches[0]["allows"] == []
+    assert "context_budget" not in pointer.matches[0]
+
+    digest = run_preflight([_ref(vault)], "research interview", "local")
+    assert digest.status == "matched"
+    assert digest.matches[0]["name"] == "ResearchDigest"
+    assert digest.matches[0]["allows"] == []
+    assert "context_budget" not in digest.matches[0]
+
+
+def test_budget_and_evidence_repeat_byte_stable(vault: Path) -> None:
+    """The additive packet is a deterministic function of the pinned proof inputs."""
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.context_budget = ContextBudget(max_candidates=2, max_context_chars=2345)
+    save_registry(vault, registry)
+
+    for model_class in ("local", "cloud"):
+        first = run_preflight([_ref(vault)], "how does pricing work", model_class)
+        second = run_preflight([_ref(vault)], "how does pricing work", model_class)
+        assert json.dumps(first.matches, sort_keys=True) == json.dumps(
+            second.matches, sort_keys=True
+        )
+        assert json.dumps(first.offers, sort_keys=True) == json.dumps(second.offers, sort_keys=True)
+        assert first.preflight_id == second.preflight_id
+        assert first.matches[0]["context_budget"] == {
+            "max_candidates": 2,
+            "max_context_chars": 2345,
+        }
 
 
 def test_freshness_stays_unknown_without_a_reference_date(vault: Path) -> None:
