@@ -39,9 +39,9 @@ with a stable `schema_version`:
 
 The v2 retrieval documents are additive over their v1 shapes: every v1 field
 keeps its name and meaning, and v2 adds route confidence, thresholds,
-semantic-rerank outcome, per-candidate freshness (see below), and the
-`provisional` governance marker on route candidates, catalog rows, and
-preflight matches and offers.
+semantic-rerank outcome, per-candidate freshness (see below), the
+`route-result/v2` `governance[]` sidecar, and the `provisional` governance
+marker on catalog rows and preflight matches and offers.
 
 Example (`megamind-axi route "pricing"` on the examples vault):
 
@@ -89,6 +89,35 @@ fixtures. `route` and `preflight` apply fixed thresholds:
   follow-up commands on offers);
 - below 0.25 the evidence is dropped and the result is a definitive no-match
   that stays quiet.
+
+Confidence is necessary for a load, not sufficient. One governance gate runs
+after the thresholds and can only narrow them: a wiki marked `provisional`
+(see `docs/schemas.md`) is never an authorized load or active content match
+until confidence coverage and a later evaluation pass, however confident the
+match is. So `confidence >= 0.75` alone does not imply a loadable result: a
+provisional candidate that cleared the floor is dropped from a `load` packet,
+and when every candidate that cleared it is provisional the whole result
+degrades to `decision: offer` / `status: ambiguous` with the top confidence
+still at or above the floor and no `ambiguity_band` involved. `notes` always
+distinguishes the two causes - a governance note says "governance gate, not a
+confidence threshold" or "governance downgrade, not a confidence downgrade",
+and never reuses the reliance-floor or ambiguity-band wording.
+
+`route-result/v2` therefore carries a `governance[]` sidecar, emitted on every
+route regardless of `--fields`, with one row per emitted candidate keyed by
+that candidate's own root-relative `path`:
+
+```text
+governance[2]{path,provisional,trusted}:
+  ProductWiki/topics/release-process.md,false,true
+  ReleaseWiki/INDEX.md,true,false
+```
+
+It is a sidecar rather than a candidate column so the default candidate field
+set stays exactly what `route-result/v1` and `v2` already promised;
+`provisional` is additionally available as an opt-in `--fields` column. Catalog
+rows and preflight matches and offers carry `provisional` directly, with the
+same meaning.
 
 The emitted `thresholds` block makes every decision self-describing.
 `unknown` is a first-class confidence value (no evidence to score): it is

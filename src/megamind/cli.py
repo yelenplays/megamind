@@ -455,11 +455,13 @@ def cmd_route(
         "thresholds": result.thresholds,
         "semantic": result.semantic,
         "candidates": [_route_row(asdict(c), fields) for c in result.candidates],
+        "governance": result.governance,
         "context_chars": result.context_chars,
         "max_context_chars": result.max_context_chars,
         "max_candidates": result.max_candidates,
         "notes": result.notes,
     }
+    provisional_offered = any(row["provisional"] for row in result.governance)
     if result.decision == "load" and result.candidates:
         best = result.candidates[0]
         doc["help"] = _help(
@@ -468,11 +470,22 @@ def cmd_route(
             "--fields path,kind,score,confidence,reasons` for detail",
         )
     elif result.decision == "offer":
-        doc["help"] = _help(
-            "Offer the listed candidates as choices; load nothing until one is picked",
-            f"Route confidence stays below the {RELIANCE_FLOOR} reliance floor or "
-            "inside the ambiguity band",
-        )
+        entries = ["Offer the listed candidates as choices; load nothing until one is picked"]
+        if provisional_offered:
+            entries.append(
+                "Provisional wikis stay offers until confidence coverage and a later "
+                "evaluation pass; see `governance` for which candidates those are"
+            )
+        if (
+            not provisional_offered
+            or result.confidence is None
+            or result.confidence < RELIANCE_FLOOR
+        ):
+            entries.append(
+                f"Route confidence stays below the {RELIANCE_FLOOR} reliance floor or "
+                "inside the ambiguity band"
+            )
+        doc["help"] = _help(*entries)
     else:
         doc["help"] = _help(
             f"Run `{EXECUTABLE} config show` to see registered wikis and their keywords",

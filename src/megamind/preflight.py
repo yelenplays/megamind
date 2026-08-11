@@ -164,6 +164,14 @@ def _card_text(row: dict[str, object]) -> str:
     )
 
 
+def _names(
+    strong: list[tuple[_Lexical, dict[str, object], float]], indices: list[int]
+) -> list[str]:
+    """Card names for the given rows, deduplicated: one estate can project the
+    same wiki from both its registry entry and its own canonical card root."""
+    return list(dict.fromkeys(str(strong[index][1].get("name")) for index in indices))
+
+
 def _declined(row: dict[str, object], query_tokens: list[str]) -> str | None:
     negative: set[str] = set()
     for item in _str_list(row.get("negative_triggers")):
@@ -391,6 +399,7 @@ def run_preflight(
 
         match_indices: list[int] = []
         offer_indices: list[int] = []
+        untrusted: list[int] = []
         if not strong:
             result.status = "no-match"
             result.notes.append(
@@ -411,10 +420,11 @@ def run_preflight(
                     f"only wikis at or above the reliance floor ({RELIANCE_FLOOR}) are loadable "
                     "matches; the weaker ones stay offers with no loadable paths"
                 )
-            if untrusted:
+            if untrusted and not match_indices:
                 result.notes.append(
-                    "provisional wikis are not trusted active knowledge until confidence "
-                    "coverage and a later evaluation pass: offered, never loaded"
+                    f"governance downgrade, not a confidence downgrade: request confidence "
+                    f"{result.confidence} meets the reliance floor ({RELIANCE_FLOOR}), but every "
+                    "wiki that cleared it is provisional: offer choices, load nothing"
                 )
         else:
             result.status = "ambiguous"
@@ -442,11 +452,22 @@ def run_preflight(
                     f"({RELIANCE_FLOOR}): offer choices, load nothing automatically"
                 )
 
+        # A provisional wiki stays an explicit offer whatever produced the
+        # status, so the governance fact is stated for every emitted row, not
+        # only for the ones the load path had to withhold.
+        shown = sorted(set(match_indices) | set(offer_indices))
+        provisional_shown = [index for index in shown if bool(strong[index][1].get("provisional"))]
+        if provisional_shown:
+            result.notes.append(
+                "governance gate, not a confidence threshold: provisional wikis may be offered "
+                "but are never an authorized load until confidence coverage and a later "
+                f"evaluation pass: {bounded_names(_names(strong, provisional_shown))}"
+            )
+
         # Optional local semantic rerank over the already-selected packet only.
         # Filtered wikis never enter this list, so reranking can never resurrect
         # an ineligible wiki or expose its card beyond what the lexical layer
         # already scored, and it cannot move a row between matches and offers.
-        shown = sorted(set(match_indices) | set(offer_indices))
         order, outcome = semantic_rerank(
             request,
             [float(strong[index][0].score) for index in shown],

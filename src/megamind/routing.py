@@ -210,6 +210,11 @@ class RouteResult:
     confidence: float | None = None
     thresholds: dict[str, float] = field(default_factory=lambda: dict(THRESHOLDS))
     semantic: dict[str, object] = field(default_factory=dict)
+    # One governance row per emitted candidate, keyed by the candidate's own
+    # root-relative path. It is a sidecar rather than a candidate column so the
+    # default candidate field set stays exactly what route-result/v2 promised,
+    # while the trust posture is always available without opting in.
+    governance: list[dict[str, object]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
@@ -510,24 +515,20 @@ def route(
     # coverage and a later evaluation pass, so it may be offered as an explicit
     # choice but never enters a packet the host is told it may load.
     untrusted: list[int] = []
+    withheld: list[str] = []
+    governance_downgrade = False
     if decision == "load":
         untrusted = [index for index in authorized if candidates[index].provisional]
         if untrusted:
             authorized = [index for index in authorized if index not in set(untrusted)]
-            notes.append(
-                "provisional wikis are not trusted active knowledge yet and never enter a load "
-                f"packet: omitted {bounded_names([candidates[index].path for index in untrusted])}"
-            )
+            withheld = [candidates[index].path for index in untrusted]
         if not authorized:
             decision = "offer"
-            notes.append(
-                "no trusted candidate cleared the reliance floor: offer the listed candidates "
-                "and load nothing automatically"
-            )
+            governance_downgrade = True
 
     if decision == "load":
-        # Provisional candidates were already named above; the reliance-floor
-        # note must not claim them a second time for a reason that is not theirs.
+        # Provisional candidates are accounted for by the governance note below;
+        # the reliance-floor note must not claim them for a reason not theirs.
         loadable = set(authorized) | set(untrusted)
         demoted = [
             candidate.path for index, candidate in enumerate(candidates) if index not in loadable
@@ -538,7 +539,13 @@ def route(
                 f"below the reliance floor ({RELIANCE_FLOOR}): omitted {bounded_names(demoted)}; "
                 "a load packet carries only candidates that may be opened"
             )
-    elif decision == "offer" and top_confidence is not None and not untrusted:
+    elif governance_downgrade:
+        notes.append(
+            f"governance downgrade, not a confidence downgrade: route confidence {top_confidence} "
+            f"meets the reliance floor ({RELIANCE_FLOOR}), but every candidate that cleared it is "
+            "provisional: offer choices, load nothing automatically"
+        )
+    elif decision == "offer" and top_confidence is not None:
         if top_confidence < RELIANCE_FLOOR:
             notes.append(
                 f"route confidence {top_confidence} is below the reliance floor "
@@ -600,6 +607,28 @@ def route(
 
     if not selected:
         notes.append("no wiki matched this query")
+
+    # The sidecar states the trust posture of every emitted candidate, whatever
+    # the decision and whatever `--fields` the host asked for. It is named once
+    # more in the notes so a reader of the prose sees the same governance fact.
+    governance: list[dict[str, object]] = [
+        {
+            "path": candidate.path,
+            "provisional": candidate.provisional,
+            "trusted": not candidate.provisional,
+        }
+        for candidate in selected
+    ]
+    named = sorted(
+        set(withheld) | {candidate.path for candidate in selected if candidate.provisional}
+    )
+    if named:
+        notes.append(
+            "governance gate, not a confidence threshold: provisional wikis may be offered or "
+            "nominated but are never an authorized load until confidence coverage and a later "
+            f"evaluation pass: {bounded_names(named)}"
+        )
+
     return RouteResult(
         query=query,
         matched=bool(selected),
@@ -610,6 +639,7 @@ def route(
         decision=decision if selected else "no-match",
         confidence=top_confidence if selected else None,
         semantic=outcome.to_dict(),
+        governance=governance,
         notes=notes,
     )
 

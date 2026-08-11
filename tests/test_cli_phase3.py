@@ -637,3 +637,215 @@ def test_catalog_and_preflight_surface_the_provisional_marker(
     ]
     assert entries and entries[0]["provisional"] is True
     assert all(match["name"] != "ReleaseWiki" for match in preflight["matches"])
+
+
+# --- the route governance sidecar -------------------------------------------
+
+
+def governance_by_path(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {str(row["path"]): row for row in doc["governance"]}
+
+
+def test_governance_sidecar_is_emitted_on_the_default_field_set(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provisioned_vault(capsys, vault)
+    code, doc, _ = run_json(capsys, "--root", str(vault), "route", "operations")
+    assert code == 0
+    # The default candidate columns stay exactly what route-result/v2 promised.
+    assert list(doc["candidates"][0]) == ["path", "kind", "score", "reason"]
+    rows = governance_by_path(doc)
+    assert set(rows) == {str(item["path"]) for item in doc["candidates"]}
+    entry = rows["ReleaseWiki/INDEX.md"]
+    assert entry == {"path": "ReleaseWiki/INDEX.md", "provisional": True, "trusted": False}
+
+
+def test_governance_sidecar_marks_a_trusted_load_packet(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, doc, _ = run_json(capsys, "--root", str(vault), "route", "pricing", "model")
+    assert code == 0
+    assert doc["decision"] == "load"
+    assert doc["governance"]
+    assert all(row["trusted"] is True and row["provisional"] is False for row in doc["governance"])
+    assert not any("governance" in note for note in doc["notes"])
+
+
+def test_governance_sidecar_covers_mixed_trusted_and_provisional_offers(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provisioned_vault(capsys, vault)
+    code, doc, _ = run_json(capsys, "--root", str(vault), "route", "release", "operations")
+    assert code == 0
+    assert doc["decision"] == "load"
+    rows = governance_by_path(doc)
+    # The load packet itself is entirely trusted; the withheld provisional wiki
+    # is still named in the notes as a governance decision, not a weak one.
+    assert rows and all(row["trusted"] is True for row in rows.values())
+    governance_notes = [note for note in doc["notes"] if note.startswith("governance gate")]
+    assert len(governance_notes) == 1
+    assert "ReleaseWiki/INDEX.md" in governance_notes[0]
+    assert "reliance floor" not in governance_notes[0]
+
+
+def test_route_notes_separate_governance_from_confidence_downgrades(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provisioned_vault(capsys, vault)
+    _, gated, _ = run_json(capsys, "--root", str(vault), "route", "operations")
+    assert gated["decision"] == "offer"
+    assert gated["confidence"] >= gated["thresholds"]["reliance_floor"]
+    downgrade = [note for note in gated["notes"] if "governance downgrade" in note]
+    assert len(downgrade) == 1
+    assert "not a confidence downgrade" in downgrade[0]
+    # No confidence-derived wording may claim this offer.
+    assert not any("ambiguity band" in note for note in gated["notes"])
+    assert not any("is below the reliance floor" in note for note in gated["notes"])
+    assert any("Provisional wikis stay offers" in entry for entry in gated["help"])
+    assert not any("reliance floor" in entry for entry in gated["help"])
+
+    _, banded, _ = run_json(capsys, "--root", str(vault), "route", "brand", "voice", "palette")
+    assert banded["decision"] == "offer"
+    assert not any("governance" in note for note in banded["notes"])
+    assert any("reliance floor" in entry for entry in banded["help"])
+
+
+def test_below_floor_offers_still_report_a_provisional_candidate(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A provisional wiki offered by the thresholds alone is still marked."""
+    provisioned_vault(capsys, vault)
+    code, doc, _ = run_json(
+        capsys, "--root", str(vault), "route", "operations", "and", "unrelated", "words"
+    )
+    assert code == 0
+    assert doc["decision"] == "offer"
+    assert doc["confidence"] < doc["thresholds"]["reliance_floor"]
+    rows = governance_by_path(doc)
+    assert rows["ReleaseWiki/INDEX.md"]["provisional"] is True
+    assert any(note.startswith("governance gate") for note in doc["notes"])
+    assert any("is below the reliance floor" in note for note in doc["notes"])
+
+
+def test_preflight_names_the_governance_downgrade_distinctly(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    provisioned_vault(capsys, vault)
+    _, doc, _ = run_json(
+        capsys, "--root", str(vault), "preflight", "operations", "--model-class", "local"
+    )
+    assert doc["status"] == "ambiguous"
+    assert doc["confidence"] >= doc["thresholds"]["reliance_floor"]
+    assert doc["matches"] == []
+    assert [offer["name"] for offer in doc["offers"]] == ["ReleaseWiki"]
+    assert doc["offers"][0]["provisional"] is True
+    assert any("governance gate" in note and "ReleaseWiki" in note for note in doc["notes"])
+    assert any("governance downgrade" in note for note in doc["notes"])
+    assert not any("ambiguity band" in note for note in doc["notes"])
+    assert not any("below the reliance floor" in note for note in doc["notes"])
+
+
+def test_preflight_names_a_provisional_offer_the_thresholds_produced(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An ambiguity-band offer still says which of its wikis are provisional."""
+    provisioned_vault(capsys, vault)
+    _, doc, _ = run_json(
+        capsys, "preflight", "operations", "--estate", str(vault), "--model-class", "local"
+    )
+    assert doc["status"] == "ambiguous"
+    assert doc["matches"] == []
+    # The estate projects the provisional wiki twice: from the registry entry
+    # and from its own canonical card root. Both are offers, neither a match.
+    assert {offer["name"] for offer in doc["offers"]} == {"ReleaseWiki"}
+    assert all(offer["provisional"] is True for offer in doc["offers"])
+    governance = [note for note in doc["notes"] if note.startswith("governance gate")]
+    assert len(governance) == 1
+    assert governance[0].endswith("evaluation pass: ReleaseWiki")
+    assert any("ambiguity band" in note for note in doc["notes"])
+    assert not any("governance downgrade" in note for note in doc["notes"])
+
+
+def test_route_governance_sidecar_renders_identically_in_toon_and_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    json_vault = provisioned_vault(capsys, build_vault(tmp_path / "a"))
+    toon_vault = provisioned_vault(capsys, build_vault(tmp_path / "b"))
+    for query in (["operations"], ["release", "operations"], ["pricing", "model"]):
+        _, doc, _ = run_json(capsys, "--root", str(json_vault), "route", *query)
+        _, toon_out, err = run_toon(capsys, "--root", str(toon_vault), "route", *query)
+        assert err == ""
+        assert "governance[" in toon_out
+        assert toon.encode(doc) == toon_out
+
+
+def test_governance_sidecar_leaks_no_unauthorized_path_or_content(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The sidecar only ever restates an identity the packet already carries."""
+    provisioned_vault(capsys, vault)
+    for query in (["operations"], ["release"], ["archive", "history"], ["research", "interview"]):
+        _, doc, _ = run_json(capsys, "--root", str(vault), "route", *query)
+        emitted = {str(item["path"]) for item in doc["candidates"]}
+        assert {str(row["path"]) for row in doc["governance"]} == emitted
+        assert all(set(row) == {"path", "provisional", "trusted"} for row in doc["governance"])
+
+
+def test_doctor_reports_an_escaping_gap_journal_instead_of_losing_the_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("", encoding="utf-8")
+    journal = vault / ".megamind/gaps.jsonl"
+    journal.unlink(missing_ok=True)
+    journal.symlink_to(outside)
+    code, doc, err = run_json(capsys, "--root", str(vault), "doctor")
+    assert code == 1
+    assert err == ""
+    assert doc["schema_version"] == "megamind/doctor-report/v1"
+    checks = {finding["check"] for finding in doc["findings"]}
+    assert "gaps" in checks
+    assert "symlinks" in checks
+
+
+def test_doctor_reports_an_unreadable_gap_journal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    (vault / ".megamind/gaps.jsonl").write_bytes(b"\xff\xfe not utf 8\n")
+    code, doc, _ = run_json(capsys, "--root", str(vault), "doctor")
+    assert code == 1
+    assert doc["schema_version"] == "megamind/doctor-report/v1"
+    assert any(finding["check"] == "gaps" for finding in doc["findings"])
+
+
+def test_route_document_stays_backward_compatible(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every v1/v2 field keeps its name, meaning, and position-independent shape."""
+    code, doc, _ = run_json(capsys, "--root", str(vault), "route", "pricing", "model")
+    assert code == 0
+    assert doc["schema_version"] == "megamind/route-result/v2"
+    assert set(doc) >= {
+        "schema_version",
+        "query",
+        "matched",
+        "decision",
+        "confidence",
+        "thresholds",
+        "semantic",
+        "candidates",
+        "governance",
+        "context_chars",
+        "max_context_chars",
+        "max_candidates",
+        "notes",
+        "help",
+    }
+    assert list(doc["candidates"][0]) == ["path", "kind", "score", "reason"]
+    assert doc["thresholds"] == {
+        "reliance_floor": 0.75,
+        "offer_floor": 0.25,
+        "ambiguity_band": 0.05,
+    }

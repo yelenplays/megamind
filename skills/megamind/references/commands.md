@@ -82,10 +82,15 @@ rewritten.
 
 `megamind/route-result/v2`. Default candidate fields: `path,kind,score,reason`.
 Available: `path,kind,score,wiki,privacy,chars,confidence,freshness,
-semantic_score,reason,reasons`. `kind` is `page`, `digest`, `index`, `card`,
-or `pointer`. `decision` applies the route-confidence thresholds: `load` at
-or above 0.75, `offer` below it or inside the ambiguity band, `no-match`
-under 0.25 (weak candidates are dropped with a note). No match returns
+semantic_score,provisional,reason,reasons`. `kind` is `page`, `digest`,
+`index`, `card`, or `pointer`. `decision` applies the route-confidence
+thresholds: `load` at or above 0.75, `offer` below it or inside the ambiguity
+band, `no-match` under 0.25 (weak candidates are dropped with a note).
+Confidence is necessary but not sufficient: the `governance[]` sidecar
+(`path`, `provisional`, `trusted`, one row per emitted candidate, always
+present) marks provisional wikis, which are never an authorized load and can
+degrade a confident result to `offer` on their own. `notes` states whether a
+downgrade was a governance or a confidence decision. No match returns
 `matched: false` and `candidates[0]`, exit 0. `--today` makes per-candidate
 `freshness` (`updated`, `age_days`, `stale`) reproducible; without it those
 stay explicitly unknown. `--semantic` enables local char-ngram reranking of

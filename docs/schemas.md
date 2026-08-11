@@ -235,12 +235,17 @@ entry keeps its vault-relative paths.
 
 Provisional knowledge is not trusted until confidence coverage and a later
 evaluation clear it, and every consumer acts on that: catalog rows carry
-`provisional`, route candidates carry `provisional`, and preflight matches and
-offers carry `provisional`. A provisional wiki is never an authorized load: in
-`route` it is dropped from a `load` packet (the result degrades to `offer` when
-nothing trusted remains), and in `preflight` it stays an offer with no loadable
-paths. Privacy-safe offers and research nominations may still name it
-explicitly.
+`provisional`, preflight matches and offers carry `provisional`, and `route`
+emits a `governance[]` sidecar with `path`, `provisional`, and `trusted` for
+every candidate it returns (plus `provisional` as an opt-in `--fields` column,
+so the default candidate columns stay stable). A provisional wiki is never an
+authorized load: in `route` it is dropped from a `load` packet (the result
+degrades to `offer` when nothing trusted remains), and in `preflight` it stays
+an offer with no loadable paths. This gate runs after the confidence
+thresholds and only narrows them, so it can produce an `offer` at or above the
+reliance floor; `notes` names it as a governance decision and never as a
+confidence one. Privacy-safe offers and research nominations may still name a
+provisional wiki explicitly.
 
 ## Canonical wiki root
 

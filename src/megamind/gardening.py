@@ -17,6 +17,7 @@ from typing import Any
 from .card import card_file, serialize_wiki_card
 from .fsops import (
     MEGAMIND_DIR,
+    PathEscapeError,
     append_audit,
     atomic_write,
     backup_existing,
@@ -843,8 +844,15 @@ def provision_local_wiki(
 
 
 def validate_gap_journal(root: Path) -> list[str]:
+    """Report why the journal is unusable instead of raising.
+
+    Doctor calls this while building a report, so an escaping symlink or an
+    unreadable file has to come back as a finding. Raising here would replace
+    the whole report with a single error document, defeating the symlink check
+    that runs beside it.
+    """
     try:
         GapStore(root).records()
-    except GardenError as error:
+    except (GardenError, PathEscapeError, OSError, UnicodeDecodeError) as error:
         return [str(error)]
     return []
