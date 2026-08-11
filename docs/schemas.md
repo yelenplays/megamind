@@ -291,9 +291,13 @@ prior content of every file it will replace, and a `state` of `pending`,
 persisted and flushed to disk before the first target mutation, every target is
 written atomically and flushed with its parent directory, and the record only
 switches to `applied` after every target has been verified to hold its planned
-bytes. The reviewed plan is never mutated by the apply it authorized, so it
-keeps hashing to the `plan_id` that approved it. An apply that a signal or power
-loss interrupts is therefore always recoverable from the record alone:
+bytes. The directory half of that flush needs a platform primitive: POSIX
+targets get it, Windows exposes none, so durability there is exactly the file
+flush and no stronger (`fsops.sync_directory` reports which it did rather than
+claiming a guarantee the platform cannot give). The reviewed plan is never
+mutated by the apply it authorized, so it keeps hashing to the `plan_id` that
+approved it. An apply that a signal or power loss interrupts is therefore
+always recoverable from the record alone:
 
 - re-running `--apply --plan-id <id>` with the same wiki and path resumes a
   `pending` transaction to completion, or verifies an `applied` one file by
@@ -443,8 +447,13 @@ It documents why the new wiki should exist and is only ever applied with
 
 One JSON object per line: `ts` (UTC ISO), `action` (`init`, `migrate`,
 `capture`, `evolve-apply`, `evolve-apply-proposal-status`, `router-refresh`,
-`adopt-apply`, `adopt-rollback`), and action-specific fields such as `path`,
-`proposal_id`, `plan_id`, and `backup`. Backups of every mutated file live in
+`adopt-apply`, `adopt-rollback`, `gap-transition`, `research-ingest-proposal`,
+`provisional-wiki-create`, `provisional-wiki-undo`,
+`provisional-wiki-rollback`), and action-specific fields such as `path`,
+`proposal_id`, `plan_id`, `gap_id`, `correlation_id`, `preserved`,
+`preserved_total`, and `backup`. Backups of every mutated file live in
 `.megamind/audit/backups/<name>.<content-hash>.bak`. Adoption additionally
 writes `.megamind/audit/adoption-<plan_id>.json`, the content-hashed rollback
-record that `adopt --rollback` verifies before removing generated files.
+record that `adopt --rollback` verifies before removing generated files;
+`provision-wiki` writes the equivalent transaction record described under
+"Governed gardening records" above.

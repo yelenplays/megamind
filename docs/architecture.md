@@ -232,9 +232,11 @@ turns a provisional wiki into an authorized load.
 
 Commands avoid wall-clock dependence where it matters: proposal ids and plan
 ids are content hashes, and `capture`, `evolve`, `route`, `review`, `catalog`,
-`preflight`, and the home view accept `--today` for reproducible date handling
-in tests and benchmarks. `route`, `catalog`, and `preflight` go further and
-read no clock at all: without `--today` freshness is simply reported as
-unknown rather than computed. Semantic reranking is equally deterministic: the
+`preflight`, `gap`, `research-wave`, `provision-wiki`, and the home view accept
+`--today` for reproducible date handling in tests and benchmarks. `route`,
+`catalog`, `preflight`, and the gardening surfaces go further and read no clock
+at all: without `--today` freshness is simply reported as unknown rather than
+computed, and a gap record, wave id, or provisioning plan keeps an empty date
+rather than inventing one. Semantic reranking is equally deterministic: the
 char-ngram backend is a pure function of its inputs and rerank ties keep the
 lexical order. The only non-deterministic output is audit timestamps.
