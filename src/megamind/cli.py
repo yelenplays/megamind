@@ -86,6 +86,7 @@ ROUTE_FIELDS_ALL = [
     "confidence",
     "freshness",
     "semantic_score",
+    "provisional",
     "reason",
     "reasons",
 ]
@@ -429,6 +430,7 @@ def _route_row(candidate: Doc, fields: list[str]) -> Doc:
         "confidence": candidate["confidence"],
         "freshness": candidate["freshness"],
         "semantic_score": candidate["semantic_score"],
+        "provisional": candidate["provisional"],
         "reason": reasons[0] if reasons else "",
         "reasons": " | ".join(reasons),
     }
@@ -832,11 +834,42 @@ def cmd_gap(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
     }, 0
 
 
+def _parse_active_wikis(values: list[str]) -> dict[str, int]:
+    """Parse repeated ``--active-wiki WIKI=N`` facts into a typed mapping.
+
+    Host-supplied capacity arrives as raw text, so every malformed form has to
+    become a typed usage document rather than an exception out of the parser.
+    """
+    parsed: dict[str, int] = {}
+    for item in values:
+        wiki, separator, count = item.partition("=")
+        if not separator or not wiki.strip():
+            raise UsageError(f"--active-wiki expects WIKI=N, got: {item}")
+        try:
+            parsed[wiki.strip()] = int(count)
+        except ValueError:
+            raise UsageError(
+                f"--active-wiki worker count must be an integer, got: {item}"
+            ) from None
+    return parsed
+
+
+def _json_object(raw: str, flag: str) -> dict[str, Any]:
+    """Decode a host-supplied bridge payload that must be a JSON object."""
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise UsageError(f"{flag} is not valid JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise UsageError(f"{flag} must be a JSON object")
+    return value
+
+
 def cmd_research_wave(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
     capacity = CapacityInput(
         args.capacity_known,
         args.active_workers,
-        {x.split("=", 1)[0]: int(x.split("=", 1)[1]) for x in args.active_wiki},
+        _parse_active_wikis(args.active_wiki),
         args.applicable_quota,
         args.reserve_quota,
         args.wave_units,
@@ -855,11 +888,8 @@ def cmd_research_wave(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
 
 
 def cmd_research_result(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
-    try:
-        nomination_data = json.loads(args.nomination_json)
-        result_data = json.loads(args.result_json)
-    except json.JSONDecodeError as error:
-        raise UsageError(f"research bridge JSON is invalid: {error}") from error
+    nomination_data = _json_object(args.nomination_json, "--nomination-json")
+    result_data = _json_object(args.result_json, "--result-json")
     wave = type("Wave", (), {"wave_id": str(nomination_data.get("wave_id", ""))})()
     nomination = make_nomination(
         wave, nomination_data, str(nomination_data.get("source_policy", ""))
@@ -1243,12 +1273,13 @@ def build_parser() -> AxiParser:
             "rejected",
             "superseded",
         ],
-        default="open",
+        default=None,
     )
     p_gap.add_argument("--reason", default="")
     p_gap.add_argument("--outcome", default="")
     p_gap.add_argument("--correlation-id", default="")
-    p_gap.add_argument("--cooldown-until", default="")
+    # No default: an omitted cooldown keeps whatever backoff the record carries.
+    p_gap.add_argument("--cooldown-until", default=None)
     p_gap.add_argument("--superseded-by", default="")
     p_gap.add_argument("--related", action="append", default=[])
     for name in ("impact", "urgency", "repeat-demand", "coverage", "confidence-risk"):
@@ -1462,6 +1493,10 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             raise UsageError("gap create requires --wiki and --topic")
         if args.gap_action in {"transition", "attempt"} and not args.gap_id:
             raise UsageError(f"gap {args.gap_action} requires GAP_ID")
+        # A lifecycle mutation is never implied: an omitted --status would
+        # otherwise silently reopen a resolved or rejected gap.
+        if args.gap_action == "transition" and not args.status:
+            raise UsageError("gap transition requires --status")
         return cmd_gap(args, root)
     if command == "research-wave":
         return cmd_research_wave(args, root)

@@ -39,7 +39,9 @@ with a stable `schema_version`:
 
 The v2 retrieval documents are additive over their v1 shapes: every v1 field
 keeps its name and meaning, and v2 adds route confidence, thresholds,
-semantic-rerank outcome, and per-candidate freshness (see below).
+semantic-rerank outcome, per-candidate freshness (see below), and the
+`provisional` governance marker on route candidates, catalog rows, and
+preflight matches and offers.
 
 Example (`megamind-axi route "pricing"` on the examples vault):
 

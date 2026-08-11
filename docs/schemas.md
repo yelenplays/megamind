@@ -97,9 +97,10 @@ v2 card fields, all optional:
   purpose only), or `hidden` (identity and all fields withheld; the projection
   states that a wiki is withheld rather than omitting the row silently).
   Personal wikis default to `redacted`; everything else to `full`.
-- `provisional`: additive boolean governance marker. A provisional wiki may be
-  routed locally but is not trusted active knowledge until confidence coverage
-  and a later evaluation pass.
+- `provisional`: additive boolean governance marker. A provisional wiki is
+  surfaced by route, catalog, and preflight and may be offered as an explicit
+  choice, but it is never an authorized load until confidence coverage and a
+  later evaluation pass (see "Governed gardening records" below).
 
 Loading validates types before use: every field must have the type shown
 above (a JSON boolean is never accepted as a budget), and unknown fields at
@@ -194,7 +195,12 @@ and these stable fields:
 The identity hashes normalized wiki, topic, and kind, so repeated reports
 coalesce without comparing page bodies. Lifecycle transitions are explicit;
 attempts, cooldown, rejection, reopen, and supersession are never discarded.
-Dates are supplied by the host or CLI `--today`, not read from the clock.
+`gap transition` always requires an explicit `--status`, so an omitted flag can
+never reopen a resolved or rejected gap. An omitted `--cooldown-until` keeps the
+recorded backoff; only an explicitly supplied value (including an explicit empty
+string) replaces or clears it. Dates are supplied by the host or CLI `--today`,
+not read from the clock. A journal line that is not a JSON gap object is a typed
+`garden_invalid` error, and `doctor` reports it in both root shapes.
 
 `megamind/research-wave/v1` is a plan, not a dispatch instruction. It contains
 one direct nomination and bounded first-order nominations; deeper topics appear
@@ -214,8 +220,27 @@ bounds results to 20 sources. Eligible results create a replay-safe
 A provisional registry entry carries `provisional: true`. It is created only
 when all local qualification inputs pass: accepted domain, repeat demand,
 multiple topics, overlap, scope and exclusions, owner, source policy,
-privacy/model access, seed topics, and maintenance. Provisional knowledge is
-not trusted until confidence coverage and a later evaluation clear it.
+privacy/model access, seed topics, and maintenance.
+
+`provision-wiki` only ever extends an existing registry vault. It refuses a
+canonical single-wiki root (that root's `wiki-card.json` stays the one
+authority), refuses to bootstrap a vault that `init` has not created, and
+refuses a v1 registry with an instruction to run `migrate` explicitly first, so
+migration notes are never silently skipped. The whole registry plan is
+serialized and validated before any directory or file is written, so a rejected
+entry cannot leave an orphan scaffold behind. The new wiki's nested
+`.megamind/wiki-card.json` is written through the same serializer as every other
+canonical card, with paths rooted at the wiki directory, while the registry
+entry keeps its vault-relative paths.
+
+Provisional knowledge is not trusted until confidence coverage and a later
+evaluation clear it, and every consumer acts on that: catalog rows carry
+`provisional`, route candidates carry `provisional`, and preflight matches and
+offers carry `provisional`. A provisional wiki is never an authorized load: in
+`route` it is dropped from a `load` packet (the result degrades to `offer` when
+nothing trusted remains), and in `preflight` it stays an offer with no loadable
+paths. Privacy-safe offers and research nominations may still name it
+explicitly.
 
 ## Canonical wiki root
 

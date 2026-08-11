@@ -37,7 +37,7 @@ model are non-negotiable at every stage.
 - Known limitations: lexical card evidence only, no semantic reranking,
   preflight is host-invoked (no mandatory host enforcement yet)
 
-## v0.3 (this release): retrieval and confidence
+## v0.3 (shipped): retrieval and confidence
 
 - Route confidence with explicit deterministic thresholds: a fixed 0.75
   reliance floor, a 0.25 no-match floor, and a 0.05 ambiguity band, applied
@@ -77,7 +77,13 @@ model are non-negotiable at every stage.
 - Safe structured append-only `wiki/log.md` events, audit references, and
   validation of every new record and transition
 - Qualified provisional local-wiki scaffolding with restrictive trust until
-  confidence coverage and evaluation succeed; no remote or account actions
+  confidence coverage and evaluation succeed; no remote or account actions.
+  `provision-wiki` refuses a canonical wiki root, refuses to bootstrap or
+  silently migrate a registry, and validates the whole registry plan before
+  writing any scaffold
+- `provisional` is a consumed marker, not just a stored one: catalog rows,
+  route candidates, and preflight entries all carry it, and a provisional wiki
+  is only ever an explicit offer, never an authorized load
 - Machine-readable `gap`, `research-wave`, `research-result`, and
   `provision-wiki` AXI documents, with v1 retrieval and federation behavior
   unchanged

@@ -24,6 +24,7 @@ from .registry import (
     ROUTER_HEADER,
     Registry,
     RegistryError,
+    RegistryNotInitialized,
     generate_router,
     load_registry,
 )
@@ -277,6 +278,13 @@ def _check_access_policy(registry: Registry, findings: list[Finding]) -> None:
             findings.append(entry)
 
 
+def _check_gap_journal(root: Path, findings: list[Finding]) -> None:
+    """The gap journal lives at whatever root the gap commands were given, so
+    both root shapes have to validate it."""
+    for message in validate_gap_journal(root):
+        findings.append(_error("gaps", f"{MEGAMIND_DIR}/gaps.jsonl", message))
+
+
 def run_doctor(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     try:
@@ -287,13 +295,15 @@ def run_doctor(root: Path) -> list[Finding]:
             card = load_wiki_card(root)
         except CardError:
             return [_error("registry", f"{MEGAMIND_DIR}/registry.json", str(error))]
+        if not isinstance(error, RegistryNotInitialized):
+            # A readable card never excuses a registry that exists and is broken.
+            findings.append(_error("registry", f"{MEGAMIND_DIR}/registry.json", str(error)))
         for required in ("raw", "wiki", f"{MEGAMIND_DIR}/proposals", f"{MEGAMIND_DIR}/audit"):
             if not (root / required).is_dir():
                 findings.append(
                     _error("canonical-root", required, "required canonical directory is missing")
                 )
-        for message in validate_gap_journal(root):
-            findings.append(_error("gaps", f"{MEGAMIND_DIR}/gaps.jsonl", message))
+        _check_gap_journal(root, findings)
         if not card.name:
             findings.append(
                 _error("card", f"{MEGAMIND_DIR}/wiki-card.json", "card has no wiki name")
@@ -309,6 +319,7 @@ def run_doctor(root: Path) -> list[Finding]:
     _check_pages(root, registry, findings)
     _check_proposals(root, findings)
     _check_symlinks(root, findings)
+    _check_gap_journal(root, findings)
     findings.sort(key=lambda f: (f.severity != "error", f.check, f.path, f.message))
     return findings
 

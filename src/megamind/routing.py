@@ -194,6 +194,8 @@ class RouteCandidate:
     confidence: float = 0.0
     freshness: dict[str, object] = field(default_factory=dict)
     semantic_score: float | None = None
+    # A provisional wiki may be surfaced and offered, never auto-loaded.
+    provisional: bool = False
 
 
 @dataclass
@@ -331,6 +333,7 @@ def _index_candidates(
                 confidence=route_confidence(
                     [entry_signals.get(token, 0.0) for token in query_tokens], len(query_tokens)
                 ),
+                provisional=wiki.provisional,
             )
         )
     return candidates
@@ -414,6 +417,7 @@ def route(
                     confidence=route_confidence(
                         [signals.get(token, 0.0) for token in query_tokens], len(query_tokens)
                     ),
+                    provisional=wiki.provisional,
                 )
             )
             continue
@@ -432,6 +436,7 @@ def route(
                     confidence=route_confidence(
                         [signals.get(token, 0.0) for token in query_tokens], len(query_tokens)
                     ),
+                    provisional=wiki.provisional,
                 )
             )
             continue
@@ -474,6 +479,7 @@ def route(
                     confidence=route_confidence(
                         [signals.get(token, 0.0) for token in query_tokens], len(query_tokens)
                     ),
+                    provisional=wiki.provisional,
                 )
             )
 
@@ -498,8 +504,31 @@ def route(
     # a candidate that did not itself clear the reliance floor.
     decision, authorized = authorize([candidate.confidence for candidate in candidates])
     top_confidence = max((candidate.confidence for candidate in candidates), default=None)
+
+    # Governance gate, applied after the thresholds and never widening them: a
+    # provisional wiki is not trusted active knowledge until confidence
+    # coverage and a later evaluation pass, so it may be offered as an explicit
+    # choice but never enters a packet the host is told it may load.
+    untrusted: list[int] = []
     if decision == "load":
-        loadable = set(authorized)
+        untrusted = [index for index in authorized if candidates[index].provisional]
+        if untrusted:
+            authorized = [index for index in authorized if index not in set(untrusted)]
+            notes.append(
+                "provisional wikis are not trusted active knowledge yet and never enter a load "
+                f"packet: omitted {bounded_names([candidates[index].path for index in untrusted])}"
+            )
+        if not authorized:
+            decision = "offer"
+            notes.append(
+                "no trusted candidate cleared the reliance floor: offer the listed candidates "
+                "and load nothing automatically"
+            )
+
+    if decision == "load":
+        # Provisional candidates were already named above; the reliance-floor
+        # note must not claim them a second time for a reason that is not theirs.
+        loadable = set(authorized) | set(untrusted)
         demoted = [
             candidate.path for index, candidate in enumerate(candidates) if index not in loadable
         ]
@@ -509,7 +538,7 @@ def route(
                 f"below the reliance floor ({RELIANCE_FLOOR}): omitted {bounded_names(demoted)}; "
                 "a load packet carries only candidates that may be opened"
             )
-    elif decision == "offer" and top_confidence is not None:
+    elif decision == "offer" and top_confidence is not None and not untrusted:
         if top_confidence < RELIANCE_FLOOR:
             notes.append(
                 f"route confidence {top_confidence} is below the reliance floor "

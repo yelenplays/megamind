@@ -397,14 +397,24 @@ def run_preflight(
                 f"all matching wikis fall below the no-match floor ({OFFER_FLOOR}): staying quiet"
             )
         elif decision == "load":
-            result.status = "matched"
-            match_indices = list(authorized)
             loadable = set(authorized)
-            offer_indices = [index for index in range(len(strong)) if index not in loadable]
-            if offer_indices:
+            below_floor = [index for index in range(len(strong)) if index not in loadable]
+            # A provisional wiki is not trusted active knowledge until
+            # confidence coverage and a later evaluation pass. It stays a
+            # privacy-safe offer and never becomes a loadable match.
+            untrusted = [index for index in authorized if bool(strong[index][1].get("provisional"))]
+            match_indices = [index for index in authorized if index not in set(untrusted)]
+            offer_indices = sorted(below_floor + untrusted)
+            result.status = "matched" if match_indices else "ambiguous"
+            if below_floor:
                 result.notes.append(
                     f"only wikis at or above the reliance floor ({RELIANCE_FLOOR}) are loadable "
                     "matches; the weaker ones stay offers with no loadable paths"
+                )
+            if untrusted:
+                result.notes.append(
+                    "provisional wikis are not trusted active knowledge until confidence "
+                    "coverage and a later evaluation pass: offered, never loaded"
                 )
         else:
             result.status = "ambiguous"
@@ -459,6 +469,7 @@ def run_preflight(
                     "meets_floor": confidence >= RELIANCE_FLOOR,
                 },
                 "freshness": row.get("freshness"),
+                "provisional": bool(row.get("provisional")),
                 # The per-token signals stay internal to confidence; the public
                 # summary keeps only their counts and classes.
                 "evidence": _evidence_summary(

@@ -172,6 +172,9 @@ def _row_from_entry(
         },
         "routing_mode": policy.routing_mode,
         "catalog_visibility": policy.catalog_visibility,
+        # Governance, not access: a provisional wiki is projected in full but
+        # is never trusted active knowledge until an evaluation pass clears it.
+        "provisional": entry.provisional,
         "source_policy": {
             "summary": entry.source_policy.summary,
             "allowlist": entry.source_policy.allowlist,
@@ -336,6 +339,8 @@ def render_projection(catalog: Catalog) -> str:
         lines.append(f"- sensitivity: {row.get('sensitivity')}")
         lines.append(f"- model access: local {access['local']}, cloud {access['cloud']}")
         lines.append(f"- routing mode: {row.get('routing_mode')}")
+        if row.get("provisional"):
+            lines.append("- provisional: yes (not trusted active knowledge yet)")
         policy = row["source_policy"]
         assert isinstance(policy, dict)
         if policy.get("summary") or policy.get("allowlist"):

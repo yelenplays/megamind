@@ -198,10 +198,14 @@ deeper topics are deferred nominations.
 Gap records use semantic identity hashes and an append-only snapshot journal.
 Transitions are validated, replayable, and linked to audit and safe log events.
 Research results are eligibility-filtered and become immutable-source ingest
-proposals. Raw sources are never written by Megamind. Provisional wiki
-creation validates every qualification input, writes the canonical structure
-and restrictive routing registration together, and marks trust false until
-confidence coverage and evaluation pass.
+proposals. Raw sources are never written by Megamind. Provisional wiki creation
+validates every qualification input and the complete registry plan before any
+byte is written, refuses a canonical wiki root and a v1 registry rather than
+creating an ambiguous root shape or migrating one silently, writes the canonical
+structure and restrictive routing registration together, and marks trust false
+until confidence coverage and evaluation pass. `provisional` is read back by
+every consumer: catalog, route, and preflight surface it, and none of them ever
+turns a provisional wiki into an authorized load.
 
 ## Safety model
 

@@ -146,7 +146,9 @@ when non-empty, bounded to 20 items unless `--full`). Read-only.
 Durable, append-only gap records for missing, weak, stale, and contradictory
 coverage. `create` deduplicates by normalized semantic identity. Transitions
 and attempts are machine-readable and retain cooldown, rejection, reopen, and
-supersession history.
+supersession history. `transition` requires an explicit `--status`, so no
+omitted flag can reopen a gap. An omitted `--cooldown-until` keeps the recorded
+backoff; pass it explicitly to change or clear it.
 
 ## megamind-axi research-wave GAP_ID [capacity flags]
 
@@ -166,10 +168,14 @@ idempotent. Megamind performs no network or external action and never writes
 ## megamind-axi provision-wiki NAME PATH [criteria flags]
 
 Creates a local provisional wiki only when every domain, demand, scope, owner,
-policy, seed, and maintenance criterion passes. It registers the card
-immediately with `provisional: true`; provisional knowledge is not trusted.
-No remote repository, collaborators, account action, publication, merge, or
-spend is possible.
+policy, seed, and maintenance criterion passes. It extends an existing registry
+vault only: it refuses a canonical single-wiki root, refuses to bootstrap a
+vault `init` has not created, and refuses a v1 registry until `migrate` has run
+explicitly. The whole registry plan is validated before any file is written. It
+registers the card immediately with `provisional: true`; provisional knowledge
+is not trusted, so route, catalog, and preflight surface it and only ever offer
+it, never load it. No remote repository, collaborators, account action,
+publication, merge, or spend is possible.
 
 ## megamind-axi setup skill [--dest DIR]
 

@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from .card import card_file, serialize_wiki_card
 from .fsops import (
     MEGAMIND_DIR,
     append_audit,
@@ -33,7 +34,9 @@ from .registry import (
     WikiEntry,
     generate_router,
     load_registry,
+    registry_file,
     save_registry,
+    serialize_registry,
 )
 
 GAP_SCHEMA = "megamind/gap/v1"
@@ -190,6 +193,8 @@ class GapRecord:
 
     @classmethod
     def from_data(cls, raw: Mapping[str, Any]) -> GapRecord:
+        if not isinstance(raw, Mapping):
+            raise GardenError("gap record must be a JSON object")
         if raw.get("schema") != GAP_SCHEMA:
             raise GardenError("gap record schema must be megamind/gap/v1")
         allowed = {
@@ -284,7 +289,7 @@ class GapStore:
                 continue
             try:
                 record = GapRecord.from_data(json.loads(line))
-            except (json.JSONDecodeError, TypeError) as error:
+            except (json.JSONDecodeError, GardenError, TypeError) as error:
                 raise GardenError(f"invalid gap journal entry: {error}") from error
             latest[record.gap_id] = record
         return [latest[key] for key in sorted(latest)]
@@ -295,7 +300,7 @@ class GapStore:
                 return record
         raise GapNotFound(f"gap not found: {gap_id}")
 
-    def _append(self, record: GapRecord, event: str, details: dict[str, Any]) -> GapRecord:
+    def _append(self, record: GapRecord, event: str, details: dict[str, str]) -> GapRecord:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(record.to_data(), sort_keys=True, separators=(",", ":")) + "\n"
         old = self.path.read_text(encoding="utf-8") if self.path.is_file() else ""
@@ -304,7 +309,15 @@ class GapStore:
         append_audit(
             self.root,
             "gap-transition",
-            {"gap_id": record.gap_id, "event": event, "audit_ref": f"gaps.jsonl:{record.gap_id}"},
+            # The caller's detail keys stay flat beside the identity fields, so
+            # the audit record says which status a transition moved to and which
+            # attempt an attempt recorded.
+            {
+                "gap_id": record.gap_id,
+                "event": event,
+                "audit_ref": f"gaps.jsonl:{record.gap_id}",
+                **details,
+            },
         )
         append_log_event(
             self.root,
@@ -332,7 +345,7 @@ class GapStore:
         *,
         today: str | None = None,
         reason: str = "",
-        cooldown_until: str = "",
+        cooldown_until: str | None = None,
         superseded_by: str = "",
     ) -> GapRecord:
         if status not in GAP_STATUSES:
@@ -345,7 +358,10 @@ class GapStore:
             )
         record.status = status
         record.updated = _date(today) or record.updated
-        record.cooldown_until = cooldown_until
+        # An omitted cooldown keeps the recorded backoff; only an explicit value
+        # (including an explicit empty string) may clear it.
+        if cooldown_until is not None:
+            record.cooldown_until = cooldown_until
         if status == "rejected":
             record.rejection = {"reason": _short(reason), "date": record.updated}
         if status == "open" and previous_status != "open":
@@ -364,7 +380,7 @@ class GapStore:
         *,
         correlation_id: str = "",
         today: str | None = None,
-        cooldown_until: str = "",
+        cooldown_until: str | None = None,
     ) -> GapRecord:
         record = self.get(gap_id)
         attempt_id = content_hash(
@@ -385,7 +401,8 @@ class GapStore:
                 "date": _date(today),
             }
         )
-        record.cooldown_until = cooldown_until
+        if cooldown_until is not None:
+            record.cooldown_until = cooldown_until
         record.updated = _date(today) or record.updated
         return self._append(record, "attempt", {"attempt_id": attempt_id})
 
@@ -527,6 +544,8 @@ class Nomination:
 def make_nomination(
     wave: ResearchWave, entry: Mapping[str, Any], source_policy: str = ""
 ) -> Nomination:
+    if not isinstance(entry, Mapping):
+        raise GardenError("research nomination must be a JSON object")
     required = ("correlation_id", "gap_id", "wiki", "topic", "relationship")
     if any(not isinstance(entry.get(k), str) or not entry.get(k) for k in required):
         raise GardenError("research nomination is missing a required identity field")
@@ -559,6 +578,8 @@ class ResearchResult:
 def ingest_research_result(
     root: Path, nomination: Nomination, result: Mapping[str, Any]
 ) -> ResearchResult:
+    if not isinstance(result, Mapping):
+        raise GardenError("research result must be a JSON object")
     if result.get("correlation_id") != nomination.correlation_id:
         raise GardenError("research result correlation_id does not match nomination")
     sources = result.get("sources", [])
@@ -570,11 +591,13 @@ def ingest_research_result(
         if not isinstance(source, Mapping):
             raise GardenError("each research source must be an object")
         origin = source.get("origin", "")
-        if not isinstance(origin, str) or not origin or origin.startswith("http"):
-            # URLs are facts supplied by the host, never fetched by Megamind.
-            pass
+        # An origin is an opaque host-supplied fact, including any URL: Megamind
+        # records it and never resolves, fetches, or validates it against a
+        # network. It must still be a real identifier so a proposal can cite it.
+        if not isinstance(origin, str) or not origin.strip():
+            raise GardenError("each research source must declare a non-empty origin string")
         item = {
-            "origin": _short(str(origin), 300),
+            "origin": _short(origin, 300),
             "summary": _short(str(source.get("summary", "")), 500),
         }
         (eligible if source.get("eligible") is True else ineligible).append(item)
@@ -713,15 +736,25 @@ def provision_local_wiki(
     criteria.validate()
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name):
         raise GardenError("wiki name must be a simple local identifier")
-    registry_path = resolve_contained(root, REGISTRY_PATH)
-    registry = (
-        Registry(version=CURRENT_VERSION) if not registry_path.is_file() else load_registry(root)
-    )
+    # A root is one shape or the other, never both: adding a registry beside an
+    # authoritative canonical card would leave discovery guessing which card
+    # wins. Init and adopt refuse the same way.
+    if card_file(root).is_file() and not registry_file(root).is_file():
+        raise GardenError(
+            "this root is a canonical single-wiki root, not a registry vault; provisioning "
+            "a registry here would leave two cards claiming authority. Provision the new "
+            "wiki in a registry vault instead"
+        )
+    # Never bootstrap a vault as a side effect, and never migrate one either:
+    # a v1 registry has to be upgraded explicitly so its operator notes are seen.
+    registry = load_registry(root)
+    if registry.version < CURRENT_VERSION:
+        raise GardenError(
+            "registry is schema v1; run `megamind-axi migrate` first so every existing wiki "
+            "gets its explicit access policy before a provisional wiki is registered"
+        )
     if registry.wiki_by_name(name) is not None:
         raise GardenError(f"wiki already exists: {name}")
-    wiki_dir = resolve_contained(root, path)
-    if wiki_dir.exists():
-        raise GardenError(f"wiki path already exists: {path}")
     entry = WikiEntry(
         name=name,
         path=path,
@@ -741,10 +774,16 @@ def provision_local_wiki(
         provisional=True,
     )
     new_registry = Registry(
-        version=max(registry.version, CURRENT_VERSION),
+        version=registry.version,
         budgets=registry.budgets,
         wikis=[*registry.wikis, entry],
     )
+    # The complete registry plan is validated before a single byte is written,
+    # so a rejected entry can never leave an orphan scaffold behind.
+    serialize_registry(new_registry)
+    wiki_dir = resolve_contained(root, path)
+    if wiki_dir.exists():
+        raise GardenError(f"wiki path already exists: {path}")
     wiki_dir.mkdir(parents=True)
     for directory in ("raw", "wiki", f"{MEGAMIND_DIR}/proposals", f"{MEGAMIND_DIR}/audit"):
         resolve_contained(root, Path(path) / directory).mkdir(parents=True, exist_ok=True)
@@ -762,20 +801,12 @@ def provision_local_wiki(
         f"{path}/INDEX.md": f"---\nmegamind: index\nwiki: {name}\n---\n\n# {name} index\n\n",
         f"{path}/wiki/index.md": f"# {name} compiled index\n",
         f"{path}/wiki/log.md": f"# {name} log\n\n",
-        f"{path}/{MEGAMIND_DIR}/wiki-card.json": json.dumps(
-            {
-                "schema": "megamind/wiki-card/v2",
-                "version": 2,
-                **{
-                    k: v
-                    for k, v in asdict(entry).items()
-                    if k not in {"path"} and v not in ("", [], None)
-                },
-            },
-            sort_keys=True,
-            indent=2,
-        )
-        + "\n",
+        # The nested card is authoritative for the wiki root itself, so its
+        # paths are rooted there, not at the vault. Serializing it through the
+        # card module also stops the two card formats from drifting apart.
+        f"{path}/{MEGAMIND_DIR}/wiki-card.json": serialize_wiki_card(
+            replace(entry, path=".", card="CARD.md", index="INDEX.md")
+        ),
         f"{path}/{MEGAMIND_DIR}/gaps.jsonl": "",
     }
     for rel, text in files.items():
