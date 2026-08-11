@@ -164,6 +164,14 @@ def _card_text(row: dict[str, object]) -> str:
     )
 
 
+def _names(
+    strong: list[tuple[_Lexical, dict[str, object], float]], indices: list[int]
+) -> list[str]:
+    """Card names for the given rows, deduplicated: one estate can project the
+    same wiki from both its registry entry and its own canonical card root."""
+    return list(dict.fromkeys(str(strong[index][1].get("name")) for index in indices))
+
+
 def _declined(row: dict[str, object], query_tokens: list[str]) -> str | None:
     negative: set[str] = set()
     for item in _str_list(row.get("negative_triggers")):
@@ -391,20 +399,32 @@ def run_preflight(
 
         match_indices: list[int] = []
         offer_indices: list[int] = []
+        untrusted: list[int] = []
         if not strong:
             result.status = "no-match"
             result.notes.append(
                 f"all matching wikis fall below the no-match floor ({OFFER_FLOOR}): staying quiet"
             )
         elif decision == "load":
-            result.status = "matched"
-            match_indices = list(authorized)
             loadable = set(authorized)
-            offer_indices = [index for index in range(len(strong)) if index not in loadable]
-            if offer_indices:
+            below_floor = [index for index in range(len(strong)) if index not in loadable]
+            # A provisional wiki is not trusted active knowledge until
+            # confidence coverage and a later evaluation pass. It stays a
+            # privacy-safe offer and never becomes a loadable match.
+            untrusted = [index for index in authorized if bool(strong[index][1].get("provisional"))]
+            match_indices = [index for index in authorized if index not in set(untrusted)]
+            offer_indices = sorted(below_floor + untrusted)
+            result.status = "matched" if match_indices else "ambiguous"
+            if below_floor:
                 result.notes.append(
                     f"only wikis at or above the reliance floor ({RELIANCE_FLOOR}) are loadable "
                     "matches; the weaker ones stay offers with no loadable paths"
+                )
+            if untrusted and not match_indices:
+                result.notes.append(
+                    f"governance downgrade, not a confidence downgrade: request confidence "
+                    f"{result.confidence} meets the reliance floor ({RELIANCE_FLOOR}), but every "
+                    "wiki that cleared it is provisional: offer choices, load nothing"
                 )
         else:
             result.status = "ambiguous"
@@ -432,11 +452,22 @@ def run_preflight(
                     f"({RELIANCE_FLOOR}): offer choices, load nothing automatically"
                 )
 
+        # A provisional wiki stays an explicit offer whatever produced the
+        # status, so the governance fact is stated for every emitted row, not
+        # only for the ones the load path had to withhold.
+        shown = sorted(set(match_indices) | set(offer_indices))
+        provisional_shown = [index for index in shown if bool(strong[index][1].get("provisional"))]
+        if provisional_shown:
+            result.notes.append(
+                "governance gate, not a confidence threshold: provisional wikis may be offered "
+                "but are never an authorized load until confidence coverage and a later "
+                f"evaluation pass: {bounded_names(_names(strong, provisional_shown))}"
+            )
+
         # Optional local semantic rerank over the already-selected packet only.
         # Filtered wikis never enter this list, so reranking can never resurrect
         # an ineligible wiki or expose its card beyond what the lexical layer
         # already scored, and it cannot move a row between matches and offers.
-        shown = sorted(set(match_indices) | set(offer_indices))
         order, outcome = semantic_rerank(
             request,
             [float(strong[index][0].score) for index in shown],
@@ -459,6 +490,7 @@ def run_preflight(
                     "meets_floor": confidence >= RELIANCE_FLOOR,
                 },
                 "freshness": row.get("freshness"),
+                "provisional": bool(row.get("provisional")),
                 # The per-token signals stay internal to confidence; the public
                 # summary keeps only their counts and classes.
                 "evidence": _evidence_summary(

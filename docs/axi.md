@@ -30,11 +30,19 @@ with a stable `schema_version`:
 | `megamind/migrate-result/v1` | `migrate` |
 | `megamind/config/v1` | `config show` |
 | `megamind/setup-plan/v1`, `megamind/setup-result/v1` | `setup skill` |
+| `megamind/gaps-result/v1`, `megamind/gap-result/v1` | `gap` |
+| `megamind/gap-transition/v1`, `megamind/gap-attempt/v1` | `gap` mutations |
+| `megamind/research-wave/v1` | `research-wave` |
+| `megamind/research-result/v1` | `research-result` |
+| `megamind/provisional-wiki-result/v1` | `provision-wiki` |
 | `megamind/error/v1` | any failure |
 
 The v2 retrieval documents are additive over their v1 shapes: every v1 field
 keeps its name and meaning, and v2 adds route confidence, thresholds,
-semantic-rerank outcome, and per-candidate freshness (see below).
+semantic-rerank outcome, per-candidate freshness (see below), the
+`route-result/v2` `governance[]` sidecar and its `governance_downgrade` flag,
+and the `provisional` governance marker on catalog rows and preflight matches
+and offers.
 
 Example (`megamind-axi route "pricing"` on the examples vault):
 
@@ -54,6 +62,9 @@ semantic:
   reason: semantic reranking not enabled
 candidates[1]{path,kind,score,reason}:
   ProductWiki/topics/pricing-v2.md,page,7,"keyword match: pricing"
+governance[1]{path,provisional,trusted,disposition}:
+  ProductWiki/topics/pricing-v2.md,false,true,load
+governance_downgrade: false
 context_chars: 446
 max_context_chars: 8000
 max_candidates: 5
@@ -82,6 +93,42 @@ fixtures. `route` and `preflight` apply fixed thresholds:
   follow-up commands on offers);
 - below 0.25 the evidence is dropped and the result is a definitive no-match
   that stays quiet.
+
+Confidence is necessary for a load, not sufficient. One governance gate runs
+after the thresholds and can only narrow them: a wiki marked `provisional`
+(see `docs/schemas.md`) is never an authorized load or active content match
+until confidence coverage and a later evaluation pass, however confident the
+match is. So `confidence >= 0.75` alone does not imply a loadable result: a
+provisional candidate that cleared the floor leaves the `load` packet and
+becomes an offer, and when every candidate that cleared it is provisional the
+whole result degrades to `decision: offer` / `status: ambiguous` with the top
+confidence still at or above the floor and no `ambiguity_band` involved.
+The cause is a typed field, not prose to parse: `governance_downgrade` is
+`true` exactly when the governance gate, not a threshold, produced the offer.
+`notes` says the same thing in words - a governance note says "governance gate,
+not a confidence threshold" or "governance downgrade, not a confidence
+downgrade", and never reuses the reliance-floor or ambiguity-band wording.
+
+`route-result/v2` therefore carries a `governance[]` sidecar, emitted on every
+route regardless of `--fields`, keyed by each candidate's own root-relative
+`path`, with a `disposition` of `load` or `offer`:
+
+```text
+governance[2]{path,provisional,trusted,disposition}:
+  ProductWiki/topics/release-process.md,false,true,load
+  ReleaseWiki/INDEX.md,true,false,offer
+```
+
+Rows cover the emitted packet plus every provisional candidate a `load`
+withheld from it, so a consumer reading structured fields alone still sees
+which wikis were offered rather than loaded, exactly as `preflight` reports
+them; `candidates[]` keeps carrying only paths the host may open. Withheld
+offer rows are bounded by `max_candidates`, with a note naming anything
+omitted. It is a sidecar rather than a candidate column so the default
+candidate field set stays exactly what `route-result/v1` and `v2` already
+promised; `provisional` is additionally available as an opt-in `--fields`
+column. Catalog rows and preflight matches and offers carry `provisional`
+directly, with the same meaning.
 
 The emitted `thresholds` block makes every decision self-describing.
 `unknown` is a first-class confidence value (no evidence to score): it is
@@ -113,13 +160,16 @@ the full component rationale.
    finding lists; wiki page bodies are never dumped into output.
 2. **Minimal default schemas**: route candidates default to
    `path,kind,score,reason`; `--fields` opts into
-   `wiki,privacy,chars,confidence,freshness,semantic_score,reasons`. Doctor
-   findings carry exactly `check,severity,path,message`.
+   `wiki,privacy,chars,confidence,freshness,semantic_score,provisional,reasons`.
+   Doctor findings carry exactly `check,severity,path,message`.
 3. **Content truncation**: evolve diffs are bounded to 60 lines
    (`diff_truncated`, `diff_lines_total`, `--full`), doctor findings to 50, and
    every other item list - review sections, catalog wikis, preflight matches
-   and filtered entries, adopt file lists - to 20, each with an explicit note
-   and `--full` to lift it. Notes themselves stay bounded: a note that reports
+   and filtered entries, adopt file lists, gap journals - to 20, each with an
+   explicit note and `--full` to lift it. `gap list` additionally keeps the
+   unbounded per-gap `attempts` history behind `--full`, reporting only
+   `attempt_count` in a default row, and states the journal size in `total`.
+   Notes themselves stay bounded: a note that reports
    dropped candidates names at most 5 of them and then states how many more
    there were, so a wide index cannot inflate the packet through `notes`.
 4. **Pre-computed aggregates**: home returns proposal/review/doctor counts;
@@ -151,9 +201,13 @@ the full component rationale.
 `usage_error`, `not_initialized`, `registry_invalid`, `card_invalid`,
 `capture_invalid`, `proposal_not_found`, `plan_mismatch`, `approval_required`,
 `evolve_invalid`, `adopt_invalid`, `init_invalid`, `path_escape`,
-`frontmatter_invalid`, `io_error`. Malformed vault content and
-filesystem failures are reported as `frontmatter_invalid` and `io_error`
-documents with exit 1; no invocation ever ends in a traceback. Messages never
+`frontmatter_invalid`, `io_error`, `garden_invalid`, `gap_not_found`,
+`gap_transition_invalid`, `provision_recovery_required`. Malformed vault
+content and filesystem failures are reported as `frontmatter_invalid` and
+`io_error` documents with exit 1; no invocation ever ends in a traceback.
+`provision_recovery_required` is the one failure that deliberately leaves
+durable state: an apply that could not fully undo itself keeps its transaction
+record so the retry or the explicit rollback stays available. Messages never
 include machine-specific absolute paths from inside the vault model; registry
 paths are always root-relative.
 

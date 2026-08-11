@@ -82,10 +82,18 @@ rewritten.
 
 `megamind/route-result/v2`. Default candidate fields: `path,kind,score,reason`.
 Available: `path,kind,score,wiki,privacy,chars,confidence,freshness,
-semantic_score,reason,reasons`. `kind` is `page`, `digest`, `index`, `card`,
-or `pointer`. `decision` applies the route-confidence thresholds: `load` at
-or above 0.75, `offer` below it or inside the ambiguity band, `no-match`
-under 0.25 (weak candidates are dropped with a note). No match returns
+semantic_score,provisional,reason,reasons`. `kind` is `page`, `digest`,
+`index`, `card`, or `pointer`. `decision` applies the route-confidence
+thresholds: `load` at or above 0.75, `offer` below it or inside the ambiguity
+band, `no-match` under 0.25 (weak candidates are dropped with a note).
+Confidence is necessary but not sufficient: the `governance[]` sidecar
+(`path`, `provisional`, `trusted`, `disposition`; always present) marks
+provisional wikis, which are never an authorized load and can degrade a
+confident result to `offer` on their own. It covers the emitted packet plus
+every provisional candidate a `load` withheld, which stays an `offer` row
+rather than disappearing from the response. The `governance_downgrade` boolean
+states whether a downgrade was a governance or a confidence decision as a typed
+field, and `notes` says the same in words. No match returns
 `matched: false` and `candidates[0]`, exit 0. `--today` makes per-candidate
 `freshness` (`updated`, `age_days`, `stale`) reproducible; without it those
 stay explicitly unknown. `--semantic` enables local char-ngram reranking of
@@ -135,11 +143,84 @@ when non-empty, bounded to 20 items unless `--full`). Read-only.
 
 `megamind/doctor-report/v1`: `status`, `errors`, `warnings`, and a
 `findings[N]{check,severity,path,message}` table (bounded to 50 unless
-`--full`). Exit 1 when any finding is an error.
+`--full`). Exit 1 when any finding is an error. Both root shapes report: a
+canonical wiki root with a card and no registry is validated as a canonical
+root (required directories, a named card, the gap journal) instead of failing
+as an uninitialized registry.
 
 ## megamind-axi config show
 
 `megamind/config/v1`: registry path, budgets, and registered wikis.
+
+## megamind-axi gap list|create|transition|attempt [--full]
+
+Durable, append-only gap records for missing, weak, stale, and contradictory
+coverage. `create` deduplicates by normalized semantic identity. Transitions
+and attempts are machine-readable and retain cooldown, rejection, reopen, and
+supersession history. `transition` requires an explicit `--status`, so no
+omitted flag can reopen a gap. An omitted `--cooldown-until` keeps the recorded
+backoff; pass it explicitly to change or clear it. Transitioning to the status
+a gap already holds is an idempotent `status: unchanged` no-op; only a field
+that status persists can make it inexact, so a repeat refuses on a different
+`--reason` for `rejected`, a different `--superseded-by` for `superseded`, or a
+different `--cooldown-until`, and ignores a flag the status never stores.
+`--today` and `--cooldown-until` must both be ISO `YYYY-MM-DD` (or, for the
+cooldown, an explicit empty string to clear it); they are validated before any
+write, and replay revalidates every date already in the journal. `list` returns
+at most 20 rows with `total` and a truncation note, and reports `attempt_count`
+only - `--full` lifts both bounds.
+
+## megamind-axi research-wave GAP_ID [capacity flags]
+
+Plans a deterministic one-hop wave from host-supplied capacity facts. It emits
+at most the direct gap and first-order nominations and never dispatches a
+worker. Unknown capacity, active captain work, a full fleet, a target-wiki
+worker, insufficient wave capacity, or less than 25 percent quota reserve is a
+typed pause/refusal.
+
+## megamind-axi research-result --nomination-json JSON --result-json JSON
+
+Validates a host round-trip by stable correlation id and turns eligible
+sources into an immutable-source ingest proposal. Results are bounded and
+idempotent; a result with no eligible source is rejected before any proposal,
+audit, or log write, and a replay that changes any part of the nomination
+identity - wiki, topic, or the eligible sources - refuses.
+Megamind performs no network or external action and never writes `raw/`.
+
+## megamind-axi provision-wiki NAME PATH [criteria flags]
+
+Creates a local provisional wiki only when every domain, demand, scope, owner,
+policy, seed, and maintenance criterion passes. The criteria flags are required
+by mode, not by the parser: a plan and an `--apply` both refuse with
+`usage_error` naming whichever is missing, before any write, while
+`--rollback --plan-id <id>` takes the positional name and path and nothing
+else. Those positionals are checked against the manifest before anything is
+touched: a plan id recorded for another wiki or path refuses with zero
+mutation, and the result echoes the recorded `wiki` and `path`. `--apply` and
+`--rollback` are mutually exclusive. Every command printed
+in `help[]` runs verbatim, so an apply hint carries the criteria and `--today`
+it needs to re-derive the same `plan_id`. It extends an existing registry
+vault only: it refuses a canonical single-wiki root, refuses to bootstrap a
+vault `init` has not created, and refuses a v1 registry until `migrate` has run
+explicitly. Without `--apply` it plans with no side effects and returns a
+content-bound `plan_id`; `--apply --plan-id <id>` applies exactly that plan as
+a write-ahead transaction whose manifest and backups are flushed before the
+first file changes and whose targets are all flushed and verified before the
+record commits. Re-running the same apply is a verified `status: noop`, an
+interrupted apply resumes from the manifest (including one whose targets did
+not all reach disk), and `--rollback --plan-id <id>` undoes it completely; a
+plan id from other arguments, stale targets, or edited generated content all
+refuse. Rollback removes only manifest-tracked files and empties only
+directories the transaction created: a page written into the wiki after the
+apply is preserved, listed in a bounded `preserved` sample beside the full
+`preserved_total`, and returns `status: partial`. When an apply fails and its
+own undo has to keep such content, the transaction record survives as
+`partial` and the command exits `provision_recovery_required`, so the retry or
+the explicit `--rollback` is a deliberate choice rather than a lost record. It registers the card immediately with
+`provisional: true`; provisional knowledge is not trusted, so route, catalog,
+and preflight surface it and only ever offer it, never load it. No remote
+repository, collaborators, account action, publication, merge, or spend is
+possible.
 
 ## megamind-axi setup skill [--dest DIR]
 
@@ -153,5 +234,7 @@ directory. Setup never makes network calls or edits shell/provider config.
 `megamind/error/v1` with a stable `code` (`usage_error`, `not_initialized`,
 `registry_invalid`, `card_invalid`, `capture_invalid`, `proposal_not_found`,
 `plan_mismatch`, `approval_required`, `evolve_invalid`, `adopt_invalid`,
-`init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`), a sanitized
-`message`, and `help[]` with corrective commands.
+`init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
+`garden_invalid`, `gap_not_found`, `gap_transition_invalid`,
+`provision_recovery_required`), a sanitized `message`, and `help[]` with
+corrective commands.

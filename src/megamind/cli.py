@@ -46,6 +46,23 @@ from .confidence import (
 from .doctor import run_doctor
 from .evolve import EvolveError, apply_plan, plan
 from .fsops import PathEscapeError
+from .gardening import (
+    RESULT_SCHEMA,
+    WAVE_SCHEMA,
+    CapacityInput,
+    GapRecord,
+    GapStore,
+    GardenError,
+    PriorityInputs,
+    ProvisionCriteria,
+    apply_provision_plan,
+    ingest_research_result,
+    make_nomination,
+    plan_provision_wiki,
+    plan_research_wave,
+    resume_provision,
+    rollback_provision,
+)
 from .models import FrontmatterError, parse_document
 from .preflight import MODEL_CLASSES, run_preflight
 from .registry import REGISTRY_PATH, Registry, RegistryError, load_registry, migrate_registry
@@ -72,6 +89,7 @@ ROUTE_FIELDS_ALL = [
     "confidence",
     "freshness",
     "semantic_score",
+    "provisional",
     "reason",
     "reasons",
 ]
@@ -415,6 +433,7 @@ def _route_row(candidate: Doc, fields: list[str]) -> Doc:
         "confidence": candidate["confidence"],
         "freshness": candidate["freshness"],
         "semantic_score": candidate["semantic_score"],
+        "provisional": candidate["provisional"],
         "reason": reasons[0] if reasons else "",
         "reasons": " | ".join(reasons),
     }
@@ -439,11 +458,16 @@ def cmd_route(
         "thresholds": result.thresholds,
         "semantic": result.semantic,
         "candidates": [_route_row(asdict(c), fields) for c in result.candidates],
+        "governance": result.governance,
+        # Typed beside the sidecar so a consumer never has to string-match the
+        # prose in `notes` to tell a governance offer from a confidence one.
+        "governance_downgrade": result.governance_downgrade,
         "context_chars": result.context_chars,
         "max_context_chars": result.max_context_chars,
         "max_candidates": result.max_candidates,
         "notes": result.notes,
     }
+    provisional_offered = any(row["provisional"] for row in result.governance)
     if result.decision == "load" and result.candidates:
         best = result.candidates[0]
         doc["help"] = _help(
@@ -452,11 +476,22 @@ def cmd_route(
             "--fields path,kind,score,confidence,reasons` for detail",
         )
     elif result.decision == "offer":
-        doc["help"] = _help(
-            "Offer the listed candidates as choices; load nothing until one is picked",
-            f"Route confidence stays below the {RELIANCE_FLOOR} reliance floor or "
-            "inside the ambiguity band",
-        )
+        entries = ["Offer the listed candidates as choices; load nothing until one is picked"]
+        if result.governance_downgrade:
+            entries.append(
+                "Every candidate that cleared the reliance floor is provisional: provisional "
+                "wikis stay offers until confidence coverage and a later evaluation pass"
+            )
+        else:
+            entries.append(
+                f"Route confidence stays below the {RELIANCE_FLOOR} reliance floor or "
+                "inside the ambiguity band"
+            )
+            if provisional_offered:
+                entries.append(
+                    "Some offered candidates are also provisional; see `governance` for which"
+                )
+        doc["help"] = _help(*entries)
     else:
         doc["help"] = _help(
             f"Run `{EXECUTABLE} config show` to see registered wikis and their keywords",
@@ -748,6 +783,313 @@ def cmd_config_show(root: Path, root_label: str) -> tuple[Doc, int]:
         ),
     }
     return doc, 0
+
+
+def _gap_row(record: GapRecord, full: bool) -> Doc:
+    """List rows carry the attempt count; the history itself needs `--full`."""
+    data = record.to_data()
+    attempts = data.pop("attempts")
+    row: Doc = {**data, "attempt_count": len(attempts)}
+    if full:
+        row["attempts"] = attempts
+    return row
+
+
+def cmd_gap(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc, int]:
+    store = GapStore(root)
+    cooldown = _garden_cooldown(args)
+    if args.gap_action == "list":
+        notes: list[str] = []
+        records = store.records()
+        shown = _capped(list(records), args.full, notes, "gaps")
+        return {
+            "schema_version": "megamind/gaps-result/v1",
+            "status": "ok",
+            "gaps": [_gap_row(record, args.full) for record in shown],
+            "count": len(shown),
+            "total": len(records),
+            "notes": notes,
+            "help": _help(
+                "Use `megamind-axi gap transition <id> --status planned` to update a gap",
+                f"Run `{EXECUTABLE} gap list --full` for every gap and its attempt history",
+            ),
+        }, 0
+    if args.gap_action == "create":
+        priority = PriorityInputs(
+            args.impact, args.urgency, args.repeat_demand, args.coverage, args.confidence_risk
+        )
+        candidate = GapRecord.new(
+            args.wiki,
+            args.topic,
+            args.kind,
+            priority=priority,
+            related_topics=args.related,
+            today=today,
+        )
+        existing = next(
+            (item for item in store.records() if item.identity == candidate.identity), None
+        )
+        record = store.create(candidate)
+        return {
+            "schema_version": "megamind/gap-result/v1",
+            "status": "deduplicated" if existing else "created",
+            "gap": record.to_data(),
+            "help": _help(
+                f"Run `{EXECUTABLE} research-wave {record.gap_id} "
+                "--capacity-known` to plan a bounded wave"
+            ),
+        }, 0
+    if args.gap_action == "transition":
+        before = store.get(args.gap_id)
+        record = store.transition(
+            args.gap_id,
+            args.status,
+            today=today,
+            reason=args.reason,
+            cooldown_until=cooldown,
+            superseded_by=args.superseded_by,
+        )
+        return {
+            "schema_version": "megamind/gap-transition/v1",
+            # An exact repeat appends nothing, so it reports the no-op rather
+            # than claiming a lifecycle move that never happened.
+            "status": "unchanged" if record == before else "transitioned",
+            "gap": record.to_data(),
+            "help": _help(f"Run `{EXECUTABLE} gap list` to inspect durable gap state"),
+        }, 0
+    record = store.attempt(
+        args.gap_id,
+        args.outcome,
+        correlation_id=args.correlation_id,
+        today=today,
+        cooldown_until=cooldown,
+    )
+    return {
+        "schema_version": "megamind/gap-attempt/v1",
+        "status": "recorded",
+        "gap": record.to_data(),
+        "help": _help("Retry only after the recorded cooldown, or transition the gap to rejected"),
+    }, 0
+
+
+def _parse_active_wikis(values: list[str]) -> dict[str, int]:
+    """Parse repeated ``--active-wiki WIKI=N`` facts into a typed mapping.
+
+    Host-supplied capacity arrives as raw text, so every malformed form has to
+    become a typed usage document rather than an exception out of the parser.
+    """
+    parsed: dict[str, int] = {}
+    for item in values:
+        wiki, separator, count = item.partition("=")
+        if not separator or not wiki.strip():
+            raise UsageError(f"--active-wiki expects WIKI=N, got: {item}")
+        try:
+            parsed[wiki.strip()] = int(count)
+        except ValueError:
+            raise UsageError(
+                f"--active-wiki worker count must be an integer, got: {item}"
+            ) from None
+    return parsed
+
+
+def _json_object(raw: str, flag: str) -> dict[str, Any]:
+    """Decode a host-supplied bridge payload that must be a JSON object."""
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise UsageError(f"{flag} is not valid JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise UsageError(f"{flag} must be a JSON object")
+    return value
+
+
+def cmd_research_wave(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc, int]:
+    capacity = CapacityInput(
+        args.capacity_known,
+        args.active_workers,
+        _parse_active_wikis(args.active_wiki),
+        args.applicable_quota,
+        args.reserve_quota,
+        args.wave_units,
+        args.available_units,
+        args.captain_work,
+    )
+    result = plan_research_wave(GapStore(root).records(), args.gap_id, capacity, today=today)
+    return {
+        "schema_version": WAVE_SCHEMA,
+        **result.to_data(),
+        "help": _help(
+            "Dispatch nothing from Megamind; the host may dispatch only the emitted nominations",
+            "Replay each nomination with its stable correlation_id",
+        ),
+    }, 0
+
+
+def cmd_research_result(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
+    nomination_data = _json_object(args.nomination_json, "--nomination-json")
+    result_data = _json_object(args.result_json, "--result-json")
+    nomination = make_nomination(
+        str(nomination_data.get("wave_id", "")),
+        nomination_data,
+        str(nomination_data.get("source_policy", "")),
+    )
+    result = ingest_research_result(root, nomination, result_data)
+    return {
+        "schema_version": RESULT_SCHEMA,
+        **result.to_data(),
+        "help": _help(
+            "Review the immutable-source ingest proposal; Megamind does not "
+            "fetch or publish the source"
+        ),
+    }, 0
+
+
+# dest -> flag, in the order the help hint prints them, so the emitted apply
+# command is deterministic and every criterion has one spelling.
+PROVISION_CRITERIA_FLAGS: tuple[tuple[str, str], ...] = (
+    ("domain", "--domain"),
+    ("repeat_demand", "--repeat-demand"),
+    ("multi_topic", "--multi-topic"),
+    ("overlap", "--overlap"),
+    ("scope", "--scope"),
+    ("exclusions", "--exclusions"),
+    ("owner", "--owner"),
+    ("source_policy", "--source-policy"),
+    ("privacy", "--privacy"),
+    ("model_access", "--model-access"),
+    ("seed_topic", "--seed-topic"),
+    ("maintenance", "--maintenance"),
+)
+
+
+def _provision_criteria(args: argparse.Namespace) -> ProvisionCriteria:
+    """Build the criteria a plan or an apply needs, refusing before any write."""
+    missing = [flag for dest, flag in PROVISION_CRITERIA_FLAGS if getattr(args, dest, None) is None]
+    if missing:
+        raise UsageError(
+            "provision-wiki needs every qualification criterion to plan or apply; missing: "
+            + ", ".join(missing)
+        )
+    return ProvisionCriteria(
+        args.domain,
+        args.repeat_demand,
+        args.multi_topic,
+        args.overlap,
+        args.scope,
+        args.exclusions,
+        args.owner,
+        args.source_policy,
+        args.privacy,
+        args.model_access,
+        tuple(args.seed_topic),
+        args.maintenance,
+    )
+
+
+def _provision_command(args: argparse.Namespace, *tail: str, criteria: bool) -> str:
+    """The exact command that re-runs this invocation with `tail` appended.
+
+    An apply re-derives the plan from the criteria and from `--today`, so both
+    have to travel with the approval token or the printed command would parse
+    and then refuse as a plan-id mismatch. A rollback reads neither.
+    """
+    argv = [EXECUTABLE, "provision-wiki", shlex.quote(args.name), shlex.quote(args.path)]
+    if criteria:
+        for dest, flag in PROVISION_CRITERIA_FLAGS:
+            value = getattr(args, dest)
+            for item in value if isinstance(value, list) else [value]:
+                argv += [flag, shlex.quote(str(item))]
+        today = getattr(args, "today", None)
+        if today:
+            argv += ["--today", shlex.quote(str(today))]
+    return " ".join([*argv, *tail])
+
+
+def _applied_doc(name: str, path: str, plan_id: str, status: str, files: list[str]) -> Doc:
+    return {
+        "schema_version": "megamind/provisional-wiki-result/v1",
+        "status": status,
+        "wiki": name,
+        "path": path,
+        "plan_id": plan_id,
+        "files": files,
+        "trusted": False,
+        "help": _help(
+            "Populate and evaluate confidence coverage before treating this wiki "
+            "as trusted knowledge",
+            f"Run `{EXECUTABLE} provision-wiki {shlex.quote(name)} {shlex.quote(path)} "
+            f"--rollback --plan-id {plan_id}` to undo it; a rollback needs no criteria flags",
+        ),
+    }
+
+
+def cmd_provision_wiki(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc, int]:
+    if args.rollback:
+        # The positionals are the identity the rollback is checked against, not
+        # decoration: the plan id alone would let a pasted token undo a
+        # different wiki under this name.
+        outcome = rollback_provision(root, args.plan_id or "", args.name, args.path)
+        entries = ["Re-run provision-wiki without --apply to inspect a fresh plan"]
+        if outcome.preserved:
+            entries.insert(
+                0,
+                "Content written after the apply was preserved, not deleted; review "
+                "`preserved` and remove it yourself if it is no longer wanted",
+            )
+        return {
+            "schema_version": "megamind/provisional-wiki-result/v1",
+            "status": outcome.status,
+            "wiki": outcome.wiki,
+            "path": outcome.path,
+            "plan_id": args.plan_id,
+            "removed": outcome.removed,
+            "preserved": outcome.preserved,
+            "preserved_total": outcome.preserved_total,
+            "notes": outcome.notes,
+            "help": _help(*entries),
+        }, 0
+    # Every criterion is checked before a plan is computed and before an apply
+    # can reach the transaction, so neither mode ever writes on partial input.
+    criteria = _provision_criteria(args)
+    if args.apply:
+        if not args.plan_id:
+            raise UsageError("provision-wiki --apply requires --plan-id from the dry run")
+        # Replay reaches the verified no-op (and an interrupted apply reaches
+        # recovery) from the transaction record alone, before planning can
+        # refuse the wiki the first apply already registered.
+        replay = resume_provision(root, args.plan_id, args.name, args.path)
+        if replay is not None:
+            status, files = replay
+            return _applied_doc(args.name, args.path, args.plan_id, status, files), 0
+    computed = plan_provision_wiki(root, args.name, args.path, criteria, today=today)
+    if args.apply:
+        applied = apply_provision_plan(root, computed, args.plan_id)
+        return _applied_doc(
+            args.name,
+            args.path,
+            computed.plan_id,
+            "applied" if applied else "noop",
+            applied,
+        ), 0
+    return {
+        "schema_version": "megamind/provisional-wiki-result/v1",
+        "status": "planned",
+        "wiki": computed.name,
+        "path": computed.path,
+        "plan_id": computed.plan_id,
+        "files": [change["path"] for change in computed.changes],
+        "changes": list(computed.changes),
+        "notes": list(computed.notes),
+        "trusted": False,
+        "help": _help(
+            "Run `"
+            + _provision_command(args, "--apply", "--plan-id", computed.plan_id, criteria=True)
+            + "` after reviewing this local-only plan",
+            "Run `"
+            + _provision_command(args, "--rollback", "--plan-id", computed.plan_id, criteria=False)
+            + "` to undo an applied plan; a rollback needs no criteria flags",
+        ),
+    }, 0
 
 
 def cmd_setup_skill(dest: str | None) -> tuple[Doc, int]:
@@ -1067,6 +1409,90 @@ def build_parser() -> AxiParser:
     )
     _common_flags(p_config_show)
 
+    p_gap = sub.add_parser("gap", aliases=["gaps"], help="durable governed knowledge gaps")
+    _common_flags(p_gap)
+    p_gap.add_argument("gap_action", choices=["list", "create", "transition", "attempt"])
+    p_gap.add_argument("gap_id", nargs="?", default="")
+    p_gap.add_argument("--wiki", default="")
+    p_gap.add_argument("--topic", default="")
+    p_gap.add_argument(
+        "--kind", choices=["missing", "weak", "stale", "contradictory"], default="missing"
+    )
+    p_gap.add_argument(
+        "--status",
+        choices=[
+            "open",
+            "nominated",
+            "planned",
+            "in_progress",
+            "paused",
+            "resolved",
+            "rejected",
+            "superseded",
+        ],
+        default=None,
+    )
+    p_gap.add_argument("--reason", default="")
+    p_gap.add_argument("--outcome", default="")
+    p_gap.add_argument("--correlation-id", default="")
+    # No default: an omitted cooldown keeps whatever backoff the record carries.
+    p_gap.add_argument("--cooldown-until", default=None)
+    p_gap.add_argument("--superseded-by", default="")
+    p_gap.add_argument("--related", action="append", default=[])
+    for name in ("impact", "urgency", "repeat-demand", "coverage", "confidence-risk"):
+        p_gap.add_argument("--" + name, dest=name.replace("-", "_"), type=int, default=0)
+    p_gap.add_argument("--today", default=argparse.SUPPRESS)
+    p_gap.add_argument(
+        "--full", action="store_true", help="never truncate the gap list or its attempt histories"
+    )
+
+    p_wave = sub.add_parser("research-wave", help="plan a deterministic one-hop research wave")
+    _common_flags(p_wave)
+    p_wave.add_argument("gap_id")
+    p_wave.add_argument("--capacity-known", action="store_true")
+    p_wave.add_argument("--active-workers", type=int, default=0)
+    p_wave.add_argument("--active-wiki", action="append", default=[], metavar="WIKI=N")
+    p_wave.add_argument("--applicable-quota", type=float, default=None)
+    p_wave.add_argument("--reserve-quota", type=float, default=None)
+    p_wave.add_argument("--wave-units", type=int, default=1)
+    p_wave.add_argument("--available-units", type=int, default=None)
+    p_wave.add_argument("--captain-work", action="store_true")
+    p_wave.add_argument("--today", default=argparse.SUPPRESS)
+
+    p_result = sub.add_parser("research-result", help="ingest a host research result as a proposal")
+    _common_flags(p_result)
+    p_result.add_argument("--nomination-json", required=True)
+    p_result.add_argument("--result-json", required=True)
+
+    p_provision = sub.add_parser("provision-wiki", help="create a qualified provisional local wiki")
+    _common_flags(p_provision)
+    p_provision.add_argument("name")
+    p_provision.add_argument("path")
+    # The qualification criteria are required by mode, not by the parser: a plan
+    # and an apply both refuse without every one of them, while a rollback is
+    # driven by `--plan-id` alone and must stay runnable exactly as help[] prints
+    # it. `None` is what "not supplied" means here, so an explicitly empty value
+    # still reaches the criteria check and fails as an unmet criterion.
+    for flag, kind in (
+        ("--domain", str),
+        ("--repeat-demand", int),
+        ("--multi-topic", int),
+        ("--overlap", str),
+        ("--scope", str),
+        ("--exclusions", str),
+        ("--owner", str),
+        ("--source-policy", str),
+        ("--privacy", str),
+        ("--model-access", str),
+        ("--maintenance", str),
+    ):
+        p_provision.add_argument(flag, type=kind, default=None)
+    p_provision.add_argument("--seed-topic", action="append", default=None)
+    p_provision.add_argument("--apply", action="store_true", help="apply the reviewed plan")
+    p_provision.add_argument("--plan-id", default=None, help="approval token from the dry run")
+    p_provision.add_argument("--rollback", action="store_true", help="rollback an applied plan")
+    p_provision.add_argument("--today", default=argparse.SUPPRESS)
+
     p_setup = sub.add_parser("setup", help="explicit opt-in integrations (local, zero-network)")
     _common_flags(p_setup)
     setup_sub = p_setup.add_subparsers(dest="setup_command")
@@ -1106,13 +1532,38 @@ def _error_doc(code: str, message: str, operation: str, help_entries: list[str])
     }
 
 
-def _parse_today(raw: str | None) -> date | None:
+def _parse_iso(raw: str | None, flag: str) -> date | None:
     if raw is None:
         return None
     try:
         return date.fromisoformat(raw)
     except ValueError as error:
-        raise UsageError(f"--today must be an ISO date (YYYY-MM-DD): {raw}") from error
+        raise UsageError(f"{flag} must be an ISO date (YYYY-MM-DD): {raw}") from error
+
+
+def _parse_today(raw: str | None) -> date | None:
+    return _parse_iso(raw, "--today")
+
+
+def _garden_today(args: argparse.Namespace) -> str:
+    """The gardening surfaces persist dates, so they use the same ISO validator."""
+    parsed = _parse_today(getattr(args, "today", None))
+    return parsed.isoformat() if parsed else ""
+
+
+def _garden_cooldown(args: argparse.Namespace) -> str | None:
+    """An omitted cooldown stays None; an explicit one is a date like any other.
+
+    The empty string is the documented way to clear a backoff, so it is passed
+    through rather than parsed.
+    """
+    raw = args.cooldown_until
+    if raw is None:
+        return None
+    if raw == "":
+        return ""
+    parsed = _parse_iso(str(raw), "--cooldown-until")
+    return parsed.isoformat() if parsed else ""
 
 
 def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Doc, int]:
@@ -1233,6 +1684,26 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
         if getattr(args, "config_command", None) != "show":
             raise UsageError("usage: megamind-axi config show")
         return cmd_config_show(root, root_label)
+    if command == "gap" or command == "gaps":
+        if args.gap_action == "create" and (not args.wiki or not args.topic):
+            raise UsageError("gap create requires --wiki and --topic")
+        if args.gap_action in {"transition", "attempt"} and not args.gap_id:
+            raise UsageError(f"gap {args.gap_action} requires GAP_ID")
+        # A lifecycle mutation is never implied: an omitted --status would
+        # otherwise silently reopen a resolved or rejected gap.
+        if args.gap_action == "transition" and not args.status:
+            raise UsageError("gap transition requires --status")
+        return cmd_gap(args, root, _garden_today(args))
+    if command == "research-wave":
+        return cmd_research_wave(args, root, _garden_today(args))
+    if command == "research-result":
+        return cmd_research_result(args, root)
+    if command == "provision-wiki":
+        if args.apply and args.rollback:
+            raise UsageError("provision-wiki --apply and --rollback are mutually exclusive")
+        if args.rollback and not args.plan_id:
+            raise UsageError("provision-wiki --rollback requires --plan-id")
+        return cmd_provision_wiki(args, root, _garden_today(args))
     if command == "setup":
         if getattr(args, "setup_command", None) != "skill":
             raise UsageError("usage: megamind-axi setup skill [--dest DIR]")
@@ -1259,6 +1730,18 @@ _ERROR_HELP: dict[str, list[str]] = {
     "frontmatter_invalid": [
         f"Run `{EXECUTABLE} doctor` to locate the file with unsupported frontmatter",
         "Fix the frontmatter block by hand; Megamind parses a small YAML subset",
+    ],
+    "garden_invalid": [
+        f"Run `{EXECUTABLE} doctor` to validate governed records",
+        "Check the typed gap, capacity, or bridge fields and retry",
+    ],
+    "gap_not_found": [f"Run `{EXECUTABLE} gap list` to inspect durable gap ids"],
+    "gap_transition_invalid": [
+        f"Run `{EXECUTABLE} gap list` and use an allowed lifecycle transition"
+    ],
+    "provision_recovery_required": [
+        "Review the preserved paths named in the transaction record before deciding",
+        f"Run `{EXECUTABLE} provision-wiki <name> <path> --rollback --plan-id <id>` to undo it",
     ],
 }
 
@@ -1295,6 +1778,7 @@ def main(argv: list[str] | None = None) -> int:
         CardError,
         InitError,
         PathEscapeError,
+        GardenError,
     ) as error:
         code = str(getattr(error, "code", "operation_failed"))
         exit_code = 2 if code in {"not_initialized", "registry_invalid"} else 1

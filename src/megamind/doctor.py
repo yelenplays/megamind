@@ -14,7 +14,9 @@ from pathlib import Path
 
 from .access import policy_findings
 from .capture import list_proposals
+from .card import CardError, load_wiki_card
 from .fsops import MEGAMIND_DIR, PathEscapeError, resolve_contained
+from .gardening import validate_gap_journal
 from .links import extract_links, page_name_table, resolve_link
 from .models import KNOWLEDGE_TYPES, LIFECYCLE_STATUSES, FrontmatterError, parse_document
 from .registry import (
@@ -22,6 +24,7 @@ from .registry import (
     ROUTER_HEADER,
     Registry,
     RegistryError,
+    RegistryNotInitialized,
     generate_router,
     load_registry,
 )
@@ -275,12 +278,38 @@ def _check_access_policy(registry: Registry, findings: list[Finding]) -> None:
             findings.append(entry)
 
 
+def _check_gap_journal(root: Path, findings: list[Finding]) -> None:
+    """The gap journal lives at whatever root the gap commands were given, so
+    both root shapes have to validate it."""
+    for message in validate_gap_journal(root):
+        findings.append(_error("gaps", f"{MEGAMIND_DIR}/gaps.jsonl", message))
+
+
 def run_doctor(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     try:
         registry = load_registry(root)
     except RegistryError as error:
-        return [_error("registry", f"{MEGAMIND_DIR}/registry.json", str(error))]
+        # A canonical single-wiki root has a card instead of a registry.
+        try:
+            card = load_wiki_card(root)
+        except CardError:
+            return [_error("registry", f"{MEGAMIND_DIR}/registry.json", str(error))]
+        if not isinstance(error, RegistryNotInitialized):
+            # A readable card never excuses a registry that exists and is broken.
+            findings.append(_error("registry", f"{MEGAMIND_DIR}/registry.json", str(error)))
+        for required in ("raw", "wiki", f"{MEGAMIND_DIR}/proposals", f"{MEGAMIND_DIR}/audit"):
+            if not (root / required).is_dir():
+                findings.append(
+                    _error("canonical-root", required, "required canonical directory is missing")
+                )
+        _check_gap_journal(root, findings)
+        if not card.name:
+            findings.append(
+                _error("card", f"{MEGAMIND_DIR}/wiki-card.json", "card has no wiki name")
+            )
+        return findings
+
     _check_schema_version(registry, findings)
     _check_budgets(registry, findings)
     _check_wikis(root, registry, findings)
@@ -290,6 +319,7 @@ def run_doctor(root: Path) -> list[Finding]:
     _check_pages(root, registry, findings)
     _check_proposals(root, findings)
     _check_symlinks(root, findings)
+    _check_gap_journal(root, findings)
     findings.sort(key=lambda f: (f.severity != "error", f.check, f.path, f.message))
     return findings
 

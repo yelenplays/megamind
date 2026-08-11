@@ -126,6 +126,8 @@ class WikiEntry:
     dependencies: list[str] = field(default_factory=list)
     context_budget: ContextBudget = field(default_factory=ContextBudget)
     catalog_visibility: str = ""
+    # Phase 3: provisional local wikis are not trusted until evaluated.
+    provisional: bool = False
 
 
 @dataclass
@@ -167,6 +169,7 @@ _WIKI_FIELDS_V2 = (
     "dependencies",
     "context_budget",
     "catalog_visibility",
+    "provisional",
 )
 
 
@@ -344,6 +347,10 @@ def _wiki_from_json(position: int, value: object, version: int) -> WikiEntry:
     wiki.catalog_visibility = _require_str(
         f"{label} catalog_visibility", data.get("catalog_visibility", "")
     )
+    provisional = data.get("provisional", False)
+    if not isinstance(provisional, bool):
+        raise RegistryError(f"{label} provisional must be a boolean")
+    wiki.provisional = provisional
     if "model_access" in data:
         wiki.model_access = _model_access_from_json(f"{label} model_access", data["model_access"])
     if "source_policy" in data:
@@ -432,6 +439,8 @@ def _validate_wiki_entry(
             f"wiki {name} has invalid catalog_visibility: {wiki.catalog_visibility} "
             f"(expected one of {', '.join(CATALOG_VISIBILITIES)})"
         )
+    if not isinstance(wiki.provisional, bool):
+        raise RegistryError(f"wiki {name} provisional must be a boolean")
 
 
 def validate_registry(registry: Registry) -> None:

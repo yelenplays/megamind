@@ -30,7 +30,8 @@ mypy            # strict, configured in pyproject.toml
   randomness, no network in core commands.
 - **Safety model**: every write goes through `megamind.fsops` (containment,
   atomic write, backup, audit). Dry-run stays the default for anything that
-  mutates a wiki; approval tokens gate applies. Do not weaken these.
+  mutates existing wiki content; approval tokens gate applies. Do not weaken
+  these.
 - **Zero runtime dependencies**: the core package uses the standard library
   only. Optional integrations belong behind extras (see the roadmap).
 - **Tests first**: behavior changes come with tests; bug fixes come with a

@@ -37,7 +37,7 @@ model are non-negotiable at every stage.
 - Known limitations: lexical card evidence only, no semantic reranking,
   preflight is host-invoked (no mandatory host enforcement yet)
 
-## v0.3 (this release): retrieval and confidence
+## v0.3 (shipped): retrieval and confidence
 
 - Route confidence with explicit deterministic thresholds: a fixed 0.75
   reliance floor, a 0.25 no-match floor, and a 0.05 ambiguity band, applied
@@ -62,6 +62,38 @@ model are non-negotiable at every stage.
   baseline; the semantic backend is similarity reranking, not embeddings;
   preflight is host-invoked (no mandatory host enforcement yet)
 
+## v0.4 (this release): governed autonomous gardening
+
+- Durable semantic-identity gap journals for missing, weak, stale, and
+  contradictory coverage, with priority, attempts, cooldowns, rejection,
+  reopen, and supersession lifecycle data
+- Deterministic bounded one-hop research waves. Megamind emits nominations and
+  host facts; it never dispatches workers, schedules work, or performs research
+- Typed capacity pause/refusal outcomes enforcing three fleet workers, one per
+  wiki, active captain priority, a measurable 25 percent quota reserve, and
+  capacity known through the wave
+- A replay-safe host bridge for nominations and research results. Eligible
+  results become immutable-source ingest proposals and never write `raw/`
+- Safe structured append-only `wiki/log.md` events, audit references, and
+  validation of every new record and transition
+- Qualified provisional local-wiki scaffolding with restrictive trust until
+  confidence coverage and evaluation succeed; no remote or account actions.
+  `provision-wiki` refuses a canonical wiki root, refuses to bootstrap or
+  silently migrate a registry, and validates the whole registry plan before
+  writing any scaffold
+- `provisional` is a consumed marker, not just a stored one: catalog rows,
+  route candidates, and preflight entries all carry it, and a provisional wiki
+  is only ever an explicit offer, never an authorized load
+- Machine-readable `gap`, `research-wave`, `research-result`, and
+  `provision-wiki` AXI documents, with v1 retrieval and federation behavior
+  unchanged
+- Known limitations, all deliberate boundaries: a wave stops at the direct gap
+  plus at most two first-order topics and defers the rest as nominations;
+  capacity is enforced from host-supplied measurements and is never measured by
+  Megamind; promotion out of `provisional` stays a deliberate card edit, made
+  once confidence coverage and a later evaluation clear it, with no command
+  behind it
+
 ## Later / undecided
 
 - Benchmark suite (bench-mini): a frozen synthetic corpus with a tiered query
@@ -73,11 +105,8 @@ model are non-negotiable at every stage.
   (the deterministic ladder stays the source of truth and the offline
   default; adapters only re-order already-authorized candidates and are
   always optional)
-- Micro-wiki promotion as a first-class evolve action (generate the index,
-  update the parent index, all through the normal plan/apply gate)
+- Micro-wiki promotion as a first-class evolve action
 - Multilingual stopword lists and configurable tokenization
-- Durable gap records and nomination workflows
-- Structured `wiki/log.md` event emission from Megamind commands
 - Watch mode for continuous capture suggestions
 - Editor integrations beyond the Agent Skill
 - Host-side mandatory preflight enforcement and per-host promotion

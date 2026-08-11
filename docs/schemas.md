@@ -97,6 +97,10 @@ v2 card fields, all optional:
   purpose only), or `hidden` (identity and all fields withheld; the projection
   states that a wiki is withheld rather than omitting the row silently).
   Personal wikis default to `redacted`; everything else to `full`.
+- `provisional`: additive boolean governance marker. A provisional wiki is
+  surfaced by route, catalog, and preflight and may be offered as an explicit
+  choice, but it is never an authorized load until confidence coverage and a
+  later evaluation pass (see "Governed gardening records" below).
 
 Loading validates types before use: every field must have the type shown
 above (a JSON boolean is never accepted as a budget), and unknown fields at
@@ -164,6 +168,190 @@ is the one field that is not: it reflects the host-selected `--semantic`
 backend, which is not a proof input, so a rerank that changes scores without
 changing the ranked order keeps the same `preflight_id`. Repeated inputs with
 the same backend selection stay byte-stable.
+
+## Governed gardening records (Phase 3)
+
+`.megamind/gaps.jsonl` is an append-only snapshot journal. The latest record
+for each `gap_id` is authoritative, while earlier lines retain the mutation
+history for crash recovery and audit. Every record has `schema: megamind/gap/v1`
+and these stable fields:
+
+```json
+{
+  "schema": "megamind/gap/v1",
+  "gap_id": "content-hash",
+  "wiki": "ProductWiki",
+  "topic": "release cleanup",
+  "kind": "missing",
+  "status": "open",
+  "priority": {"impact": 4, "urgency": 3, "repeat_demand": 2,
+               "coverage": 1, "confidence_risk": 4, "score": 30},
+  "attempts": [], "cooldown_until": "", "rejection": null,
+  "reopened_from": "", "superseded_by": "", "related_topics": [],
+  "created": "2026-01-01", "updated": "2026-01-01", "identity": "content-hash"
+}
+```
+
+The identity hashes normalized wiki, topic, and kind, so repeated reports
+coalesce without comparing page bodies. Lifecycle transitions are explicit;
+attempts, cooldown, rejection, reopen, and supersession are never discarded.
+`gap transition` always requires an explicit `--status`, so an omitted flag can
+never reopen a resolved or rejected gap. An omitted `--cooldown-until` keeps the
+recorded backoff; only an explicitly supplied value (including an explicit empty
+string) replaces or clears it.
+
+A transition to the status a gap already holds is an exact repeat: it appends no
+snapshot, keeps the recorded date, and never rewrites a rejection reason, a
+supersession target, or a cooldown, so `status: unchanged` comes back instead of
+a lifecycle move that did not happen. Only a field that status actually persists
+can make a repeat inexact - a different `--reason` on `rejected`, a different
+`--superseded-by` on `superseded`, or a different `--cooldown-until` on any
+status - and that refuses with `gap_transition_invalid` rather than overwriting
+a terminal fact. A flag the status does not persist changes nothing, so
+`--reason` on a repeated `open` or `paused` transition stays a no-op instead of
+refusing an edit it was never going to make.
+
+Dates are supplied by the host or CLI, never read from the clock, and every
+date a record carries - `created`, `updated`, `cooldown_until`, each attempt's
+`date`, and the rejection `date` - is parsed as ISO `YYYY-MM-DD` by one owner
+before any write, so a malformed date fails typed instead of becoming permanent
+journal state or a log heading, and two spellings of one day can never read as
+two values. `--today` and `--cooldown-until` both refuse a non-ISO value as a
+usage error before any side effect; the empty string stays the documented way to
+clear a cooldown. Replay revalidates the same fields, so a hand-edited journal
+fails at read rather than at the next mutation. A journal line that is not a
+JSON gap object, or that carries a date in any other form, is a typed
+`garden_invalid` error, and `doctor` reports it in both root shapes. `gap list`
+bounds its rows to 20 with a note and `--full`, and keeps the unbounded
+`attempts` history behind `--full`.
+
+`megamind/research-wave/v1` is a plan, not a dispatch instruction. It contains
+one direct nomination and bounded first-order nominations; deeper topics appear
+in `deferred_nominations` for later reprioritization. A host supplies a typed
+capacity fact. Unknown capacity, less than 25 percent measurable applicable
+quota reserve, active captain work, a full three-worker fleet, a worker already
+on the target wiki, or insufficient capacity through the wave produces a typed
+`paused` or `refused` result. Megamind never calls a quota tool or starts a
+worker.
+
+`megamind/research-nomination/v1` correlation IDs are stable within a wave.
+`megamind/research-result/v1` accepts only host-labelled eligible sources and
+bounds results to 20 sources. Eligible results create a replay-safe
+`.megamind/proposals/research-ingest-<id>.json` proposal with
+`immutable_raw_required: true`; no command fetches a URL or writes `raw/`.
+A result with no eligible source is `status: rejected` before any write, so no
+proposal, audit record, or log event is created: correlation is the idempotency
+key, and a proposal written for an empty result could never be repaired by the
+replay that finally carries a real source. Because correlation alone keys the
+file, a replay is bound to the whole immutable nomination identity: the same
+correlation with a different wiki, topic, or set of eligible sources refuses
+rather than letting the returned document claim an identity or a citation the
+stored proposal does not carry. Origins and summaries are
+redacted only where a credential assignment or a local filesystem path is
+structurally identified, so a cited origin such as
+`https://docs.example.com/home/getting-started` survives intact.
+
+A provisional registry entry carries `provisional: true`. It is created only
+when all local qualification inputs pass: accepted domain, repeat demand,
+multiple topics, overlap, scope and exclusions, owner, source policy,
+privacy/model access, seed topics, and maintenance.
+
+`provision-wiki` only ever extends an existing registry vault. It refuses a
+canonical single-wiki root (that root's `wiki-card.json` stays the one
+authority), refuses to bootstrap a vault that `init` has not created, and
+refuses a v1 registry with an instruction to run `migrate` explicitly first, so
+migration notes are never silently skipped. The whole registry plan is
+serialized and validated before any directory or file is written, so a rejected
+entry cannot leave an orphan scaffold behind. The new wiki's nested
+`.megamind/wiki-card.json` is written through the same serializer as every other
+canonical card, with paths rooted at the wiki directory, while the registry
+entry keeps its vault-relative paths.
+
+Planning is side-effect-free and yields a content-bound `plan_id`; `--apply`
+takes that id back as the approval token. The qualification criteria are
+required by mode rather than by the parser: planning and `--apply` both refuse
+with a typed `usage_error` naming every missing flag before anything is read or
+written, while `--rollback --plan-id <id>` is driven by the plan id and the
+positional name and path alone. Those positionals are the identity the rollback
+is checked against, not decoration: the recorded wiki name must match exactly
+and the recorded path must resolve to the same contained target (so `./Wiki`
+and `Wiki` are one target, while a traversal or an escaping symlink is a
+`path_escape` refusal). A pasted plan id from another transaction therefore
+refuses instead of undoing that wiki under this name, and the refusal happens
+before any backup is read, any file changes, any audit is appended, or the
+record is removed. The result echoes the recorded `wiki` and `path`, so a
+response can never agree with a host that believed it was undoing something
+else. `--apply` and `--rollback` are mutually exclusive. Because `--apply` re-derives the plan from the criteria and
+`--today`, the apply command printed in `help[]` carries both, so every emitted
+recovery command runs exactly as printed. The apply is a write-ahead
+transaction recorded in `.megamind/audit/provisional-wiki-<plan_id>.json`
+(`megamind/provisional-wiki-rollback/v1`), which carries the whole plan, the
+prior content of every file it will replace, and a `state` of `pending`,
+`applied`, `partial`, or `rolled_back`. The manifest and every required backup are
+persisted and flushed to disk before the first target mutation, every target is
+written atomically and flushed with its parent directory, and the record only
+switches to `applied` after every target has been verified to hold its planned
+bytes. The directory half of that flush needs a platform primitive: POSIX
+targets get it, Windows exposes none, so durability there is exactly the file
+flush and no stronger (`fsops.sync_directory` reports which it did rather than
+claiming a guarantee the platform cannot give). The reviewed plan is never
+mutated by the apply it authorized, so it keeps hashing to the `plan_id` that
+approved it. An apply that a signal or power loss interrupts is therefore
+always recoverable from the record alone:
+
+- re-running `--apply --plan-id <id>` with the same wiki and path resumes a
+  `pending` transaction to completion, or verifies an `applied` one file by
+  file and returns `status: noop`. The replay is reached before the plan is
+  recomputed, so the wiki the first apply registered never turns the second
+  into a `wiki already exists` failure;
+- an `applied` record over a target that is absent or still carries its prior
+  content is an incomplete commit, not a success: the same replay finishes it
+  and `--rollback` still undoes it, so a `noop` is never reported over content
+  that is not on disk;
+- a plan id recorded for a different wiki or path, and any file the transaction
+  did not itself write, refuse with a typed `garden_invalid` result;
+- `--rollback --plan-id <id>` undoes a `pending` or `applied` transaction
+  completely, restoring backed-up files and removing created ones, and refuses
+  when generated content was edited. It marks the record `rolled_back`, which
+  leaves the vault re-plannable: the same criteria produce the same `plan_id`
+  and a fresh apply;
+- recovery deletes only the exact files the manifest tracks, and prunes only
+  directories the transaction is recorded as having created and left empty
+  (`created_dirs`, written before the first mutation). Nothing is ever removed
+  recursively. A page authored inside the provisional wiki after the apply is
+  not the transaction's to delete: it is preserved, named in `preserved`, and
+  the result comes back as `status: partial` instead of `rolled_back`.
+  `preserved` is a bounded sample of at most 20 entries; `preserved_total`
+  carries the real count in the result and in the audit record alike, and a
+  note states the truncation explicitly whenever the total exceeds the sample;
+- the in-process undo that runs when an apply raises follows the same rule, and
+  it owns the record too. It removes the manifest only after a verified
+  complete undo. When it had to keep foreign content, or could not restore
+  every target it wrote, it marks the record `partial`, appends a
+  `provisional-wiki-undo` audit record carrying the same bounded `preserved`
+  sample and `preserved_total`, and raises `provision_recovery_required` with
+  the original failure as its cause. The surviving record is what makes the
+  retry work: `--apply --plan-id <id>` resumes the `partial` transaction
+  through the manifest before planning can refuse the directory the preserved
+  content keeps alive, and `--rollback --plan-id <id>` closes it instead.
+
+Provisional knowledge is not trusted until confidence coverage and a later
+evaluation clear it, and every consumer acts on that: catalog rows carry
+`provisional`, preflight matches and offers carry `provisional`, and `route`
+emits a `governance[]` sidecar with `path`, `provisional`, `trusted`, and
+`disposition` (`load` or `offer`) for every candidate it accounts for (plus
+`provisional` as an opt-in `--fields` column, so the default candidate columns
+stay stable). A provisional wiki is never an authorized load: in `route` it
+leaves the `load` packet and stays a governance-sidecar offer row keyed by its
+own path (the result degrades to `offer` when nothing trusted remains), and in
+`preflight` it stays an offer with no loadable paths. Both surfaces therefore
+keep a provisional candidate visible as an offer while authorizing loads only
+for trusted ones. This gate runs after the confidence
+thresholds and only narrows them, so it can produce an `offer` at or above the
+reliance floor; the additive `governance_downgrade` boolean states that cause
+as a typed field, and `notes` names it as a governance decision and never as a
+confidence one. Privacy-safe offers and research nominations may still name a
+provisional wiki explicitly.
 
 ## Canonical wiki root
 
@@ -259,8 +447,13 @@ It documents why the new wiki should exist and is only ever applied with
 
 One JSON object per line: `ts` (UTC ISO), `action` (`init`, `migrate`,
 `capture`, `evolve-apply`, `evolve-apply-proposal-status`, `router-refresh`,
-`adopt-apply`, `adopt-rollback`), and action-specific fields such as `path`,
-`proposal_id`, `plan_id`, and `backup`. Backups of every mutated file live in
+`adopt-apply`, `adopt-rollback`, `gap-transition`, `research-ingest-proposal`,
+`provisional-wiki-create`, `provisional-wiki-undo`,
+`provisional-wiki-rollback`), and action-specific fields such as `path`,
+`proposal_id`, `plan_id`, `gap_id`, `correlation_id`, `preserved`,
+`preserved_total`, and `backup`. Backups of every mutated file live in
 `.megamind/audit/backups/<name>.<content-hash>.bak`. Adoption additionally
 writes `.megamind/audit/adoption-<plan_id>.json`, the content-hashed rollback
-record that `adopt --rollback` verifies before removing generated files.
+record that `adopt --rollback` verifies before removing generated files;
+`provision-wiki` writes the equivalent transaction record described under
+"Governed gardening records" above.

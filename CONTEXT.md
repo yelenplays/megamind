@@ -1,7 +1,8 @@
 # Context: Megamind domain language
 
-The settled vocabulary for the federation foundation and the retrieval and
-confidence layer above it. Each term means exactly this anywhere it appears
+The settled vocabulary for the federation foundation, the retrieval and
+confidence layer above it, and the governed gardening layer above that. Each
+term means exactly this anywhere it appears
 in the project; the avoid lines name the common misreadings. This file covers
 only what the current release implements.
 
@@ -89,3 +90,26 @@ The optional local similarity pass (`--semantic`) that reorders only the
 candidates the lexical baseline already surfaced and access filtering already
 authorized, with a typed disabled/ok/unavailable/error outcome.
 _Avoid_: retrieval layer, access decision, cloud embeddings
+
+**Knowledge gap**:
+A durable record that one wiki's coverage of one topic is missing, weak,
+stale, or contradictory, identified by normalized wiki, topic, and kind rather
+than by page text, and carrying its own lifecycle.
+_Avoid_: ticket, TODO page
+
+**Research wave**:
+One deterministic hop of planned work for a gap: the direct gap plus bounded
+first-order topics, with deeper topics deferred. Megamind plans it from
+host-supplied capacity facts and never dispatches it.
+_Avoid_: job queue, crawl, scheduled run
+
+**Nomination**:
+A typed, correlation-stable suggestion that a host may research one gap topic.
+Never a dispatch, a worker, or a budget commitment.
+_Avoid_: task assignment, work order
+
+**Provisional wiki**:
+A locally created wiki that passed every qualification criterion but is not
+trusted active knowledge yet: it is surfaced and may be offered, never an
+authorized load, until confidence coverage and an evaluation pass clear it.
+_Avoid_: draft wiki, private wiki

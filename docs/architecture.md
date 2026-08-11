@@ -27,6 +27,7 @@ output boundary (see [axi.md](axi.md)).
 | `megamind.adopt` | Non-destructive adoption of existing wiki directories, with rollback |
 | `megamind.catalog` | The generated read-only fleet catalog and its drift-checked projection |
 | `megamind.preflight` | Catalog-level, model-access-aware routing for substantive requests |
+| `megamind.gardening` | Durable gaps, one-hop host plans, research bridge, safe event log, provisional local-wiki qualification |
 | `megamind.toon` | TOON encoder; the output boundary renders typed dicts |
 | `megamind.skillpack` | Packaged Agent Skill source for `setup skill` |
 | `megamind.cli` | The `megamind-axi` AXI boundary: typed documents, TOON/JSON, exits |
@@ -185,6 +186,27 @@ catalog snapshot, model class, and result. Preflight never mutates a wiki,
 never writes a host record, never calls a model, and never touches the
 network; whether and when a host runs preflight is the host's own policy.
 
+## Governed autonomous gardening
+
+Phase 3 keeps autonomy inside a local, approval-aware sandbox. `gardening.py`
+only consumes host-supplied capacity and research facts. It emits bounded
+nominations and typed pause/refusal outcomes; it has no scheduler, worker
+launcher, quota client, network adapter, or provider dependency. A wave is one
+hop: the direct gap and first-order related topics are planned together, while
+deeper topics are deferred nominations.
+
+Gap records use semantic identity hashes and an append-only snapshot journal.
+Transitions are validated, replayable, and linked to audit and safe log events.
+Research results are eligibility-filtered and become immutable-source ingest
+proposals. Raw sources are never written by Megamind. Provisional wiki creation
+validates every qualification input and the complete registry plan before any
+byte is written, refuses a canonical wiki root and a v1 registry rather than
+creating an ambiguous root shape or migrating one silently, writes the canonical
+structure and restrictive routing registration together, and marks trust false
+until confidence coverage and evaluation pass. `provisional` is read back by
+every consumer: catalog, route, and preflight surface it, and none of them ever
+turns a provisional wiki into an authorized load.
+
 ## Safety model
 
 - `fsops.resolve_contained` resolves symlinks first and rejects any path that
@@ -200,16 +222,21 @@ network; whether and when a host runs preflight is the host's own policy.
   never leak machine-specific locations.
 - `doctor` re-checks the invariants: containment, unsafe symlinks, router
   consistency, metadata validity, link integrity, proposal hygiene, registry
-  schema version, access-policy contradictions, and wiki-shaped directories
-  that were never registered.
+  schema version, access-policy contradictions, gap-journal integrity, and
+  wiki-shaped directories that were never registered. It reports on both root
+  shapes: a root that carries a card and no registry is validated as a
+  canonical root (required directories, a named card, and the same gap
+  journal) instead of failing as an uninitialized registry.
 
 ## Determinism
 
 Commands avoid wall-clock dependence where it matters: proposal ids and plan
 ids are content hashes, and `capture`, `evolve`, `route`, `review`, `catalog`,
-`preflight`, and the home view accept `--today` for reproducible date handling
-in tests and benchmarks. `route`, `catalog`, and `preflight` go further and
-read no clock at all: without `--today` freshness is simply reported as
-unknown rather than computed. Semantic reranking is equally deterministic: the
+`preflight`, `gap`, `research-wave`, `provision-wiki`, and the home view accept
+`--today` for reproducible date handling in tests and benchmarks. `route`,
+`catalog`, `preflight`, and the gardening surfaces go further and read no clock
+at all: without `--today` freshness is simply reported as unknown rather than
+computed, and a gap record, wave id, or provisioning plan keeps an empty date
+rather than inventing one. Semantic reranking is equally deterministic: the
 char-ngram backend is a pure function of its inputs and rerank ties keep the
 lexical order. The only non-deterministic output is audit timestamps.
