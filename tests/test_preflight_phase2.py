@@ -6,9 +6,11 @@ import json
 from datetime import date
 from pathlib import Path
 
-from megamind.catalog import RootRef
+from megamind.card import load_wiki_card, save_wiki_card
+from megamind.catalog import RootRef, discover_roots
 from megamind.preflight import run_preflight
 from megamind.registry import ContextBudget, WikiEntry, load_registry, save_registry
+from megamind.scaffold import init_wiki_root
 from megamind.semantic import NgramBackend
 
 TODAY = date(2026, 8, 10)
@@ -213,6 +215,33 @@ def test_matches_without_a_load_path_never_carry_a_budget(vault: Path) -> None:
     assert digest.matches[0]["name"] == "ResearchDigest"
     assert digest.matches[0]["allows"] == []
     assert "context_budget" not in digest.matches[0]
+
+
+def test_canonical_card_roots_report_card_provenance_and_budget(tmp_path: Path) -> None:
+    """A wiki-card root is named as such, and its own budget is the one surfaced."""
+    estate = tmp_path / "estate"
+    estate.mkdir()
+    init_wiki_root(estate / "SoloWiki", "SoloWiki")
+    card = load_wiki_card(estate / "SoloWiki")
+    card.purpose = "Answers synthetic cider press questions."
+    card.triggers = ["cider"]
+    card.sensitivity = "public-reference"
+    card.context_budget = ContextBudget(max_candidates=5, max_context_chars=5555)
+    save_wiki_card(estate / "SoloWiki", card)
+
+    result = run_preflight(discover_roots(estate), "cider press care", "local")
+    assert result.status == "matched"
+    match = result.matches[0]
+    assert match["access"] == "full"
+    evidence = match["evidence"]
+    assert isinstance(evidence, dict)
+    assert evidence["provenance"] == {
+        "source": "canonical-card",  # not the registry projection
+        "scope": "declared card metadata only",
+        "page_content": False,
+    }
+    assert match["context_budget"] == {"max_candidates": 5, "max_context_chars": 5555}
+    assert "cider" not in json.dumps(evidence)
 
 
 def test_budget_and_evidence_repeat_byte_stable(vault: Path) -> None:

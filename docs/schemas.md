@@ -113,7 +113,7 @@ level of a JSON object with `"schema": "megamind/wiki-card/v2"` and
 and cloud-restrictive until the owner classifies it. Malformed cards raise
 `card_invalid`.
 
-### Preflight match packet
+## Preflight result packet (`megamind/preflight-result/v2`)
 
 `preflight-result/v2` carries `context_budget` only on an authorized `matches[]`
 entry that actually holds a load path in `allows`. It is the card's exact
@@ -123,7 +123,8 @@ and no-match outcomes carry no budget or load path, and neither do pointer
 matches or digest-only matches that declare no digest: they expose no loadable
 path, so there is nothing for a budget to bound.
 
-Each authorized match also carries a bounded `evidence` summary:
+Each `matches[]` and `offers[]` entry also carries a bounded `evidence`
+summary:
 
 ```json
 {
@@ -142,16 +143,19 @@ Each authorized match also carries a bounded `evidence` summary:
 ```
 
 The summary preserves routing class, coverage, and card provenance without
-including raw request-derived tokens, page content, roots, or paths. It is
-additive: the sibling `matches[].reasons` keeps its v2 semantics of up to five
-literal lexical reason strings, so existing consumers read the same values they
-always did. Confidence and freshness remain authoritative alongside it. The
-existing v2 schema and proof identity are unchanged: `preflight_id` continues
-to bind the request hash, catalog hash, model class, and result. Both new
-fields are already covered by those inputs - the budget is part of the card and
-therefore of `catalog_hash`, and the summary is a pure function of the request,
-catalog, and model class - so neither is added to the proof and repeated inputs
-stay byte-stable.
+including raw request-derived tokens, page content, roots, or paths. The
+sibling `matches[].reasons` keeps its v2 semantics of up to five literal
+lexical reason strings, and confidence and freshness remain authoritative
+alongside it. `evidence.semantic` is unchanged, but `evidence.lexical` no
+longer repeats those reason strings: it mirrors `signal_classes`, so the
+request-derived tokens live in `reasons` only.
+
+The schema version stays `preflight-result/v2` and the proof identity is
+unchanged: `preflight_id` continues to bind the request hash, catalog hash,
+model class, and result. The budget and the summary are already covered by
+those inputs - the budget is part of the card and therefore of `catalog_hash`,
+and the summary is a pure function of the request, catalog, and model class -
+so neither is added to the proof and repeated inputs stay byte-stable.
 
 ## Canonical wiki root
 
