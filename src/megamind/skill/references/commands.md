@@ -222,6 +222,14 @@ and preflight surface it and only ever offer it, never load it. No remote
 repository, collaborators, account action, publication, merge, or spend is
 possible.
 
+## megamind-axi bench run|check
+
+`bench run --fixtures DIR --queries FILE --thresholds FILE [--out FILE]` invokes the real public `preflight` and `route` interfaces over the frozen synthetic release fixture. It emits `megamind/benchmark-result/v1` with separate exact, near, paraphrase, ambiguous, no-match, and privacy metrics, authorized context accounting, canary/access safety counts, determinism, and local grep/full-vault baselines. `--repeat` requires byte-identical reruns. `bench check --results FILE --thresholds FILE` emits `megamind/benchmark-check/v1` and exits 1 when a frozen gate fails. No model, network, or external service is used.
+
+## megamind-axi experiment plan|validate|score|record
+
+`experiment plan` freezes a versioned task set, rubric, thresholds, model/provider identifier, tools, effort, seed, and distinct no-wiki/current-wiki/updated-wiki snapshot roots. It creates opaque deterministic arm labels and isolated arm output roots. The host executes identical tasks and supplies outputs; Megamind never invokes a worker or model. `validate --plan PLAN --outputs FILE...` rejects missing tasks, duplicate arms, changed snapshot digests, malformed context accounting, prompt/canary leakage, model-access or privacy violations, and cross-arm contamination. `score` applies only the frozen rubric and promotion gates, returning `promoted` or `rollback-required`; incomplete inputs are invalid/unsettled rather than silently promoted. `record --score FILE --audit-root DIR` appends a bounded safe hash-chained event with a rollback reference and no prompt, answer, secret, or sensitive-content copy.
+
 ## megamind-axi setup skill [--dest DIR]
 
 Without `--dest`: a `megamind/setup-plan/v1` document describing what would
@@ -236,5 +244,5 @@ directory. Setup never makes network calls or edits shell/provider config.
 `plan_mismatch`, `approval_required`, `evolve_invalid`, `adopt_invalid`,
 `init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
 `garden_invalid`, `gap_not_found`, `gap_transition_invalid`,
-`provision_recovery_required`), a sanitized `message`, and `help[]` with
+`provision_recovery_required`, `evaluation_invalid`), a sanitized `message`, and `help[]` with
 corrective commands.
