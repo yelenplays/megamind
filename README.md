@@ -62,6 +62,7 @@ megamind-axi capture --text "Pricing moves to two tiers next quarter." --type de
 megamind-axi review             # proposals, duplicates, stale pages, dead links
 megamind-axi evolve <proposal-id>                          # dry-run diff + plan id
 megamind-axi evolve <proposal-id> --apply --plan-id <id>   # apply exactly that diff
+megamind-axi evolve <proposal-id> --rollback --plan-id <id> # content-verified rollback
 megamind-axi doctor             # integrity validation; exit 1 on errors
 ```
 
@@ -231,9 +232,15 @@ fields in `.megamind/wiki-card.json` instead. See
 - Writes are atomic; every mutation of an existing file leaves a backup under
   `.megamind/audit/backups/` and an audit record in `.megamind/audit/log.jsonl`.
 - `evolve` is dry-run by default and requires the plan id from the dry run as
-  an approval token, so what you apply is exactly what you reviewed. Creating
-  a new top-level wiki additionally requires `--approve-new-wiki`; the apply
-  then registers the wiki with its card and index skeletons in the same step.
+  an approval token, so what you apply is exactly what you reviewed. Apply uses
+  a durable write-ahead transaction. `--rollback --plan-id` restores the exact
+  pre-change compiled tree only while every target still matches that
+  transaction, retains the proposal and append-only evidence, and refuses
+  foreign content. Creating a new top-level wiki additionally requires
+  `--approve-new-wiki`; the apply then registers the wiki with its card and
+  index skeletons in the same step. Canonical wiki roots route, capture,
+  review, and evolve directly from their authoritative card, while `evolve`
+  refuses their immutable `raw/` layer.
 - `adopt` follows the same gate for onboarding an existing wiki directory and
   only ever adds files; `adopt --rollback` removes exactly what it created.
 - Access policy is enforced by the card, not the host: unknown or contradictory

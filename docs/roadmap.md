@@ -132,6 +132,24 @@ model are non-negotiable at every stage.
   along with generalization beyond the frozen corpus, is left to the
   governed Phase 5 pilot
 
+## Phase 5 governed pilot verification
+
+- A restricted two-card pilot verified cloud digest-only routing, full compiled
+  routing, negative and ambiguous cases, declared context budgets, governed gap
+  lifecycles, one-hop capacity decisions, replay-safe research proposals, and
+  exact compiled-tree rollback without reading raw content.
+- The pilot exposed and repaired three public-CLI gaps: canonical wiki roots now
+  support local route/capture/review/evolve from their authoritative card,
+  canonical route honors the card context budget, and evolve now enforces the
+  immutable raw boundary plus durable content-verified rollback and interrupted
+  recovery.
+- A real blinded three-arm run is preregistered and prepared. Model execution
+  and grading remain host-owned under ADR 0009; promotion status stays pending
+  until all sealed arm outputs are returned and every frozen gate passes.
+- Privacy-safe maintained evidence is summarized in
+  [phase5-pilot-verification.md](phase5-pilot-verification.md). Task-private
+  prompts, outputs, keys, maps, roots, and content are not committed.
+
 ## Later / undecided
 
 - Larger bench-mid corpus and seeded scale curves

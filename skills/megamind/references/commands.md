@@ -125,13 +125,19 @@ Dry run by default: `megamind/evolve-plan/v1` with `plan_id`, a diff bounded
 to 60 lines (`diff_truncated`, `--full` lifts), and `creates_new_wiki`.
 Flags: `--dest <page.md|WikiName>`, `--supersedes <page.md>`,
 `--apply --plan-id <id>` (id must match the recomputed plan),
-`--approve-new-wiki`, `--today <YYYY-MM-DD>`.
-Apply returns `megamind/evolve-result/v1`; it backs up changed files under
-`.megamind/audit/backups/` and appends to `.megamind/audit/log.jsonl`.
+`--rollback --plan-id <id>`, `--approve-new-wiki`, `--today <YYYY-MM-DD>`.
+Apply returns `megamind/evolve-result/v1`; it backs up changed files, persists
+an `evolve-<plan-id>.json` write-ahead transaction, appends audit records, and
+returns pre-change/applied controlled-tree SHA-256 values. Interrupted apply
+replay resumes from that record. Rollback verifies every target, refuses
+foreign content or stale/tampered ids, restores the proposal and exact
+pre-change controlled-tree hash, and retains append-only evidence.
 Applying a new top-level wiki also registers it in the same apply: the
 registry entry, card and index skeletons, and regenerated router are part of
 the reviewed diff and covered by the `plan_id`.
-Re-applying an applied proposal is `status: noop`, exit 0.
+Re-applying an applied proposal is `status: noop`, exit 0. At a canonical wiki
+root, route/capture/review/evolve use the authoritative card directly, route
+honors its context budget, and evolve rejects every `raw/` target.
 
 ## megamind-axi review [--today D] [--full]
 

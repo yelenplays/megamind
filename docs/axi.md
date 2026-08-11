@@ -19,7 +19,7 @@ with a stable `schema_version`:
 | `megamind/route-result/v2` | `route` |
 | `megamind/capture-result/v1` | `capture` |
 | `megamind/evolve-plan/v1` | `evolve` (dry run) |
-| `megamind/evolve-result/v1` | `evolve --apply` |
+| `megamind/evolve-result/v1` | `evolve --apply`, `evolve --rollback` |
 | `megamind/review-report/v1` | `review` |
 | `megamind/doctor-report/v1` | `doctor` |
 | `megamind/catalog/v1` | `catalog` |
@@ -201,6 +201,16 @@ the full component rationale.
    `--no-help-hints` suppresses it.
 10. **Consistent help**: `--help` on every command is short and
     example-driven.
+
+`evolve --apply` is a durable transaction. Its result additively carries
+`pre_change_tree_sha256` and `applied_tree_sha256` over the controlled compiled
+paths. Replaying an interrupted apply resumes from the write-ahead record.
+`evolve --rollback --plan-id` verifies every target before writing, refuses
+foreign content or a stale/tampered token, restores the proposal and exact
+pre-change controlled-tree hash, and returns `restored_tree_sha256` while
+retaining append-only audit and transaction evidence. At a canonical wiki root,
+`route`, `capture`, `review`, and `evolve` use the authoritative card directly;
+`route` honors its card context budget and `evolve` rejects `raw/`.
 
 ## Error codes
 

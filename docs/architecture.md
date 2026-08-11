@@ -121,7 +121,11 @@ explicit human approval (`--approve-new-wiki`).
 the reviewed diff; if the vault changed in between, the id no longer matches
 and the apply is refused. Merges embed an idempotency marker
 (`<!-- megamind:proposal:<id> -->`), so re-planning an already-merged proposal
-yields a no-op. Supersession marks the old page `superseded` with a
+yields a no-op. Apply first persists a durable transaction over the exact old
+and new bytes. `evolve --rollback --plan-id` restores that pre-change compiled
+tree, keeps the proposal and transaction evidence, and refuses before writing
+when any target contains foreign content. Interrupted applies resume from the
+same transaction. Supersession marks the old page `superseded` with a
 `superseded_by` pointer instead of deleting anything. An approved new
 top-level wiki is registered in the same apply: the registry entry, the card
 and index skeletons, and the regenerated router are plan changes covered by
@@ -140,7 +144,11 @@ compiled `wiki/` layer with its content-oriented `index.md` and append-only
 `log.md`, and `.megamind/` state headed by the authoritative
 `wiki-card.json`. Both shapes validate against the same v2 field set; `init
 --wiki` scaffolds new canonical roots and `adopt` onboards existing ones
-without touching their content.
+without touching their content. The local `route`, `capture`, `review`, and
+`evolve` surfaces adapt that one card into the same internal routing interface;
+for `route`, its declared context budget replaces the registry defaults.
+Evolution in this shape is compiled-only and rejects every `raw/` destination
+or supersession target.
 
 ## Access policy
 

@@ -10,6 +10,7 @@ additionally requires an explicit ``--approve-new-wiki`` flag.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -17,7 +18,15 @@ from datetime import date
 from pathlib import Path
 
 from .capture import PROPOSALS_DIR
-from .fsops import append_audit, atomic_write, backup_existing, content_hash, resolve_contained
+from .fsops import (
+    MEGAMIND_DIR,
+    append_audit,
+    atomic_write,
+    backup_existing,
+    content_hash,
+    remove_contained,
+    resolve_contained,
+)
 from .models import Document, parse_document
 from .registry import (
     REGISTRY_PATH,
@@ -30,6 +39,7 @@ from .registry import (
 )
 
 PROPOSAL_MARKER = "<!-- megamind:proposal:{id} -->"
+EVOLVE_TRANSACTION_SCHEMA = "megamind/evolve-rollback/v1"
 
 
 class EvolveError(ValueError):
@@ -130,7 +140,8 @@ def _destination_page(registry: Registry, destination: str, proposal_body: str) 
 
 def _is_inside_registered_wiki(registry: Registry, page: str) -> bool:
     return any(
-        page == wiki.path or page.startswith(wiki.path.rstrip("/") + "/") for wiki in registry.wikis
+        wiki.path == "." or page == wiki.path or page.startswith(wiki.path.rstrip("/") + "/")
+        for wiki in registry.wikis
     )
 
 
@@ -318,7 +329,14 @@ def plan(
 
     hint = destination or str(document.frontmatter.get("suggested_destination", ""))
     page_rel = _destination_page(registry, hint, document.body)
+    canonical_root = any(wiki.path == "." for wiki in registry.wikis)
     page_path = resolve_contained(root, page_rel)
+    raw_root = resolve_contained(root, "raw")
+    compiled_root = resolve_contained(root, "wiki")
+    if canonical_root and (page_path == raw_root or raw_root in page_path.parents):
+        raise EvolveError("raw/ is immutable; evolve may write only compiled wiki/ pages")
+    if canonical_root and compiled_root not in page_path.parents:
+        raise EvolveError("canonical evolution may write only compiled wiki/ pages")
     creates_new_wiki = not _is_inside_registered_wiki(registry, page_rel)
     if creates_new_wiki:
         notes.append(
@@ -353,6 +371,10 @@ def plan(
     if supersedes:
         old_rel = supersedes
         old_path = resolve_contained(root, old_rel)
+        if canonical_root and (old_path == raw_root or raw_root in old_path.parents):
+            raise EvolveError("raw/ is immutable and cannot be superseded")
+        if canonical_root and compiled_root not in old_path.parents:
+            raise EvolveError("canonical evolution may supersede only compiled wiki/ pages")
         if not old_path.is_file():
             raise EvolveError(f"page to supersede not found: {old_rel}")
         if old_path == page_path:
@@ -392,6 +414,238 @@ def plan(
     )
 
 
+def _tree_digest(entries: list[dict[str, object]], value_key: str) -> str:
+    state = [
+        {
+            "path": str(entry["path"]),
+            "sha256": (
+                hashlib.sha256(str(entry[value_key]).encode("utf-8")).hexdigest()
+                if entry[value_key] is not None
+                else None
+            ),
+        }
+        for entry in entries
+        if entry["role"] != "proposal"
+    ]
+    payload = json.dumps(state, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _current_tree_digest(root: Path, entries: list[dict[str, object]]) -> str:
+    state = []
+    for entry in entries:
+        if entry["role"] == "proposal":
+            continue
+        current = _entry_current(root, entry)
+        state.append(
+            {
+                "path": str(entry["path"]),
+                "sha256": (
+                    hashlib.sha256(current.encode("utf-8")).hexdigest()
+                    if current is not None
+                    else None
+                ),
+            }
+        )
+    payload = json.dumps(state, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _evolve_manifest_rel(plan_id: str) -> Path:
+    return Path(MEGAMIND_DIR) / "audit" / f"evolve-{plan_id}.json"
+
+
+def _read_evolve_manifest(root: Path, plan_id: str) -> dict[str, object] | None:
+    path = resolve_contained(root, _evolve_manifest_rel(plan_id))
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise EvolveError("evolution transaction manifest is unreadable") from error
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != EVOLVE_TRANSACTION_SCHEMA
+        or value.get("plan_id") != plan_id
+        or value.get("state") not in {"pending", "applied", "rolled_back"}
+        or not isinstance(value.get("proposal_id"), str)
+        or not isinstance(value.get("action"), str)
+        or not isinstance(value.get("destination"), str)
+        or not isinstance(value.get("pre_change_tree_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("pre_change_tree_sha256", "")))
+        or not isinstance(value.get("applied_tree_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("applied_tree_sha256", "")))
+        or not isinstance(value.get("entries"), list)
+    ):
+        raise EvolveError("evolution transaction manifest is invalid")
+    for entry in value["entries"]:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("path"), str)
+            or (entry.get("old") is not None and not isinstance(entry.get("old"), str))
+            or not isinstance(entry.get("new"), str)
+            or not isinstance(entry.get("backup", ""), str)
+            or entry.get("role") not in {"compiled", "proposal", "registration"}
+        ):
+            raise EvolveError("evolution transaction manifest is malformed")
+    return value
+
+
+def _write_evolve_manifest(root: Path, manifest: dict[str, object]) -> None:
+    atomic_write(
+        root,
+        _evolve_manifest_rel(str(manifest["plan_id"])),
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        durable=True,
+    )
+
+
+def _manifest_matches_proposal(manifest: dict[str, object], proposal_ref: str) -> None:
+    proposal_id = str(manifest["proposal_id"])
+    if proposal_ref not in {
+        proposal_id,
+        f"{proposal_id}.md",
+        (PROPOSALS_DIR / f"{proposal_id}.md").as_posix(),
+    }:
+        raise PlanMismatch("plan id belongs to a different proposal")
+
+
+def _entry_current(root: Path, entry: dict[str, object]) -> str | None:
+    path = resolve_contained(root, str(entry["path"]))
+    if path.exists() and not path.is_file():
+        raise EvolveError(
+            f"evolution transaction refused: {entry['path']} changed outside the plan"
+        )
+    return path.read_text(encoding="utf-8") if path.is_file() else None
+
+
+def _resume_evolve_manifest(root: Path, manifest: dict[str, object]) -> list[str]:
+    if manifest["state"] == "rolled_back":
+        raise PlanMismatch("evolution plan was already rolled back")
+    entries = manifest["entries"]
+    assert isinstance(entries, list)
+    typed_entries = [entry for entry in entries if isinstance(entry, dict)]
+    current = [_entry_current(root, entry) for entry in typed_entries]
+    for entry, value in zip(typed_entries, current, strict=True):
+        if value not in {entry["old"], entry["new"]}:
+            raise EvolveError(
+                f"evolution recovery refused: {entry['path']} changed outside the plan"
+            )
+    changed: list[str] = []
+    for entry, value in zip(typed_entries, current, strict=True):
+        if value == entry["new"]:
+            continue
+        atomic_write(root, str(entry["path"]), str(entry["new"]), durable=True)
+        changed.append(str(entry["path"]))
+    if manifest["state"] != "applied":
+        for entry in typed_entries:
+            action = (
+                "evolve-apply-proposal-status" if entry["role"] == "proposal" else "evolve-apply"
+            )
+            append_audit(
+                root,
+                action,
+                {
+                    "plan_id": str(manifest["plan_id"]),
+                    "proposal_id": str(manifest["proposal_id"]),
+                    "plan_action": str(manifest["action"]),
+                    "path": str(entry["path"]),
+                    "backup": str(entry.get("backup") or "") or None,
+                },
+            )
+        manifest["state"] = "applied"
+        _write_evolve_manifest(root, manifest)
+    return [
+        str(entry["path"])
+        for entry in typed_entries
+        if entry["role"] != "proposal" and str(entry["path"]) in changed
+    ]
+
+
+def resume_evolution(root: Path, plan_id: str, proposal_ref: str) -> dict[str, object] | None:
+    """Resume an interrupted apply from its durable write-ahead record."""
+    manifest = _read_evolve_manifest(root, plan_id)
+    if manifest is None:
+        return None
+    _manifest_matches_proposal(manifest, proposal_ref)
+    was_applied = manifest["state"] == "applied"
+    changed = _resume_evolve_manifest(root, manifest)
+    return {
+        "status": "noop" if was_applied and not changed else "applied",
+        "action": str(manifest["action"]),
+        "pre_change_tree_sha256": str(manifest["pre_change_tree_sha256"]),
+        "applied_tree_sha256": str(manifest["applied_tree_sha256"]),
+        "proposal_id": str(manifest["proposal_id"]),
+        "destination": str(manifest["destination"]),
+        "plan_id": plan_id,
+        "applied": changed,
+    }
+
+
+def evolution_tree_hashes(root: Path, plan_id: str) -> dict[str, str]:
+    manifest = _read_evolve_manifest(root, plan_id)
+    if manifest is None:
+        return {}
+    return {
+        "pre_change_tree_sha256": str(manifest["pre_change_tree_sha256"]),
+        "applied_tree_sha256": str(manifest["applied_tree_sha256"]),
+    }
+
+
+def rollback_evolution(root: Path, plan_id: str, proposal_ref: str) -> dict[str, object]:
+    """Restore exactly the bytes an evolution transaction replaced or created."""
+    manifest = _read_evolve_manifest(root, plan_id)
+    if manifest is None:
+        raise PlanMismatch("evolution plan has no rollback transaction")
+    _manifest_matches_proposal(manifest, proposal_ref)
+    if manifest["state"] == "rolled_back":
+        raise PlanMismatch("evolution plan was already rolled back")
+    entries = manifest["entries"]
+    assert isinstance(entries, list)
+    typed_entries = [entry for entry in entries if isinstance(entry, dict)]
+    current = [_entry_current(root, entry) for entry in typed_entries]
+    for entry, value in zip(typed_entries, current, strict=True):
+        if value not in {entry["old"], entry["new"]}:
+            raise EvolveError(
+                f"rollback refused: {entry['path']} changed outside the approved plan"
+            )
+    restored: list[str] = []
+    for entry, value in reversed(list(zip(typed_entries, current, strict=True))):
+        if value == entry["old"]:
+            continue
+        old = entry["old"]
+        if old is None:
+            remove_contained(root, str(entry["path"]), durable=True)
+        else:
+            atomic_write(root, str(entry["path"]), str(old), durable=True)
+        if entry["role"] != "proposal":
+            restored.append(str(entry["path"]))
+    manifest["state"] = "rolled_back"
+    _write_evolve_manifest(root, manifest)
+    restored.sort()
+    append_audit(
+        root,
+        "evolve-rollback",
+        {
+            "plan_id": plan_id,
+            "proposal_id": str(manifest["proposal_id"]),
+            "files": restored,
+            "manifest": _evolve_manifest_rel(plan_id).name,
+        },
+    )
+    restored_digest = _current_tree_digest(root, typed_entries)
+    return {
+        "status": "rolled_back",
+        "action": str(manifest["action"]),
+        "pre_change_tree_sha256": str(manifest["pre_change_tree_sha256"]),
+        "restored_tree_sha256": restored_digest,
+        "proposal_id": str(manifest["proposal_id"]),
+        "destination": str(manifest["destination"]),
+        "plan_id": plan_id,
+        "rolled_back": restored,
+    }
+
+
 def apply_plan(
     root: Path,
     registry: Registry,
@@ -400,7 +654,7 @@ def apply_plan(
     approve_new_wiki: bool = False,
     today: date | None = None,
 ) -> list[str]:
-    """Apply a previously reviewed plan. The approved plan id must match exactly."""
+    """Apply a reviewed plan through a durable, rollback-capable transaction."""
     if computed.action == "noop":
         return []
     if approved_plan_id != computed.plan_id:
@@ -413,41 +667,53 @@ def apply_plan(
             "applying would create a new top-level wiki; re-run with --approve-new-wiki "
             "after human approval"
         )
-    applied: list[str] = []
+    existing = _read_evolve_manifest(root, computed.plan_id)
+    if existing is not None:
+        _manifest_matches_proposal(existing, computed.proposal_id)
+        return _resume_evolve_manifest(root, existing)
+
+    entries: list[dict[str, object]] = []
+    registration_paths = {REGISTRY_PATH.as_posix(), ROUTER_FILENAME}
     for change in computed.changes:
-        backup = backup_existing(root, change.path)
-        atomic_write(root, change.path, change.new)
-        applied.append(change.path)
-        append_audit(
-            root,
-            "evolve-apply",
+        backup = backup_existing(root, change.path, durable=True)
+        entries.append(
             {
-                "plan_id": computed.plan_id,
-                "proposal_id": computed.proposal_id,
-                "plan_action": computed.action,
                 "path": change.path,
-                "backup": backup.name if backup else None,
-            },
+                "old": change.old,
+                "new": change.new,
+                "backup": backup.name if backup else "",
+                "role": "registration" if change.path in registration_paths else "compiled",
+            }
         )
-    # Mark the proposal applied (outside the plan hash so apply day never shifts the id).
+
     proposal_rel = (PROPOSALS_DIR / f"{computed.proposal_id}.md").as_posix()
     proposal_file = resolve_contained(root, proposal_rel)
     if proposal_file.is_file():
-        proposal_doc = parse_document(proposal_file.read_text(encoding="utf-8"))
+        proposal_old = proposal_file.read_text(encoding="utf-8")
+        proposal_doc = parse_document(proposal_old)
         proposal_doc.frontmatter["status"] = "applied"
         proposal_doc.frontmatter["applied_to"] = computed.destination
         proposal_doc.frontmatter["applied_on"] = (today or date.today()).isoformat()
-        backup = backup_existing(root, proposal_rel)
-        atomic_write(root, proposal_rel, proposal_doc.render())
-        append_audit(
-            root,
-            "evolve-apply-proposal-status",
+        backup = backup_existing(root, proposal_rel, durable=True)
+        entries.append(
             {
-                "plan_id": computed.plan_id,
-                "proposal_id": computed.proposal_id,
-                "plan_action": computed.action,
                 "path": proposal_rel,
-                "backup": backup.name if backup else None,
-            },
+                "old": proposal_old,
+                "new": proposal_doc.render(),
+                "backup": backup.name if backup else "",
+                "role": "proposal",
+            }
         )
-    return applied
+    manifest: dict[str, object] = {
+        "schema": EVOLVE_TRANSACTION_SCHEMA,
+        "plan_id": computed.plan_id,
+        "proposal_id": computed.proposal_id,
+        "action": computed.action,
+        "destination": computed.destination,
+        "state": "pending",
+        "pre_change_tree_sha256": _tree_digest(entries, "old"),
+        "applied_tree_sha256": _tree_digest(entries, "new"),
+        "entries": entries,
+    }
+    _write_evolve_manifest(root, manifest)
+    return _resume_evolve_manifest(root, manifest)

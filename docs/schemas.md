@@ -509,10 +509,24 @@ See [templates/top-level-wiki-proposal.md](../templates/top-level-wiki-proposal.
 It documents why the new wiki should exist and is only ever applied with
 `--approve-new-wiki` after human approval.
 
+## Evolution transaction (`.megamind/audit/evolve-<plan-id>.json`)
+
+An approved `evolve --apply` persists `megamind/evolve-rollback/v1` before its
+first target mutation. It binds the plan and proposal identities, action,
+destination, exact old/new bytes for each controlled path, backup references,
+path roles, pre-change/applied controlled-tree SHA-256 values, and a state of
+`pending`, `applied`, or `rolled_back`. A replay of `--apply --plan-id` resumes
+`pending` work. `--rollback --plan-id` accepts only the proposal identity that
+owns the transaction, verifies every path is still at its old or new bytes
+before writing, removes only an unchanged file the transaction created,
+restores replaced files and proposal status, and retains the manifest. Foreign
+files and stale, tampered, or already-rolled-back plan ids are refused.
+Canonical roots treat `raw/` as outside the evolution surface.
+
 ## Audit records (`.megamind/audit/log.jsonl`)
 
 One JSON object per line: `ts` (UTC ISO), `action` (`init`, `migrate`,
-`capture`, `evolve-apply`, `evolve-apply-proposal-status`, `router-refresh`,
+`capture`, `evolve-apply`, `evolve-apply-proposal-status`, `evolve-rollback`, `router-refresh`,
 `adopt-apply`, `adopt-rollback`, `gap-transition`, `research-ingest-proposal`,
 `provisional-wiki-create`, `provisional-wiki-undo`,
 `provisional-wiki-rollback`), and action-specific fields such as `path`,
