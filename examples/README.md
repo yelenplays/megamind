@@ -39,6 +39,12 @@ megamind-axi capture --text "Exports gain a rate-limit override for admins." --t
 megamind-axi review --today 2026-06-01
 megamind-axi evolve <proposal-id>            # dry-run diff plus plan id
 megamind-axi evolve <proposal-id> --apply --plan-id <plan-id>
+
+# Governed gardening stays local and host-driven
+megamind-axi gap create --wiki ProductWiki --topic "rate limits" --kind weak --today 2026-06-01
+megamind-axi gap list
+# research-wave consumes explicit host capacity and emits nominations only
+megamind-axi research-wave <gap-id> --capacity-known --applicable-quota 100 --reserve-quota 25
 ```
 
 The vault was generated with Megamind itself. Feel free to break it and run

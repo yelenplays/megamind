@@ -62,6 +62,26 @@ model are non-negotiable at every stage.
   baseline; the semantic backend is similarity reranking, not embeddings;
   preflight is host-invoked (no mandatory host enforcement yet)
 
+## v0.4 (this release): governed autonomous gardening
+
+- Durable semantic-identity gap journals for missing, weak, stale, and
+  contradictory coverage, with priority, attempts, cooldowns, rejection,
+  reopen, and supersession lifecycle data
+- Deterministic bounded one-hop research waves. Megamind emits nominations and
+  host facts; it never dispatches workers, schedules work, or performs research
+- Typed capacity pause/refusal outcomes enforcing three fleet workers, one per
+  wiki, active captain priority, a measurable 25 percent quota reserve, and
+  capacity known through the wave
+- A replay-safe host bridge for nominations and research results. Eligible
+  results become immutable-source ingest proposals and never write `raw/`
+- Safe structured append-only `wiki/log.md` events, audit references, and
+  validation of every new record and transition
+- Qualified provisional local-wiki scaffolding with restrictive trust until
+  confidence coverage and evaluation succeed; no remote or account actions
+- Machine-readable `gap`, `research-wave`, `research-result`, and
+  `provision-wiki` AXI documents, with v1 retrieval and federation behavior
+  unchanged
+
 ## Later / undecided
 
 - Benchmark suite (bench-mini): a frozen synthetic corpus with a tiered query
@@ -73,11 +93,8 @@ model are non-negotiable at every stage.
   (the deterministic ladder stays the source of truth and the offline
   default; adapters only re-order already-authorized candidates and are
   always optional)
-- Micro-wiki promotion as a first-class evolve action (generate the index,
-  update the parent index, all through the normal plan/apply gate)
+- Micro-wiki promotion as a first-class evolve action
 - Multilingual stopword lists and configurable tokenization
-- Durable gap records and nomination workflows
-- Structured `wiki/log.md` event emission from Megamind commands
 - Watch mode for continuous capture suggestions
 - Editor integrations beyond the Agent Skill
 - Host-side mandatory preflight enforcement and per-host promotion

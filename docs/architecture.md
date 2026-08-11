@@ -27,6 +27,7 @@ output boundary (see [axi.md](axi.md)).
 | `megamind.adopt` | Non-destructive adoption of existing wiki directories, with rollback |
 | `megamind.catalog` | The generated read-only fleet catalog and its drift-checked projection |
 | `megamind.preflight` | Catalog-level, model-access-aware routing for substantive requests |
+| `megamind.gardening` | Durable gaps, one-hop host plans, research bridge, safe event log, provisional local-wiki qualification |
 | `megamind.toon` | TOON encoder; the output boundary renders typed dicts |
 | `megamind.skillpack` | Packaged Agent Skill source for `setup skill` |
 | `megamind.cli` | The `megamind-axi` AXI boundary: typed documents, TOON/JSON, exits |
@@ -184,6 +185,23 @@ explicit. A deterministic `preflight_id` content hash binds the request hash,
 catalog snapshot, model class, and result. Preflight never mutates a wiki,
 never writes a host record, never calls a model, and never touches the
 network; whether and when a host runs preflight is the host's own policy.
+
+## Governed autonomous gardening
+
+Phase 3 keeps autonomy inside a local, approval-aware sandbox. `gardening.py`
+only consumes host-supplied capacity and research facts. It emits bounded
+nominations and typed pause/refusal outcomes; it has no scheduler, worker
+launcher, quota client, network adapter, or provider dependency. A wave is one
+hop: the direct gap and first-order related topics are planned together, while
+deeper topics are deferred nominations.
+
+Gap records use semantic identity hashes and an append-only snapshot journal.
+Transitions are validated, replayable, and linked to audit and safe log events.
+Research results are eligibility-filtered and become immutable-source ingest
+proposals. Raw sources are never written by Megamind. Provisional wiki
+creation validates every qualification input, writes the canonical structure
+and restrictive routing registration together, and marks trust false until
+confidence coverage and evaluation pass.
 
 ## Safety model
 

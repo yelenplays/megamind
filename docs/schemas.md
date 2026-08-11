@@ -97,6 +97,9 @@ v2 card fields, all optional:
   purpose only), or `hidden` (identity and all fields withheld; the projection
   states that a wiki is withheld rather than omitting the row silently).
   Personal wikis default to `redacted`; everything else to `full`.
+- `provisional`: additive boolean governance marker. A provisional wiki may be
+  routed locally but is not trusted active knowledge until confidence coverage
+  and a later evaluation pass.
 
 Loading validates types before use: every field must have the type shown
 above (a JSON boolean is never accepted as a budget), and unknown fields at
@@ -164,6 +167,55 @@ is the one field that is not: it reflects the host-selected `--semantic`
 backend, which is not a proof input, so a rerank that changes scores without
 changing the ranked order keeps the same `preflight_id`. Repeated inputs with
 the same backend selection stay byte-stable.
+
+## Governed gardening records (Phase 3)
+
+`.megamind/gaps.jsonl` is an append-only snapshot journal. The latest record
+for each `gap_id` is authoritative, while earlier lines retain the mutation
+history for crash recovery and audit. Every record has `schema: megamind/gap/v1`
+and these stable fields:
+
+```json
+{
+  "schema": "megamind/gap/v1",
+  "gap_id": "content-hash",
+  "wiki": "ProductWiki",
+  "topic": "release cleanup",
+  "kind": "missing",
+  "status": "open",
+  "priority": {"impact": 4, "urgency": 3, "repeat_demand": 2,
+               "coverage": 1, "confidence_risk": 4, "score": 30},
+  "attempts": [], "cooldown_until": "", "rejection": null,
+  "reopened_from": "", "superseded_by": "", "related_topics": [],
+  "created": "2026-01-01", "updated": "2026-01-01", "identity": "content-hash"
+}
+```
+
+The identity hashes normalized wiki, topic, and kind, so repeated reports
+coalesce without comparing page bodies. Lifecycle transitions are explicit;
+attempts, cooldown, rejection, reopen, and supersession are never discarded.
+Dates are supplied by the host or CLI `--today`, not read from the clock.
+
+`megamind/research-wave/v1` is a plan, not a dispatch instruction. It contains
+one direct nomination and bounded first-order nominations; deeper topics appear
+in `deferred_nominations` for later reprioritization. A host supplies a typed
+capacity fact. Unknown capacity, less than 25 percent measurable applicable
+quota reserve, active captain work, a full three-worker fleet, a worker already
+on the target wiki, or insufficient capacity through the wave produces a typed
+`paused` or `refused` result. Megamind never calls a quota tool or starts a
+worker.
+
+`megamind/research-nomination/v1` correlation IDs are stable within a wave.
+`megamind/research-result/v1` accepts only host-labelled eligible sources and
+bounds results to 20 sources. Eligible results create a replay-safe
+`.megamind/proposals/research-ingest-<id>.json` proposal with
+`immutable_raw_required: true`; no command fetches a URL or writes `raw/`.
+
+A provisional registry entry carries `provisional: true`. It is created only
+when all local qualification inputs pass: accepted domain, repeat demand,
+multiple topics, overlap, scope and exclusions, owner, source policy,
+privacy/model access, seed topics, and maintenance. Provisional knowledge is
+not trusted until confidence coverage and a later evaluation clear it.
 
 ## Canonical wiki root
 

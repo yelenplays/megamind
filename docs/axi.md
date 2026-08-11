@@ -30,6 +30,11 @@ with a stable `schema_version`:
 | `megamind/migrate-result/v1` | `migrate` |
 | `megamind/config/v1` | `config show` |
 | `megamind/setup-plan/v1`, `megamind/setup-result/v1` | `setup skill` |
+| `megamind/gaps-result/v1`, `megamind/gap-result/v1` | `gap` |
+| `megamind/gap-transition/v1`, `megamind/gap-attempt/v1` | `gap` mutations |
+| `megamind/research-wave/v1` | `research-wave` |
+| `megamind/research-result/v1` | `research-result` |
+| `megamind/provisional-wiki-result/v1` | `provision-wiki` |
 | `megamind/error/v1` | any failure |
 
 The v2 retrieval documents are additive over their v1 shapes: every v1 field
@@ -151,7 +156,8 @@ the full component rationale.
 `usage_error`, `not_initialized`, `registry_invalid`, `card_invalid`,
 `capture_invalid`, `proposal_not_found`, `plan_mismatch`, `approval_required`,
 `evolve_invalid`, `adopt_invalid`, `init_invalid`, `path_escape`,
-`frontmatter_invalid`, `io_error`. Malformed vault content and
+`frontmatter_invalid`, `io_error`, `garden_invalid`, `gap_not_found`,
+`gap_transition_invalid`. Malformed vault content and
 filesystem failures are reported as `frontmatter_invalid` and `io_error`
 documents with exit 1; no invocation ever ends in a traceback. Messages never
 include machine-specific absolute paths from inside the vault model; registry

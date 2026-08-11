@@ -141,6 +141,36 @@ when non-empty, bounded to 20 items unless `--full`). Read-only.
 
 `megamind/config/v1`: registry path, budgets, and registered wikis.
 
+## megamind-axi gap list|create|transition|attempt
+
+Durable, append-only gap records for missing, weak, stale, and contradictory
+coverage. `create` deduplicates by normalized semantic identity. Transitions
+and attempts are machine-readable and retain cooldown, rejection, reopen, and
+supersession history.
+
+## megamind-axi research-wave GAP_ID [capacity flags]
+
+Plans a deterministic one-hop wave from host-supplied capacity facts. It emits
+at most the direct gap and first-order nominations and never dispatches a
+worker. Unknown capacity, active captain work, a full fleet, a target-wiki
+worker, insufficient wave capacity, or less than 25 percent quota reserve is a
+typed pause/refusal.
+
+## megamind-axi research-result --nomination-json JSON --result-json JSON
+
+Validates a host round-trip by stable correlation id and turns eligible
+sources into an immutable-source ingest proposal. Results are bounded and
+idempotent. Megamind performs no network or external action and never writes
+`raw/`.
+
+## megamind-axi provision-wiki NAME PATH [criteria flags]
+
+Creates a local provisional wiki only when every domain, demand, scope, owner,
+policy, seed, and maintenance criterion passes. It registers the card
+immediately with `provisional: true`; provisional knowledge is not trusted.
+No remote repository, collaborators, account action, publication, merge, or
+spend is possible.
+
 ## megamind-axi setup skill [--dest DIR]
 
 Without `--dest`: a `megamind/setup-plan/v1` document describing what would
@@ -153,5 +183,6 @@ directory. Setup never makes network calls or edits shell/provider config.
 `megamind/error/v1` with a stable `code` (`usage_error`, `not_initialized`,
 `registry_invalid`, `card_invalid`, `capture_invalid`, `proposal_not_found`,
 `plan_mismatch`, `approval_required`, `evolve_invalid`, `adopt_invalid`,
-`init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`), a sanitized
+`init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
+`garden_invalid`, `gap_not_found`, `gap_transition_invalid`), a sanitized
 `message`, and `help[]` with corrective commands.

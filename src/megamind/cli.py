@@ -46,6 +46,20 @@ from .confidence import (
 from .doctor import run_doctor
 from .evolve import EvolveError, apply_plan, plan
 from .fsops import PathEscapeError
+from .gardening import (
+    RESULT_SCHEMA,
+    WAVE_SCHEMA,
+    CapacityInput,
+    GapRecord,
+    GapStore,
+    GardenError,
+    PriorityInputs,
+    ProvisionCriteria,
+    ingest_research_result,
+    make_nomination,
+    plan_research_wave,
+    provision_local_wiki,
+)
 from .models import FrontmatterError, parse_document
 from .preflight import MODEL_CLASSES, run_preflight
 from .registry import REGISTRY_PATH, Registry, RegistryError, load_registry, migrate_registry
@@ -750,6 +764,147 @@ def cmd_config_show(root: Path, root_label: str) -> tuple[Doc, int]:
     return doc, 0
 
 
+def cmd_gap(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
+    store = GapStore(root)
+    if args.gap_action == "list":
+        records = [record.to_data() for record in store.records()]
+        return {
+            "schema_version": "megamind/gaps-result/v1",
+            "status": "ok",
+            "gaps": records,
+            "count": len(records),
+            "help": _help(
+                "Use `megamind-axi gap transition <id> --status planned` to update a gap"
+            ),
+        }, 0
+    if args.gap_action == "create":
+        priority = PriorityInputs(
+            args.impact, args.urgency, args.repeat_demand, args.coverage, args.confidence_risk
+        )
+        candidate = GapRecord.new(
+            args.wiki,
+            args.topic,
+            args.kind,
+            priority=priority,
+            related_topics=args.related,
+            today=args.today,
+        )
+        existing = next(
+            (item for item in store.records() if item.identity == candidate.identity), None
+        )
+        record = store.create(candidate)
+        return {
+            "schema_version": "megamind/gap-result/v1",
+            "status": "deduplicated" if existing else "created",
+            "gap": record.to_data(),
+            "help": _help(
+                f"Run `{EXECUTABLE} research-wave {record.gap_id} "
+                "--capacity-known` to plan a bounded wave"
+            ),
+        }, 0
+    if args.gap_action == "transition":
+        record = store.transition(
+            args.gap_id,
+            args.status,
+            today=args.today,
+            reason=args.reason,
+            cooldown_until=args.cooldown_until,
+            superseded_by=args.superseded_by,
+        )
+        return {
+            "schema_version": "megamind/gap-transition/v1",
+            "status": "transitioned",
+            "gap": record.to_data(),
+            "help": _help(f"Run `{EXECUTABLE} gap list` to inspect durable gap state"),
+        }, 0
+    record = store.attempt(
+        args.gap_id,
+        args.outcome,
+        correlation_id=args.correlation_id,
+        today=args.today,
+        cooldown_until=args.cooldown_until,
+    )
+    return {
+        "schema_version": "megamind/gap-attempt/v1",
+        "status": "recorded",
+        "gap": record.to_data(),
+        "help": _help("Retry only after the recorded cooldown, or transition the gap to rejected"),
+    }, 0
+
+
+def cmd_research_wave(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
+    capacity = CapacityInput(
+        args.capacity_known,
+        args.active_workers,
+        {x.split("=", 1)[0]: int(x.split("=", 1)[1]) for x in args.active_wiki},
+        args.applicable_quota,
+        args.reserve_quota,
+        args.wave_units,
+        args.available_units,
+        args.captain_work,
+    )
+    result = plan_research_wave(GapStore(root).records(), args.gap_id, capacity, today=args.today)
+    return {
+        "schema_version": WAVE_SCHEMA,
+        **result.to_data(),
+        "help": _help(
+            "Dispatch nothing from Megamind; the host may dispatch only the emitted nominations",
+            "Replay each nomination with its stable correlation_id",
+        ),
+    }, 0
+
+
+def cmd_research_result(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
+    try:
+        nomination_data = json.loads(args.nomination_json)
+        result_data = json.loads(args.result_json)
+    except json.JSONDecodeError as error:
+        raise UsageError(f"research bridge JSON is invalid: {error}") from error
+    wave = type("Wave", (), {"wave_id": str(nomination_data.get("wave_id", ""))})()
+    nomination = make_nomination(
+        wave, nomination_data, str(nomination_data.get("source_policy", ""))
+    )
+    result = ingest_research_result(root, nomination, result_data)
+    return {
+        "schema_version": RESULT_SCHEMA,
+        **result.to_data(),
+        "help": _help(
+            "Review the immutable-source ingest proposal; Megamind does not "
+            "fetch or publish the source"
+        ),
+    }, 0
+
+
+def cmd_provision_wiki(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
+    criteria = ProvisionCriteria(
+        args.domain,
+        args.repeat_demand,
+        args.multi_topic,
+        args.overlap,
+        args.scope,
+        args.exclusions,
+        args.owner,
+        args.source_policy,
+        args.privacy,
+        args.model_access,
+        tuple(args.seed_topic),
+        args.maintenance,
+    )
+    files = provision_local_wiki(root, args.name, args.path, criteria, today=args.today)
+    return {
+        "schema_version": "megamind/provisional-wiki-result/v1",
+        "status": "provisional",
+        "wiki": args.name,
+        "path": args.path,
+        "files": files,
+        "trusted": False,
+        "help": _help(
+            "Populate and evaluate confidence coverage before treating this wiki "
+            "as trusted knowledge"
+        ),
+    }, 0
+
+
 def cmd_setup_skill(dest: str | None) -> tuple[Doc, int]:
     files = [name for name, _ in skill_files()]
     if dest is None:
@@ -1067,6 +1222,75 @@ def build_parser() -> AxiParser:
     )
     _common_flags(p_config_show)
 
+    p_gap = sub.add_parser("gap", aliases=["gaps"], help="durable governed knowledge gaps")
+    _common_flags(p_gap)
+    p_gap.add_argument("gap_action", choices=["list", "create", "transition", "attempt"])
+    p_gap.add_argument("gap_id", nargs="?", default="")
+    p_gap.add_argument("--wiki", default="")
+    p_gap.add_argument("--topic", default="")
+    p_gap.add_argument(
+        "--kind", choices=["missing", "weak", "stale", "contradictory"], default="missing"
+    )
+    p_gap.add_argument(
+        "--status",
+        choices=[
+            "open",
+            "nominated",
+            "planned",
+            "in_progress",
+            "paused",
+            "resolved",
+            "rejected",
+            "superseded",
+        ],
+        default="open",
+    )
+    p_gap.add_argument("--reason", default="")
+    p_gap.add_argument("--outcome", default="")
+    p_gap.add_argument("--correlation-id", default="")
+    p_gap.add_argument("--cooldown-until", default="")
+    p_gap.add_argument("--superseded-by", default="")
+    p_gap.add_argument("--related", action="append", default=[])
+    for name in ("impact", "urgency", "repeat-demand", "coverage", "confidence-risk"):
+        p_gap.add_argument("--" + name, dest=name.replace("-", "_"), type=int, default=0)
+    p_gap.add_argument("--today", default=argparse.SUPPRESS)
+
+    p_wave = sub.add_parser("research-wave", help="plan a deterministic one-hop research wave")
+    _common_flags(p_wave)
+    p_wave.add_argument("gap_id")
+    p_wave.add_argument("--capacity-known", action="store_true")
+    p_wave.add_argument("--active-workers", type=int, default=0)
+    p_wave.add_argument("--active-wiki", action="append", default=[], metavar="WIKI=N")
+    p_wave.add_argument("--applicable-quota", type=float, default=None)
+    p_wave.add_argument("--reserve-quota", type=float, default=None)
+    p_wave.add_argument("--wave-units", type=int, default=1)
+    p_wave.add_argument("--available-units", type=int, default=None)
+    p_wave.add_argument("--captain-work", action="store_true")
+    p_wave.add_argument("--today", default=argparse.SUPPRESS)
+
+    p_result = sub.add_parser("research-result", help="ingest a host research result as a proposal")
+    _common_flags(p_result)
+    p_result.add_argument("--nomination-json", required=True)
+    p_result.add_argument("--result-json", required=True)
+
+    p_provision = sub.add_parser("provision-wiki", help="create a qualified provisional local wiki")
+    _common_flags(p_provision)
+    p_provision.add_argument("name")
+    p_provision.add_argument("path")
+    p_provision.add_argument("--domain", required=True)
+    p_provision.add_argument("--repeat-demand", type=int, required=True)
+    p_provision.add_argument("--multi-topic", type=int, required=True)
+    p_provision.add_argument("--overlap", required=True)
+    p_provision.add_argument("--scope", required=True)
+    p_provision.add_argument("--exclusions", required=True)
+    p_provision.add_argument("--owner", required=True)
+    p_provision.add_argument("--source-policy", required=True)
+    p_provision.add_argument("--privacy", required=True)
+    p_provision.add_argument("--model-access", required=True)
+    p_provision.add_argument("--seed-topic", action="append", required=True)
+    p_provision.add_argument("--maintenance", required=True)
+    p_provision.add_argument("--today", default=argparse.SUPPRESS)
+
     p_setup = sub.add_parser("setup", help="explicit opt-in integrations (local, zero-network)")
     _common_flags(p_setup)
     setup_sub = p_setup.add_subparsers(dest="setup_command")
@@ -1233,6 +1457,18 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
         if getattr(args, "config_command", None) != "show":
             raise UsageError("usage: megamind-axi config show")
         return cmd_config_show(root, root_label)
+    if command == "gap" or command == "gaps":
+        if args.gap_action == "create" and (not args.wiki or not args.topic):
+            raise UsageError("gap create requires --wiki and --topic")
+        if args.gap_action in {"transition", "attempt"} and not args.gap_id:
+            raise UsageError(f"gap {args.gap_action} requires GAP_ID")
+        return cmd_gap(args, root)
+    if command == "research-wave":
+        return cmd_research_wave(args, root)
+    if command == "research-result":
+        return cmd_research_result(args, root)
+    if command == "provision-wiki":
+        return cmd_provision_wiki(args, root)
     if command == "setup":
         if getattr(args, "setup_command", None) != "skill":
             raise UsageError("usage: megamind-axi setup skill [--dest DIR]")
@@ -1259,6 +1495,14 @@ _ERROR_HELP: dict[str, list[str]] = {
     "frontmatter_invalid": [
         f"Run `{EXECUTABLE} doctor` to locate the file with unsupported frontmatter",
         "Fix the frontmatter block by hand; Megamind parses a small YAML subset",
+    ],
+    "garden_invalid": [
+        f"Run `{EXECUTABLE} doctor` to validate governed records",
+        "Check the typed gap, capacity, or bridge fields and retry",
+    ],
+    "gap_not_found": [f"Run `{EXECUTABLE} gap list` to inspect durable gap ids"],
+    "gap_transition_invalid": [
+        f"Run `{EXECUTABLE} gap list` and use an allowed lifecycle transition"
     ],
 }
 
@@ -1295,6 +1539,7 @@ def main(argv: list[str] | None = None) -> int:
         CardError,
         InitError,
         PathEscapeError,
+        GardenError,
     ) as error:
         code = str(getattr(error, "code", "operation_failed"))
         exit_code = 2 if code in {"not_initialized", "registry_invalid"} else 1
