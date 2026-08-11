@@ -1000,6 +1000,8 @@ def test_provision_rollback_leaves_the_vault_replannable(
     )
     assert code == 0
     assert rolled["status"] == "rolled_back"
+    assert (rolled["wiki"], rolled["path"]) == ("ReleaseWiki", "ReleaseWiki")
+    assert rolled["plan_id"] == plan_id
     assert rolled["preserved"] == []
     assert rolled["preserved_total"] == 0
     assert not (vault / "ReleaseWiki").exists()
@@ -1010,6 +1012,86 @@ def test_provision_rollback_leaves_the_vault_replannable(
     code, reapplied, _ = run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
     assert code == 0
     assert reapplied["status"] == "applied"
+
+
+def test_rollback_refuses_a_plan_id_pasted_from_another_wiki(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The short form the help hints print is destructive, so the positionals it
+    carries have to be checked: naming one wiki may never undo another."""
+
+    def provision(name: str) -> str:
+        argv = ["--root", str(vault), "provision-wiki", name, name, *PROVISION_FLAGS]
+        _, planned, _ = run_json(capsys, *argv)
+        plan_id = str(planned["plan_id"])
+        run_json(capsys, *argv, "--apply", "--plan-id", plan_id)
+        return plan_id
+
+    provision("Alpha")
+    beta_id = provision("Beta")
+
+    code, doc, err = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "provision-wiki",
+        "Alpha",
+        "Alpha",
+        "--rollback",
+        "--plan-id",
+        beta_id,
+    )
+    assert code == 1
+    assert err == ""
+    assert doc["code"] == "garden_invalid"
+    assert "was recorded for Beta at Beta" in doc["message"]
+    # Nothing was undone: both wikis and both registry entries survive.
+    assert (vault / "Alpha/CARD.md").is_file()
+    assert (vault / "Beta/CARD.md").is_file()
+    registry = load_registry(vault)
+    assert registry.wiki_by_name("Alpha") is not None
+    assert registry.wiki_by_name("Beta") is not None
+
+    code, rolled, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "provision-wiki",
+        "Beta",
+        "Beta",
+        "--rollback",
+        "--plan-id",
+        beta_id,
+    )
+    assert code == 0
+    assert (rolled["wiki"], rolled["path"]) == ("Beta", "Beta")
+    assert not (vault / "Beta").exists()
+    assert (vault / "Alpha/CARD.md").is_file()
+
+
+def test_rollback_refuses_a_path_that_leaves_the_root(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, plan, _ = run_json(capsys, *provision_argv(vault))
+    plan_id = str(plan["plan_id"])
+    run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+
+    code, doc, err = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "provision-wiki",
+        "ReleaseWiki",
+        "../outside",
+        "--rollback",
+        "--plan-id",
+        plan_id,
+    )
+    assert code == 1
+    assert err == ""
+    assert doc["code"] == "path_escape"
+    assert (vault / "ReleaseWiki/CARD.md").is_file()
+    assert load_registry(vault).wiki_by_name("ReleaseWiki") is not None
 
 
 def test_provision_rollback_reports_content_it_preserved(

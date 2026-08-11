@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from megamind.card import load_wiki_card
+from megamind.fsops import PathEscapeError
 from megamind.gardening import (
     CapacityInput,
     GapRecord,
@@ -381,11 +382,11 @@ def test_provision_plan_apply_is_idempotent_and_rollback_verifies_content(tmp_pa
     assert apply_provision_plan(tmp_path, plan, plan.plan_id) == []
     (tmp_path / "PlanWiki/wiki/index.md").write_text("tampered\n", encoding="utf-8")
     with pytest.raises(GardenError, match="rollback refused"):
-        rollback_provision(tmp_path, plan.plan_id)
+        rollback_provision(tmp_path, plan.plan_id, "PlanWiki", "PlanWiki")
     (tmp_path / "PlanWiki/wiki/index.md").write_text(
         "# PlanWiki compiled index\n", encoding="utf-8"
     )
-    assert rollback_provision(tmp_path, plan.plan_id).removed
+    assert rollback_provision(tmp_path, plan.plan_id, "PlanWiki", "PlanWiki").removed
     assert not (tmp_path / "PlanWiki").exists()
 
 
@@ -474,7 +475,7 @@ def test_an_interrupted_apply_leaves_a_recoverable_transaction(
     assert load_wiki_card(tmp_path / "HaltWiki").name == "HaltWiki"
     # A resumed transaction verifies as a no-op and rolls back completely.
     assert apply_provision_plan(tmp_path, plan, plan.plan_id) == []
-    assert rollback_provision(tmp_path, plan.plan_id).removed
+    assert rollback_provision(tmp_path, plan.plan_id, "HaltWiki", "HaltWiki").removed
     assert not (tmp_path / "HaltWiki").exists()
     assert load_registry(tmp_path).wiki_by_name("HaltWiki") is None
 
@@ -489,11 +490,11 @@ def test_an_interrupted_apply_rolls_back_without_resuming(
         kill_after(patched, 4)
         with pytest.raises(KeyboardInterrupt):
             apply_provision_plan(tmp_path, plan, plan.plan_id)
-    assert rollback_provision(tmp_path, plan.plan_id).removed
+    assert rollback_provision(tmp_path, plan.plan_id, "HaltWiki", "HaltWiki").removed
     assert not (tmp_path / "HaltWiki").exists()
     assert (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8") == before
     with pytest.raises(GardenError, match="already rolled back"):
-        rollback_provision(tmp_path, plan.plan_id)
+        rollback_provision(tmp_path, plan.plan_id, "HaltWiki", "HaltWiki")
     # Rollback leaves the vault re-plannable, and the plan id is unchanged.
     replanned = plan_provision_wiki(tmp_path, "HaltWiki", "HaltWiki", make_criteria())
     assert replanned.plan_id == plan.plan_id
@@ -514,7 +515,7 @@ def test_a_resume_refuses_content_the_transaction_did_not_write(
     with pytest.raises(GardenError, match="changed outside the transaction"):
         apply_provision_plan(tmp_path, plan, plan.plan_id)
     with pytest.raises(GardenError, match="rollback refused"):
-        rollback_provision(tmp_path, plan.plan_id)
+        rollback_provision(tmp_path, plan.plan_id, "HaltWiki", "HaltWiki")
 
 
 def provision_write_count(tmp_path: Path, name: str) -> int:
@@ -579,7 +580,7 @@ def test_a_power_loss_at_every_durability_boundary_stays_recoverable(
             "megamind:event:"
         ) == 1
         assert resume_provision(root, plan.plan_id, "HaltWiki", "HaltWiki") == ("noop", [])
-        assert rollback_provision(root, plan.plan_id).removed
+        assert rollback_provision(root, plan.plan_id, "HaltWiki", "HaltWiki").removed
         assert not (root / "HaltWiki").exists()
         assert (root / ".megamind/registry.json").read_text(encoding="utf-8") == before
 
@@ -610,7 +611,7 @@ def test_an_applied_marker_over_a_lost_target_can_also_roll_back(tmp_path: Path)
     plan = plan_provision_wiki(tmp_path, "LostWiki", "LostWiki", make_criteria())
     apply_provision_plan(tmp_path, plan, plan.plan_id)
     (tmp_path / ".megamind/registry.json").write_text(before, encoding="utf-8")
-    assert rollback_provision(tmp_path, plan.plan_id).removed
+    assert rollback_provision(tmp_path, plan.plan_id, "LostWiki", "LostWiki").removed
     assert not (tmp_path / "LostWiki").exists()
     assert (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8") == before
 
@@ -733,7 +734,7 @@ def test_rollback_preserves_content_authored_after_the_apply(tmp_path: Path) -> 
     notes = tmp_path / "KeepWiki/NOTES.md"
     notes.write_text("hand-written\n", encoding="utf-8")
 
-    outcome = rollback_provision(tmp_path, plan.plan_id)
+    outcome = rollback_provision(tmp_path, plan.plan_id, "KeepWiki", "KeepWiki")
     assert outcome.status == "partial"
     assert outcome.preserved == ["KeepWiki/NOTES.md", "KeepWiki/wiki/topics"]
     assert page.read_text(encoding="utf-8") == "# rate limits\n"
@@ -747,6 +748,129 @@ def test_rollback_preserves_content_authored_after_the_apply(tmp_path: Path) -> 
     assert load_registry(tmp_path).wiki_by_name("KeepWiki") is None
 
 
+def vault_with_two_transactions(tmp_path: Path) -> tuple[ProvisionPlan, ProvisionPlan]:
+    """Two applied provisional wikis, so a pasted plan id has somewhere to point."""
+    init_vault(tmp_path, starter=False)
+    alpha = plan_provision_wiki(tmp_path, "Alpha", "Alpha", make_criteria())
+    apply_provision_plan(tmp_path, alpha, alpha.plan_id)
+    beta = plan_provision_wiki(tmp_path, "Beta", "Beta", make_criteria())
+    apply_provision_plan(tmp_path, beta, beta.plan_id)
+    return alpha, beta
+
+
+def vault_snapshot(root: Path) -> dict[str, str]:
+    """Every file under the root, so a refusal can be proven to write nothing."""
+    return {
+        path.relative_to(root).as_posix(): path.read_text(encoding="utf-8", errors="replace")
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_rollback_undoes_the_wiki_it_was_told_to_undo(tmp_path: Path) -> None:
+    """The identity travels with the plan id, and the result echoes what the
+    manifest recorded rather than what the caller happened to type."""
+    alpha, beta = vault_with_two_transactions(tmp_path)
+    outcome = rollback_provision(tmp_path, beta.plan_id, "Beta", "Beta")
+    assert (outcome.status, outcome.wiki, outcome.path) == ("rolled_back", "Beta", "Beta")
+    assert not (tmp_path / "Beta").exists()
+    # The transaction it was not told to undo is untouched.
+    assert (tmp_path / "Alpha/CARD.md").is_file()
+    assert load_registry(tmp_path).wiki_by_name("Alpha") is not None
+    assert load_registry(tmp_path).wiki_by_name("Beta") is None
+    assert rollback_provision(tmp_path, alpha.plan_id, "Alpha", "Alpha").wiki == "Alpha"
+
+
+@pytest.mark.parametrize(
+    ("name", "path"),
+    [
+        ("Alpha", "Alpha"),
+        ("Beta", "Alpha"),
+        ("Alpha", "Beta"),
+        ("Beta", "elsewhere/Beta"),
+    ],
+)
+def test_rollback_refuses_a_plan_id_recorded_for_another_identity(
+    tmp_path: Path, name: str, path: str
+) -> None:
+    """A pasted plan id may not undo another wiki under this name, and the
+    refusal happens before anything on disk changes."""
+    _alpha, beta = vault_with_two_transactions(tmp_path)
+    before = vault_snapshot(tmp_path)
+
+    with pytest.raises(GardenError, match="was recorded for Beta at Beta"):
+        rollback_provision(tmp_path, beta.plan_id, name, path)
+    assert vault_snapshot(tmp_path) == before
+    assert load_registry(tmp_path).wiki_by_name("Beta") is not None
+    manifest = tmp_path / f".megamind/audit/provisional-wiki-{beta.plan_id}.json"
+    assert json.loads(manifest.read_text(encoding="utf-8"))["state"] == "applied"
+
+
+@pytest.mark.parametrize("alias", ["./Beta", "Beta/", "Alpha/../Beta"])
+def test_rollback_accepts_any_spelling_of_the_same_contained_path(
+    tmp_path: Path, alias: str
+) -> None:
+    """Canonicalization decides sameness, so an equivalent path is the same
+    target rather than a refusal a host has no way to read."""
+    _alpha, beta = vault_with_two_transactions(tmp_path)
+    outcome = rollback_provision(tmp_path, beta.plan_id, "Beta", alias)
+    assert outcome.status == "rolled_back"
+    assert outcome.path == "Beta"
+    assert not (tmp_path / "Beta").exists()
+
+
+def test_rollback_refuses_a_path_that_leaves_the_root(tmp_path: Path) -> None:
+    """Traversal and an escaping symlink are `path_escape` refusals, not matches
+    and not silent misses, and neither touches the vault."""
+    _alpha, beta = vault_with_two_transactions(tmp_path)
+    outside = tmp_path.parent / "outside-beta"
+    outside.mkdir(exist_ok=True)
+    (tmp_path / "Escape").symlink_to(outside)
+    before = vault_snapshot(tmp_path)
+
+    for path in ("../outside-beta", str(outside), "Escape"):
+        with pytest.raises(PathEscapeError):
+            rollback_provision(tmp_path, beta.plan_id, "Beta", path)
+    assert vault_snapshot(tmp_path) == before
+    assert load_registry(tmp_path).wiki_by_name("Beta") is not None
+
+
+def test_rollback_refuses_a_stale_or_unknown_plan_without_writing(tmp_path: Path) -> None:
+    _alpha, beta = vault_with_two_transactions(tmp_path)
+    rollback_provision(tmp_path, beta.plan_id, "Beta", "Beta")
+    before = vault_snapshot(tmp_path)
+
+    with pytest.raises(GardenError, match="already rolled back"):
+        rollback_provision(tmp_path, beta.plan_id, "Beta", "Beta")
+    with pytest.raises(GardenError, match="manifest not found"):
+        rollback_provision(tmp_path, "no-such-plan", "Beta", "Beta")
+    assert vault_snapshot(tmp_path) == before
+
+
+def test_a_manifest_written_for_another_plan_id_refuses(tmp_path: Path) -> None:
+    """The record has to be the one the id names, so a copied file cannot make
+    one transaction answer for another."""
+    _alpha, beta = vault_with_two_transactions(tmp_path)
+    record = tmp_path / f".megamind/audit/provisional-wiki-{beta.plan_id}.json"
+    impostor = tmp_path / ".megamind/audit/provisional-wiki-deadbeefcafe.json"
+    impostor.write_text(record.read_text(encoding="utf-8"), encoding="utf-8")
+    before = vault_snapshot(tmp_path)
+
+    with pytest.raises(GardenError, match="is not for plan deadbeefcafe"):
+        rollback_provision(tmp_path, "deadbeefcafe", "Beta", "Beta")
+    assert vault_snapshot(tmp_path) == before
+
+
+def test_resume_accepts_an_equivalent_path_and_still_refuses_another_wiki(
+    tmp_path: Path,
+) -> None:
+    """Apply and rollback answer identity the same way, through one owner."""
+    _alpha, beta = vault_with_two_transactions(tmp_path)
+    assert resume_provision(tmp_path, beta.plan_id, "Beta", "./Beta") == ("noop", [])
+    with pytest.raises(GardenError, match="was recorded for Beta at Beta"):
+        resume_provision(tmp_path, beta.plan_id, "Alpha", "Alpha")
+
+
 def test_rollback_prunes_only_directories_the_transaction_created(tmp_path: Path) -> None:
     """An empty directory the transaction created is pruned; a directory that
     already existed above the wiki path is never the transaction's to remove."""
@@ -758,7 +882,7 @@ def test_rollback_prunes_only_directories_the_transaction_created(tmp_path: Path
     apply_provision_plan(tmp_path, plan, plan.plan_id)
     assert (tmp_path / "wikis/NestedWiki/.megamind").is_dir()
 
-    outcome = rollback_provision(tmp_path, plan.plan_id)
+    outcome = rollback_provision(tmp_path, plan.plan_id, "NestedWiki", "wikis/NestedWiki")
     assert (outcome.status, outcome.preserved) == ("rolled_back", [])
     assert not (tmp_path / "wikis/NestedWiki").exists()
     assert (tmp_path / "wikis").is_dir()
@@ -778,7 +902,7 @@ def test_rollback_refuses_a_directory_standing_where_a_target_belongs(tmp_path: 
     (card / "kept.md").write_text("inside\n", encoding="utf-8")
 
     with pytest.raises(GardenError, match="rollback refused"):
-        rollback_provision(tmp_path, plan.plan_id)
+        rollback_provision(tmp_path, plan.plan_id, "SwapWiki", "SwapWiki")
     assert (card / "kept.md").read_text(encoding="utf-8") == "inside\n"
     with pytest.raises(GardenError, match="not idempotent"):
         resume_provision(tmp_path, plan.plan_id, "SwapWiki", "SwapWiki")
@@ -887,7 +1011,7 @@ def test_a_partial_undo_can_be_rolled_back_instead(
         apply_provision_plan(tmp_path, plan, plan.plan_id)
     monkeypatch.undo()
 
-    outcome = rollback_provision(tmp_path, plan.plan_id)
+    outcome = rollback_provision(tmp_path, plan.plan_id, "ShutWiki", "ShutWiki")
     assert outcome.status == "partial"
     assert outcome.preserved == ["ShutWiki/wiki/topics"]
     assert outcome.preserved_total == 1
@@ -906,7 +1030,7 @@ def test_preserved_entries_are_bounded_with_the_total_in_the_audit(tmp_path: Pat
     for index in range(25):
         (tmp_path / f"ManyWiki/note-{index:02d}.md").write_text("kept\n", encoding="utf-8")
 
-    outcome = rollback_provision(tmp_path, plan.plan_id)
+    outcome = rollback_provision(tmp_path, plan.plan_id, "ManyWiki", "ManyWiki")
     assert outcome.status == "partial"
     assert outcome.preserved_total == 25
     assert len(outcome.preserved) == 20
@@ -936,7 +1060,7 @@ def test_a_manifest_without_created_dirs_still_recovers(tmp_path: Path) -> None:
         json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8"
     )
 
-    outcome = rollback_provision(tmp_path, plan.plan_id)
+    outcome = rollback_provision(tmp_path, plan.plan_id, "OldWiki", "OldWiki")
     assert (outcome.status, outcome.preserved, outcome.preserved_total) == ("rolled_back", [], 0)
     assert not (tmp_path / "OldWiki").exists()
 
@@ -955,7 +1079,7 @@ def test_provisioning_stays_usable_without_a_directory_flush_primitive(
     assert apply_provision_plan(tmp_path, plan, plan.plan_id)
     assert load_registry(tmp_path).wiki_by_name("WinWiki") is not None
     assert (tmp_path / "WinWiki/CARD.md").is_file()
-    assert rollback_provision(tmp_path, plan.plan_id).removed
+    assert rollback_provision(tmp_path, plan.plan_id, "WinWiki", "WinWiki").removed
     assert not (tmp_path / "WinWiki").exists()
 
 

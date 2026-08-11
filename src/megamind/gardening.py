@@ -952,9 +952,16 @@ def _bounded_preserved(entries: list[str]) -> tuple[list[str], int]:
 
 @dataclass(frozen=True)
 class RollbackOutcome:
-    """What a recovery actually did, so a partial undo is never read as a full one."""
+    """What a recovery actually did, so a partial undo is never read as a full one.
+
+    ``wiki`` and ``path`` are the identity the manifest recorded, not the
+    spelling the caller used, so a response can never agree with a host that
+    believed it was undoing something else.
+    """
 
     status: str  # "rolled_back" | "partial"
+    wiki: str
+    path: str
     removed: list[str]
     preserved: list[str]
     preserved_total: int = 0
@@ -1304,15 +1311,39 @@ def _resume(root: Path, manifest: dict[str, Any]) -> list[str]:
     return _commit(root, manifest, [rel for rel, _old, _new in changes])
 
 
+def _same_target(root: Path, recorded: str, supplied: str) -> bool:
+    """Whether two spellings name the same contained path.
+
+    Both sides are resolved against the root, so `./Wiki` and `Wiki` are one
+    target while a traversal or a symlink that leaves the root raises
+    ``PathEscapeError`` instead of quietly matching or quietly missing.
+    """
+    return resolve_contained(root, recorded) == resolve_contained(root, supplied)
+
+
+def _require_recorded_identity(
+    root: Path, manifest: Mapping[str, Any], name: str, path: str
+) -> Mapping[str, Any]:
+    """Refuse before any read of backups or any mutation unless this is that plan.
+
+    A plan id alone names a transaction, so a pasted id from another wiki would
+    otherwise undo that wiki under this one's name. Identity is the whole triple
+    the plan was recorded with, and every recovery path checks it the same way
+    and before it touches anything.
+    """
+    plan: Mapping[str, Any] = manifest["plan"]
+    if plan["wiki"] != name or not _same_target(root, str(plan["path"]), path):
+        raise GardenError(
+            f"provisional wiki plan {plan['plan_id']} was recorded for {plan['wiki']} at "
+            f"{plan['path']}, not {name} at {path}; name the wiki this plan created"
+        )
+    return plan
+
+
 def _resume_or_verify(
     root: Path, manifest: dict[str, Any], name: str, path: str
 ) -> tuple[str, list[str]]:
-    plan = manifest["plan"]
-    if plan["wiki"] != name or plan["path"] != path:
-        raise GardenError(
-            f"provisional wiki plan {plan['plan_id']} was recorded for {plan['wiki']} at "
-            f"{plan['path']}, not {name} at {path}; re-run the dry run for these arguments"
-        )
+    _require_recorded_identity(root, manifest, name, path)
     if manifest["state"] == "applied":
         states = _target_states(root, manifest)
         foreign = sorted(rel for rel, state in states.items() if state == TARGET_FOREIGN)
@@ -1421,8 +1452,14 @@ def apply_provision_plan(root: Path, plan: ProvisionPlan, approved_plan_id: str)
         raise
 
 
-def rollback_provision(root: Path, plan_id: str) -> RollbackOutcome:
+def rollback_provision(root: Path, plan_id: str, name: str, path: str) -> RollbackOutcome:
     """Undo an applied or interrupted transaction, refusing on tampered content.
+
+    The wiki this undoes is the one the manifest recorded, so the caller has to
+    name it: a plan id pasted from another transaction refuses instead of
+    quietly undoing that wiki under this name. Identity is checked before any
+    backup is read, any file changes, any audit is appended, and the record is
+    removed, so every refusal leaves the vault untouched.
 
     Only the exact files the manifest tracks are restored or removed, and only
     directories the transaction created and left empty are pruned. Content
@@ -1432,6 +1469,9 @@ def rollback_provision(root: Path, plan_id: str) -> RollbackOutcome:
     manifest = _read_manifest(root, plan_id)
     if manifest is None:
         raise GardenError(f"provisional wiki rollback manifest not found: {plan_id}")
+    if manifest["plan"]["plan_id"] != plan_id:
+        raise GardenError(f"provisional wiki transaction manifest is not for plan {plan_id}")
+    plan = _require_recorded_identity(root, manifest, name, path)
     if manifest["state"] == "rolled_back":
         raise GardenError(f"provisional wiki plan was already rolled back: {plan_id}")
     # A target the transaction never materialized is undone whatever the record
@@ -1466,17 +1506,21 @@ def rollback_provision(root: Path, plan_id: str) -> RollbackOutcome:
         "provisional-wiki-rollback",
         {
             "plan_id": plan_id,
+            "wiki": str(plan["wiki"]),
+            "path": str(plan["path"]),
             "removed": removed,
             "preserved": preserved,
             "preserved_total": preserved_total,
         },
     )
     return RollbackOutcome(
-        "partial" if found else "rolled_back",
-        removed,
-        preserved,
-        preserved_total,
-        notes,
+        status="partial" if found else "rolled_back",
+        wiki=str(plan["wiki"]),
+        path=str(plan["path"]),
+        removed=removed,
+        preserved=preserved,
+        preserved_total=preserved_total,
+        notes=notes,
     )
 
 

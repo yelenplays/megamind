@@ -194,7 +194,10 @@ policy, seed, and maintenance criterion passes. The criteria flags are required
 by mode, not by the parser: a plan and an `--apply` both refuse with
 `usage_error` naming whichever is missing, before any write, while
 `--rollback --plan-id <id>` takes the positional name and path and nothing
-else. `--apply` and `--rollback` are mutually exclusive. Every command printed
+else. Those positionals are checked against the manifest before anything is
+touched: a plan id recorded for another wiki or path refuses with zero
+mutation, and the result echoes the recorded `wiki` and `path`. `--apply` and
+`--rollback` are mutually exclusive. Every command printed
 in `help[]` runs verbatim, so an apply hint carries the criteria and `--today`
 it needs to re-derive the same `plan_id`. It extends an existing registry
 vault only: it refuses a canonical single-wiki root, refuses to bootstrap a

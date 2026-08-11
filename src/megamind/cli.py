@@ -1025,7 +1025,10 @@ def _applied_doc(name: str, path: str, plan_id: str, status: str, files: list[st
 
 def cmd_provision_wiki(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc, int]:
     if args.rollback:
-        outcome = rollback_provision(root, args.plan_id or "")
+        # The positionals are the identity the rollback is checked against, not
+        # decoration: the plan id alone would let a pasted token undo a
+        # different wiki under this name.
+        outcome = rollback_provision(root, args.plan_id or "", args.name, args.path)
         entries = ["Re-run provision-wiki without --apply to inspect a fresh plan"]
         if outcome.preserved:
             entries.insert(
@@ -1036,6 +1039,9 @@ def cmd_provision_wiki(args: argparse.Namespace, root: Path, today: str) -> tupl
         return {
             "schema_version": "megamind/provisional-wiki-result/v1",
             "status": outcome.status,
+            "wiki": outcome.wiki,
+            "path": outcome.path,
+            "plan_id": args.plan_id,
             "removed": outcome.removed,
             "preserved": outcome.preserved,
             "preserved_total": outcome.preserved_total,

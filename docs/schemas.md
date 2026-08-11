@@ -272,8 +272,16 @@ takes that id back as the approval token. The qualification criteria are
 required by mode rather than by the parser: planning and `--apply` both refuse
 with a typed `usage_error` naming every missing flag before anything is read or
 written, while `--rollback --plan-id <id>` is driven by the plan id and the
-positional name and path alone. `--apply` and `--rollback` are mutually
-exclusive. Because `--apply` re-derives the plan from the criteria and
+positional name and path alone. Those positionals are the identity the rollback
+is checked against, not decoration: the recorded wiki name must match exactly
+and the recorded path must resolve to the same contained target (so `./Wiki`
+and `Wiki` are one target, while a traversal or an escaping symlink is a
+`path_escape` refusal). A pasted plan id from another transaction therefore
+refuses instead of undoing that wiki under this name, and the refusal happens
+before any backup is read, any file changes, any audit is appended, or the
+record is removed. The result echoes the recorded `wiki` and `path`, so a
+response can never agree with a host that believed it was undoing something
+else. `--apply` and `--rollback` are mutually exclusive. Because `--apply` re-derives the plan from the criteria and
 `--today`, the apply command printed in `help[]` carries both, so every emitted
 recovery command runs exactly as printed. The apply is a write-ahead
 transaction recorded in `.megamind/audit/provisional-wiki-<plan_id>.json`
