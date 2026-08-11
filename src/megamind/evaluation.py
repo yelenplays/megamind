@@ -8,7 +8,6 @@ answer itself.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import hmac
 import itertools
@@ -30,8 +29,8 @@ from .fsops import (
     atomic_write,
     atomic_write_path,
     content_hash,
+    create_private_file,
     resolve_contained,
-    sync_directory,
 )
 from .registry import RegistryError, load_registry
 
@@ -805,28 +804,11 @@ def write_blinding_key(path: Path) -> Doc:
     write leaves no partial key behind.
     """
     resolved = guard_output_path(path)
-    resolved.parent.mkdir(parents=True, exist_ok=True)
     key = secrets.token_hex(BLINDING_KEY_HEX_CHARS // 2)
     try:
-        handle = os.open(resolved, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        create_private_file(resolved, key + "\n", durable=True)
     except FileExistsError as error:
         raise EvaluationError("refusing to overwrite an existing blinding key file") from error
-    except OSError as error:
-        raise EvaluationError("cannot create the blinding key file") from error
-    try:
-        payload = key.encode("utf-8") + b"\n"
-        written = 0
-        while written < len(payload):
-            written += os.write(handle, payload[written:])
-        os.fsync(handle)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.close(handle)
-        with contextlib.suppress(OSError):
-            resolved.unlink()
-        raise
-    os.close(handle)
-    sync_directory(resolved.parent)
     return {
         "schema_version": KEY_SCHEMA,
         "status": "created",

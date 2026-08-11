@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from megamind.fsops import (
     atomic_write,
     backup_existing,
     content_hash,
+    create_private_file,
     remove_empty_directory,
     resolve_contained,
     sync_directory,
@@ -123,3 +125,50 @@ def test_remove_empty_directory_never_removes_a_directory_with_content(
     assert remove_empty_directory(tmp_path, "kept/page.md") is False
     with pytest.raises(PathEscapeError):
         remove_empty_directory(tmp_path, "../outside")
+
+
+def test_create_private_file_is_owner_only_from_the_first_syscall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "nested" / "secret.key"
+    calls: list[tuple[str, int, int]] = []
+    real_open = os.open
+
+    def probe(path: object, flags: int, mode: int = 0o777, **kwargs: object) -> int:
+        calls.append((str(path), flags, mode))
+        return real_open(path, flags, mode, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "open", probe)
+    create_private_file(target, "s3cret\n", durable=True)
+    monkeypatch.undo()
+    creations = [call for call in calls if call[0] == str(target)]
+    assert len(creations) == 1
+    _path, flags, mode = creations[0]
+    assert mode == 0o600
+    assert flags & os.O_EXCL
+    assert flags & os.O_CREAT
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert target.read_text(encoding="utf-8") == "s3cret\n"
+
+
+def test_create_private_file_refuses_to_replace_an_existing_file(tmp_path: Path) -> None:
+    target = tmp_path / "secret.key"
+    create_private_file(target, "first\n")
+    with pytest.raises(FileExistsError):
+        create_private_file(target, "second\n")
+    assert target.read_text(encoding="utf-8") == "first\n"
+
+
+def test_create_private_file_leaves_nothing_behind_when_the_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "secret.key"
+
+    def explode(handle: int, data: bytes) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "write", explode)
+    with pytest.raises(OSError):
+        create_private_file(target, "never lands\n")
+    monkeypatch.undo()
+    assert not target.exists()
