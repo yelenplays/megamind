@@ -61,9 +61,9 @@ numeric `context_budget` override; offers, filtered, withheld, broken,
 pointer, and other outcomes with no loadable path carry no budget.
 `preflight_id` is a deterministic content hash over the request hash, catalog
 snapshot, model class, and result - proof the consultation happened, without
-storing the raw request. `--semantic` reranks the
-authorized matches locally; the `semantic` block states `disabled`, `ok`,
-`unavailable`, or `error` and any non-`ok` state keeps the lexical order.
+storing the raw request. `--semantic` reranks the authorized matches locally;
+the `semantic` block states `disabled`, `ok`, `unavailable`, or `error` and
+any non-`ok` state keeps the lexical order.
 
 ## megamind-axi adopt <target> [--name N] [--apply --plan-id ID] [--rollback] [--full]
 

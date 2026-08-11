@@ -202,9 +202,8 @@ def _evidence_summary(
 
     The lexical scorer still uses the exact same reasons and signals for
     confidence, and `matches[].reasons` still carries them verbatim. This
-    additive summary is the privacy-minimized view: signal classes and numeric
-    coverage explain the route without retaining query-derived words or page
-    content.
+    summary is the privacy-minimized view: signal classes and numeric coverage
+    explain the route without retaining query-derived words or page content.
     """
     counts = _signal_counts(reasons)
     classes = [signal_class for signal_class in SIGNAL_CLASSES if counts[signal_class]]
@@ -478,8 +477,8 @@ def run_preflight(
             result.notes.append("offer the listed wikis as choices; load nothing until picked")
 
     result.semantic = outcome.to_dict()
-    # The public packet is additive, but proof inputs stay stable: the card
-    # budget is already covered by catalog_hash and the evidence summary is a
+    # The public packet grew, but proof inputs stay stable: the card budget is
+    # already covered by catalog_hash and the evidence summary is a
     # deterministic function of the request hash, catalog, and model class.
     proof = {
         "request_hash": result.request_hash,
