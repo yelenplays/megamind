@@ -1,6 +1,6 @@
 # Phase 5 governed pilot verification
 
-Status: arm execution pending
+Status: completed, rollback required
 
 A task-owned restricted sandbox exercised exactly two synthetic card postures:
 one cloud `digest-only` image card and one `public-reference` finance card with
@@ -46,7 +46,7 @@ to those local surfaces, keeps raw immutable, and uses a durable
 `megamind/evolve-rollback/v1` transaction with additive controlled-tree hashes.
 Existing retrieval schemas and default candidate columns are unchanged.
 
-## Real three-arm preparation
+## Real three-arm evaluation
 
 The frozen task set, rubric, thresholds, model/provider identity, tools, effort,
 seed, and three isolated snapshots were committed only to the task-private
@@ -57,6 +57,17 @@ none appeared. Three condition-blind executor packets name opaque labels and
 commitments only.
 
 No model result was fabricated and the preparing agent did not grade its own
-work. Promotion, aggregate arm metrics, unblinding, and the final evaluation
-audit remain pending host dispatch and return of all three sealed outputs.
-Thresholds are frozen and must not be edited after that dispatch.
+work. Three host-executed sealed outputs validated as complete, with four tasks
+per blind label and no cross-arm contamination. The blind aggregate target
+accuracies were 0.25, 0.25, and 0.50; adjacent accuracies were 0.50, 0.50, and
+0.75; provenance rates were 0.50 for every arm; and every arm reported zero
+authorized context characters.
+
+Scoring sealed those blind metrics before unblinding. The preregistered
+comparison was -0.25 target improvement, -0.25 adjacent delta, and 0.00
+provenance delta. It failed the 0.20 improvement floor and zero adjacent
+regression tolerance. Prompt leak, canary leak, privacy violations, and model
+access violations were all zero. The typed outcome is `rollback-required`, the
+safe evaluation event is recorded, the relevant gap remains open with the
+rollback reference, and isolated updated knowledge remains untrusted. Frozen
+thresholds were not edited and no post-hoc rerun or promotion was attempted.

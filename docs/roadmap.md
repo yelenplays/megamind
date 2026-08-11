@@ -143,9 +143,11 @@ model are non-negotiable at every stage.
   canonical route honors the card context budget, and evolve now enforces the
   immutable raw boundary plus durable content-verified rollback and interrupted
   recovery.
-- A real blinded three-arm run is preregistered and prepared. Model execution
-  and grading remain host-owned under ADR 0009; promotion status stays pending
-  until all sealed arm outputs are returned and every frozen gate passes.
+- The real blinded three-arm run completed under ADR 0009. All sealed outputs
+  validated with zero privacy/model-access violations and no contamination, but
+  target improvement and adjacent regression failed their frozen gates. The
+  typed outcome is `rollback-required`; the evaluation event is recorded, the
+  relevant gap remains open, and updated knowledge remains untrusted.
 - Privacy-safe maintained evidence is summarized in
   [phase5-pilot-verification.md](phase5-pilot-verification.md). Task-private
   prompts, outputs, keys, maps, roots, and content are not committed.
