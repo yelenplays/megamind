@@ -1,17 +1,19 @@
 # Architecture
 
 Megamind is a small, dependency-free Python package behind the `megamind-axi`
-executable. Every command runs locally, deterministically, and without network
-access. Internally everything is plain typed Python objects; the CLI builds
-one typed document per invocation and renders it as TOON or JSON only at the
-output boundary (see [axi.md](axi.md)).
+executable. Every command runs locally and without network access, and every
+command but `experiment keygen` is deterministic (see
+[Determinism](#determinism) for that one exception). Internally everything is
+plain typed Python objects; the CLI builds one typed document per invocation
+and renders it as TOON or JSON only at the output boundary (see
+[axi.md](axi.md)).
 
 ## Modules
 
 | Module | Responsibility |
 | --- | --- |
 | `megamind.models` | Knowledge types, lifecycle states, privacy and access classes, frontmatter parse/serialize (deterministic YAML subset) |
-| `megamind.fsops` | Path containment, atomic writes, backups, audit log. Every write goes through here |
+| `megamind.fsops` | Path containment, atomic writes, backups, audit log, owner-only secret files. Every write goes through here |
 | `megamind.registry` | `.megamind/registry.json` (schema v1/v2) load/save/validate/migrate; generated `ROUTER.md` projection |
 | `megamind.access` | Model-access policy: derives and clamps the binding local/cloud access, routing mode, and catalog visibility for every card |
 | `megamind.card` | The standalone `.megamind/wiki-card.json` of a canonical wiki root |
@@ -220,9 +222,10 @@ measured only on what the declared model class actually authorizes, which the
 preregistered against the corpus, query-set, and task-set digests they gate.
 
 The three-arm contract is planning and arithmetic only. The host executes the
-arms; Megamind freezes the inputs, blinds the conditions behind seeded labels,
-validates the returned outputs, seals the blind scores before it unblinds, and
-appends a bounded safe audit event. See `docs/evaluation.md` and ADR 0009.
+arms; Megamind freezes the inputs, blinds the conditions behind opaque labels
+under the host's private blinding key, validates the returned outputs, seals
+the blind scores before it unblinds, and appends a bounded safe audit event.
+See `docs/evaluation.md` and ADR 0009.
 
 ## Safety model
 
@@ -236,7 +239,11 @@ appends a bounded safe audit event. See `docs/evaluation.md` and ADR 0009.
   policies layered on top of the bare atomic-write primitive, so `setup skill`,
   which writes into a destination outside any vault, gets atomicity only. The
   evaluation surfaces use the same primitive, but only after refusing any
-  destination that resolves inside an evaluated root or inside any vault.
+  destination that resolves inside an evaluated root or inside any vault. The
+  blinding key is the exception: `fsops.create_private_file` creates it
+  owner-only from its first syscall and refuses to replace an existing key,
+  because a secret must never exist under broader permissions, not even
+  between a write and a `chmod`.
 - The registry stores only root-relative paths, so vaults stay portable and
   never leak machine-specific locations.
 - `doctor` re-checks the invariants: containment, unsafe symlinks, router

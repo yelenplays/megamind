@@ -109,13 +109,15 @@ model are non-negotiable at every stage.
   surfaced without ever entering the authorized context
 - Versioned machine-readable task sets, rubrics, thresholds, canonical results,
   and bounded safe evaluation audit records
-- Isolated three-arm evaluation contract (`experiment plan|validate|score|record`)
-  for no-wiki, current-wiki, and updated-wiki conditions. The host supplies arm
-  outputs; Megamind never invokes a model, worker, network, account, or service
-- Conditions are assigned to blind labels by a deterministic seeded permutation.
-  The grader packet carries only blind identities and the rubric; the unblinding
-  map is a separate host artifact, and scoring seals the blind scores before it
-  reads that map
+- Isolated three-arm evaluation contract
+  (`experiment keygen|plan|validate|score|record`) for no-wiki, current-wiki,
+  and updated-wiki conditions. The host supplies arm outputs; Megamind never
+  invokes a model, worker, network, account, or service
+- Conditions are assigned to blind labels by a keyed HMAC permutation of the
+  frozen public identity under the host's private blinding key, which `keygen`
+  writes and no public artifact carries. The grader packet holds only blind
+  identities and the rubric; the unblinding map is a separate host artifact,
+  and scoring seals the blind scores before it reads that map
 - Frozen provenance digests, cross-arm contamination checks, authorized-context
   accounting, rollback-required and unsettled outcomes, and restrictive
   provisional governance

@@ -35,9 +35,12 @@ with a stable `schema_version`:
 | `megamind/research-wave/v1` | `research-wave` |
 | `megamind/research-result/v1` | `research-result` |
 | `megamind/provisional-wiki-result/v1` | `provision-wiki` |
-| `megamind/benchmark-result/v1`, `megamind/benchmark-check/v1` | `bench run|check` |
+| `megamind/benchmark-result/v1`, `megamind/benchmark-check/v1` | `bench run`, `bench check` |
 | `megamind/evaluation-key/v1` | `experiment keygen` |
-| `megamind/evaluation-plan/v1`, `megamind/evaluation-grader-packet/v1`, `megamind/evaluation-unblinding-map/v1`, `megamind/evaluation-validation/v1`, `megamind/evaluation-score/v1`, `megamind/evaluation-record/v1` | `experiment plan|validate|score|record` |
+| `megamind/evaluation-plan/v1`, `megamind/evaluation-grader-packet/v1`, `megamind/evaluation-unblinding-map/v1` | `experiment plan` |
+| `megamind/evaluation-validation/v1` | `experiment validate` |
+| `megamind/evaluation-score/v1` | `experiment score` |
+| `megamind/evaluation-record/v1` | `experiment record` |
 | `megamind/error/v1` | any failure |
 
 The v2 retrieval documents are additive over their v1 shapes: every v1 field
