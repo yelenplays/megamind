@@ -415,6 +415,91 @@ def test_a_malformed_today_never_reaches_a_durable_record(
     assert bad not in log
 
 
+@pytest.mark.parametrize("bad", ["tomorrow", "2026-13-01", "01/02/2026"])
+def test_a_malformed_cooldown_never_reaches_a_durable_record(
+    vault: Path, capsys: pytest.CaptureFixture[str], bad: str
+) -> None:
+    """`--cooldown-until` is a date on the same record as `--today` and fails
+    the same way, before any side effect."""
+    gap_id = create_gap(capsys, vault)
+    journal = (vault / ".megamind/gaps.jsonl").read_text(encoding="utf-8")
+    for argv in (
+        ["gap", "attempt", gap_id, "--outcome", "no source"],
+        ["gap", "transition", gap_id, "--status", "planned"],
+    ):
+        code, doc, err = run_json(capsys, "--root", str(vault), *argv, "--cooldown-until", bad)
+        assert code == 2
+        assert err == ""
+        assert doc["code"] == "usage_error"
+        assert "--cooldown-until" in doc["message"]
+    assert (vault / ".megamind/gaps.jsonl").read_text(encoding="utf-8") == journal
+
+    # The valid forms still work: an explicit date sets it, an explicit empty
+    # string clears it, and an omitted flag keeps it.
+    _, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "gap",
+        "attempt",
+        gap_id,
+        "--outcome",
+        "no source",
+        "--cooldown-until",
+        "2026-02-01",
+        "--today",
+        "2026-01-02",
+    )
+    assert doc["gap"]["cooldown_until"] == "2026-02-01"
+    _, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "gap",
+        "transition",
+        gap_id,
+        "--status",
+        "planned",
+        "--today",
+        "2026-01-03",
+    )
+    assert doc["gap"]["cooldown_until"] == "2026-02-01"
+    _, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "gap",
+        "transition",
+        gap_id,
+        "--status",
+        "in_progress",
+        "--cooldown-until",
+        "",
+        "--today",
+        "2026-01-04",
+    )
+    assert doc["gap"]["cooldown_until"] == ""
+
+
+def test_doctor_reports_a_hand_edited_cooldown_date(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gap_id = create_gap(capsys, vault)
+    journal = vault / ".megamind/gaps.jsonl"
+    record = json.loads(journal.read_text(encoding="utf-8").splitlines()[-1])
+    record["cooldown_until"] = "tomorrow"
+    journal.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    code, doc, err = run_json(capsys, "--root", str(vault), "gap", "list")
+    assert code == 1
+    assert err == ""
+    assert doc["code"] == "garden_invalid"
+    code, report, _ = run_json(capsys, "--root", str(vault), "doctor")
+    assert code == 1
+    assert any(finding["check"] == "gaps" for finding in report["findings"])
+    assert gap_id in journal.read_text(encoding="utf-8")
+
+
 def test_repeating_a_terminal_transition_changes_nothing(
     vault: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

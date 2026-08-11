@@ -314,6 +314,45 @@ def test_a_self_transition_never_silently_rewrites_a_cooldown(tmp_path: Path) ->
     assert store.get(gap.gap_id).cooldown_until == "2026-02-01"
 
 
+@pytest.mark.parametrize("bad", ["tomorrow", "2026-13-01", "01/02/2026", "next week"])
+def test_a_malformed_cooldown_never_reaches_a_durable_record(tmp_path: Path, bad: str) -> None:
+    """`cooldown_until` is a date on the same record as `today`, so the same
+    typed owner decides whether it may be written."""
+    store = GapStore(tmp_path)
+    gap = store.create(GapRecord.new("A", "one", today="2026-01-01"))
+    lines = len((tmp_path / ".megamind/gaps.jsonl").read_text(encoding="utf-8").splitlines())
+    with pytest.raises(GardenError, match="ISO"):
+        store.attempt(gap.gap_id, "no source", cooldown_until=bad, today="2026-01-02")
+    with pytest.raises(GardenError, match="ISO"):
+        store.transition(gap.gap_id, "planned", cooldown_until=bad, today="2026-01-02")
+    assert store.get(gap.gap_id).cooldown_until == ""
+    assert store.get(gap.gap_id).attempts == []
+    assert len((tmp_path / ".megamind/gaps.jsonl").read_text().splitlines()) == lines
+
+
+@pytest.mark.parametrize(
+    "field", ["cooldown_until", "created", "updated", "attempt_date", "rejection_date"]
+)
+def test_journal_replay_revalidates_every_recorded_date(tmp_path: Path, field: str) -> None:
+    """A hand-edited journal fails typed at read, not at the next mutation."""
+    store = GapStore(tmp_path)
+    gap = store.create(GapRecord.new("A", "one", today="2026-01-01"))
+    store.attempt(gap.gap_id, "no source", cooldown_until="2026-02-01", today="2026-01-02")
+    store.transition(gap.gap_id, "rejected", reason="no owner", today="2026-01-03")
+    journal = tmp_path / ".megamind/gaps.jsonl"
+    last = json.loads(journal.read_text(encoding="utf-8").splitlines()[-1])
+    if field == "attempt_date":
+        last["attempts"][0]["date"] = "tomorrow"
+    elif field == "rejection_date":
+        last["rejection"]["date"] = "tomorrow"
+    else:
+        last[field] = "tomorrow"
+    journal.write_text(json.dumps(last) + "\n", encoding="utf-8")
+    with pytest.raises(GardenError, match="invalid gap journal entry"):
+        GapStore(tmp_path).records()
+    assert validate_gap_journal(tmp_path)
+
+
 def test_provision_requires_all_criteria_and_registers_restrictively(tmp_path: Path) -> None:
     init_vault(tmp_path, starter=False)
     files = provision_local_wiki(
@@ -469,6 +508,143 @@ def test_a_resume_refuses_content_the_transaction_did_not_write(
         apply_provision_plan(tmp_path, plan, plan.plan_id)
     with pytest.raises(GardenError, match="rollback refused"):
         rollback_provision(tmp_path, plan.plan_id)
+
+
+def provision_write_count(tmp_path: Path, name: str) -> int:
+    """How many gardening writes one whole apply performs, so a power-loss cut
+    can be placed on either side of every durability boundary."""
+    probe = tmp_path / f"probe-{name}"
+    init_vault(probe, starter=False)
+    plan = plan_provision_wiki(probe, name, name, make_criteria(), today="2026-01-01")
+    import megamind.gardening as gardening
+
+    original = gardening.atomic_write
+    seen = 0
+
+    def counted(root: Path, target: str | Path, content: str, **kwargs: object) -> Path:
+        nonlocal seen
+        seen += 1
+        return original(root, target, content, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(gardening, "atomic_write", counted)
+    try:
+        apply_provision_plan(probe, plan, plan.plan_id)
+    finally:
+        monkeypatch.undo()
+    return seen
+
+
+def test_a_power_loss_at_every_durability_boundary_stays_recoverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cut the process at each write in turn. Whatever survives, recovery must
+    either finish the transaction or undo it, and never claim a false no-op."""
+    total = provision_write_count(tmp_path, "CountWiki")
+    # Every cut point: before the write-ahead record, between each target, and
+    # on both sides of the commit record that closes the transaction.
+    for cut in range(total):
+        root = tmp_path / f"cut-{cut}"
+        init_vault(root, starter=False)
+        before = (root / ".megamind/registry.json").read_text(encoding="utf-8")
+        plan = plan_provision_wiki(
+            root, "HaltWiki", "HaltWiki", make_criteria(), today="2026-01-01"
+        )
+        with monkeypatch.context() as patched:
+            kill_after(patched, cut)
+            with pytest.raises(KeyboardInterrupt):
+                apply_provision_plan(root, plan, plan.plan_id)
+
+        manifest = root / f".megamind/audit/provisional-wiki-{plan.plan_id}.json"
+        if not manifest.is_file():
+            # Cut before the write-ahead record: nothing was promised.
+            assert load_registry(root).wiki_by_name("HaltWiki") is None
+            continue
+        resumed = resume_provision(root, plan.plan_id, "HaltWiki", "HaltWiki")
+        assert resumed is not None
+        status, _files = resumed
+        assert status in {"applied", "noop"}
+        # However the cut fell, the wiki is now whole and verifies as a no-op.
+        assert json.loads(manifest.read_text(encoding="utf-8"))["state"] == "applied"
+        assert load_registry(root).wiki_by_name("HaltWiki") is not None
+        assert load_wiki_card(root / "HaltWiki").name == "HaltWiki"
+        assert (root / "HaltWiki/wiki/log.md").read_text(encoding="utf-8").count(
+            "megamind:event:"
+        ) == 1
+        assert resume_provision(root, plan.plan_id, "HaltWiki", "HaltWiki") == ("noop", [])
+        assert rollback_provision(root, plan.plan_id)
+        assert not (root / "HaltWiki").exists()
+        assert (root / ".megamind/registry.json").read_text(encoding="utf-8") == before
+
+
+def test_an_applied_marker_over_a_lost_target_is_never_a_noop(tmp_path: Path) -> None:
+    """A rename that did not reach disk leaves an applied record over content
+    that is not there. That is an incomplete commit, not a success."""
+    init_vault(tmp_path, starter=False)
+    before = (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8")
+    plan = plan_provision_wiki(tmp_path, "LostWiki", "LostWiki", make_criteria())
+    apply_provision_plan(tmp_path, plan, plan.plan_id)
+
+    # The backed-up target reverts to its prior version; the generated one is
+    # simply gone. Neither may be reported as an applied no-op.
+    (tmp_path / ".megamind/registry.json").write_text(before, encoding="utf-8")
+    (tmp_path / "LostWiki/CARD.md").unlink()
+    status, files = resume_provision(tmp_path, plan.plan_id, "LostWiki", "LostWiki")  # type: ignore[misc]
+    assert status == "applied"
+    assert files
+    assert load_registry(tmp_path).wiki_by_name("LostWiki") is not None
+    assert (tmp_path / "LostWiki/CARD.md").is_file()
+    assert resume_provision(tmp_path, plan.plan_id, "LostWiki", "LostWiki") == ("noop", [])
+
+
+def test_an_applied_marker_over_a_lost_target_can_also_roll_back(tmp_path: Path) -> None:
+    init_vault(tmp_path, starter=False)
+    before = (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8")
+    plan = plan_provision_wiki(tmp_path, "LostWiki", "LostWiki", make_criteria())
+    apply_provision_plan(tmp_path, plan, plan.plan_id)
+    (tmp_path / ".megamind/registry.json").write_text(before, encoding="utf-8")
+    assert rollback_provision(tmp_path, plan.plan_id)
+    assert not (tmp_path / "LostWiki").exists()
+    assert (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8") == before
+
+
+def derive_plan_id(plan: object, today: str) -> str:
+    from megamind.fsops import content_hash
+    from megamind.gardening import _stable
+
+    return content_hash(
+        _stable(
+            {
+                "name": plan.name,  # type: ignore[attr-defined]
+                "path": plan.path,  # type: ignore[attr-defined]
+                "today": today,
+                "changes": plan.changes,  # type: ignore[attr-defined]
+            }
+        )
+    )
+
+
+def test_apply_never_mutates_the_reviewed_plan(tmp_path: Path) -> None:
+    """`plan_id` is the approval token, so the plan it hashes must still hash to
+    it after the apply that token authorized."""
+    init_vault(tmp_path, starter=False)
+    plan = plan_provision_wiki(
+        tmp_path, "PlanWiki", "PlanWiki", make_criteria(), today="2026-01-01"
+    )
+    snapshot = [dict(change) for change in plan.changes]
+    assert derive_plan_id(plan, "2026-01-01") == plan.plan_id
+    apply_provision_plan(tmp_path, plan, plan.plan_id)
+    assert [dict(change) for change in plan.changes] == snapshot
+    assert derive_plan_id(plan, "2026-01-01") == plan.plan_id
+    # The manifest recorded the bytes that landed without reaching back into it.
+    manifest = json.loads(
+        (tmp_path / f".megamind/audit/provisional-wiki-{plan.plan_id}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    logged = [c for c in manifest["plan"]["changes"] if c["path"] == "PlanWiki/wiki/log.md"]
+    assert "megamind:event:" in logged[0]["new"]
+    assert apply_provision_plan(tmp_path, plan, plan.plan_id) == []
 
 
 def test_a_transaction_manifest_is_refused_for_other_arguments(tmp_path: Path) -> None:

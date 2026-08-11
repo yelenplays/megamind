@@ -119,14 +119,21 @@ def backup_existing(root: Path, target: str | Path, *, durable: bool = False) ->
     return backup_path
 
 
-def remove_contained(root: Path, target: str | Path) -> None:
-    """Remove a contained file or tree, failing closed on path escapes."""
+def remove_contained(root: Path, target: str | Path, *, durable: bool = False) -> None:
+    """Remove a contained file or tree, failing closed on path escapes.
+
+    ``durable`` flushes the parent directory, so the removal is as recoverable
+    as the writes it undoes.
+    """
     resolved = resolve_contained(root, target)
+    parent = resolved.parent
     if resolved.is_dir() and not resolved.is_symlink():
         shutil.rmtree(resolved)
     else:
         with contextlib.suppress(FileNotFoundError):
             resolved.unlink()
+    if durable and parent.is_dir():
+        sync_directory(parent)
 
 
 def append_audit(

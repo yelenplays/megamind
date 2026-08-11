@@ -208,12 +208,19 @@ a different reason, a different `--superseded-by`, a different cooldown - is not
 an exact repeat and refuses with `gap_transition_invalid` rather than
 overwriting a terminal fact.
 
-Dates are supplied by the host or CLI `--today`, never read from the clock, and
-are parsed as ISO `YYYY-MM-DD` before any write, so a malformed date fails typed
-instead of becoming permanent journal state or a log heading. A journal line
-that is not a JSON gap object is a typed `garden_invalid` error, and `doctor`
-reports it in both root shapes. `gap list` bounds its rows to 20 with a note and
-`--full`, and keeps the unbounded `attempts` history behind `--full`.
+Dates are supplied by the host or CLI, never read from the clock, and every
+date a record carries - `created`, `updated`, `cooldown_until`, each attempt's
+`date`, and the rejection `date` - is parsed as ISO `YYYY-MM-DD` by one owner
+before any write, so a malformed date fails typed instead of becoming permanent
+journal state or a log heading, and two spellings of one day can never read as
+two values. `--today` and `--cooldown-until` both refuse a non-ISO value as a
+usage error before any side effect; the empty string stays the documented way to
+clear a cooldown. Replay revalidates the same fields, so a hand-edited journal
+fails at read rather than at the next mutation. A journal line that is not a
+JSON gap object, or that carries a date in any other form, is a typed
+`garden_invalid` error, and `doctor` reports it in both root shapes. `gap list`
+bounds its rows to 20 with a note and `--full`, and keeps the unbounded
+`attempts` history behind `--full`.
 
 `megamind/research-wave/v1` is a plan, not a dispatch instruction. It contains
 one direct nomination and bounded first-order nominations; deeper topics appear
@@ -261,15 +268,22 @@ transaction recorded in `.megamind/audit/provisional-wiki-<plan_id>.json`
 (`megamind/provisional-wiki-rollback/v1`), which carries the whole plan, the
 prior content of every file it will replace, and a `state` of `pending`,
 `applied`, or `rolled_back`. The manifest and every required backup are
-persisted and flushed to disk before the first target mutation, so an apply
-that a signal or power loss interrupts is always recoverable from the record
-alone:
+persisted and flushed to disk before the first target mutation, every target is
+written atomically and flushed with its parent directory, and the record only
+switches to `applied` after every target has been verified to hold its planned
+bytes. The reviewed plan is never mutated by the apply it authorized, so it
+keeps hashing to the `plan_id` that approved it. An apply that a signal or power
+loss interrupts is therefore always recoverable from the record alone:
 
 - re-running `--apply --plan-id <id>` with the same wiki and path resumes a
   `pending` transaction to completion, or verifies an `applied` one file by
   file and returns `status: noop`. The replay is reached before the plan is
   recomputed, so the wiki the first apply registered never turns the second
   into a `wiki already exists` failure;
+- an `applied` record over a target that is absent or still carries its prior
+  content is an incomplete commit, not a success: the same replay finishes it
+  and `--rollback` still undoes it, so a `noop` is never reported over content
+  that is not on disk;
 - a plan id recorded for a different wiki or path, and any file the transaction
   did not itself write, refuse with a typed `garden_invalid` result;
 - `--rollback --plan-id <id>` undoes a `pending` or `applied` transaction

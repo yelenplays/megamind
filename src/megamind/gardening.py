@@ -116,8 +116,10 @@ def _short(text: str, limit: int = MAX_TEXT) -> str:
 def _date(today: str | None) -> str:
     """Normalize a host-supplied date, refusing anything that is not ISO.
 
-    Dates reach durable records and log headings, so a non-ISO value has to
-    fail typed before the write rather than becoming permanent journal state.
+    This is the single owner of date validity for gap records. Every date that
+    reaches a durable record or a log heading passes through it, so a malformed
+    value fails typed before the write instead of becoming permanent state, and
+    two spellings of one day can never read as two different values.
     """
     if not today:
         return ""
@@ -254,6 +256,16 @@ class GapRecord:
         attempts = raw.get("attempts", [])
         if not isinstance(attempts, list) or any(not isinstance(x, dict) for x in attempts):
             raise GardenError("gap attempts must be a list of objects")
+        # Replay revalidates every date the record carries through the same
+        # owner the write path uses, so a hand-edited journal fails typed at
+        # read rather than surviving until the next mutation touches it.
+        replayed_attempts = [dict(x) for x in attempts]
+        for entry in replayed_attempts:
+            if "date" in entry:
+                entry["date"] = _date(str(entry["date"]))
+        rejection = dict(raw["rejection"]) if isinstance(raw.get("rejection"), dict) else None
+        if rejection is not None and "date" in rejection:
+            rejection["date"] = _date(str(rejection["date"]))
         record = cls(
             gap_id=str(raw["gap_id"]),
             wiki=str(raw["wiki"]),
@@ -261,14 +273,14 @@ class GapRecord:
             kind=str(raw["kind"]),
             status=str(raw["status"]),
             priority=priority,
-            attempts=[dict(x) for x in attempts],
-            cooldown_until=str(raw.get("cooldown_until", "")),
-            rejection=dict(raw["rejection"]) if isinstance(raw.get("rejection"), dict) else None,
+            attempts=replayed_attempts,
+            cooldown_until=_date(str(raw.get("cooldown_until", ""))),
+            rejection=rejection,
             reopened_from=str(raw.get("reopened_from", "")),
             superseded_by=str(raw.get("superseded_by", "")),
             related_topics=[str(x) for x in raw.get("related_topics", [])],
-            created=str(raw.get("created", "")),
-            updated=str(raw.get("updated", "")),
+            created=_date(str(raw.get("created", ""))),
+            updated=_date(str(raw.get("updated", ""))),
             identity=str(raw.get("identity", raw["gap_id"])),
         )
         if (
@@ -369,6 +381,7 @@ class GapStore:
     ) -> GapRecord:
         if status not in GAP_STATUSES:
             raise InvalidTransition(f"unknown gap status: {status}")
+        cooldown = None if cooldown_until is None else _date(cooldown_until)
         record = self.get(gap_id)
         previous_status = record.status
         if status == record.status:
@@ -377,7 +390,7 @@ class GapStore:
             # supersession. Anything that would change the record is not an
             # exact repeat, so it refuses instead of overwriting silently.
             conflicts: list[str] = []
-            if cooldown_until is not None and cooldown_until != record.cooldown_until:
+            if cooldown is not None and cooldown != record.cooldown_until:
                 conflicts.append("cooldown_until")
             if reason and _short(reason) != (record.rejection or {}).get("reason", ""):
                 conflicts.append("reason")
@@ -397,8 +410,8 @@ class GapStore:
         record.updated = _date(today) or record.updated
         # An omitted cooldown keeps the recorded backoff; only an explicit value
         # (including an explicit empty string) may clear it.
-        if cooldown_until is not None:
-            record.cooldown_until = cooldown_until
+        if cooldown is not None:
+            record.cooldown_until = cooldown
         if status == "rejected":
             record.rejection = {"reason": _short(reason), "date": record.updated}
         if status == "open" and previous_status != "open":
@@ -419,6 +432,7 @@ class GapStore:
         today: str | None = None,
         cooldown_until: str | None = None,
     ) -> GapRecord:
+        cooldown = None if cooldown_until is None else _date(cooldown_until)
         record = self.get(gap_id)
         attempt_id = content_hash(
             _stable(
@@ -438,8 +452,8 @@ class GapStore:
                 "date": _date(today),
             }
         )
-        if cooldown_until is not None:
-            record.cooldown_until = cooldown_until
+        if cooldown is not None:
+            record.cooldown_until = cooldown
         record.updated = _date(today) or record.updated
         return self._append(record, "attempt", {"attempt_id": attempt_id})
 
@@ -793,13 +807,16 @@ class ProvisionPlan:
     notes: tuple[str, ...] = ()
 
     def to_data(self) -> dict[str, Any]:
+        # Every nested value is copied, not aliased: the manifest is enriched
+        # with the bytes that actually landed, and the reviewed plan must keep
+        # hashing to the plan_id that approved it.
         return {
             "schema": "megamind/provisional-wiki-plan/v1",
             "plan_id": self.plan_id,
             "wiki": self.name,
             "path": self.path,
             "files": [change["path"] for change in self.changes],
-            "changes": list(self.changes),
+            "changes": [dict(change) for change in self.changes],
             "notes": list(self.notes),
         }
 
@@ -988,16 +1005,46 @@ def _is_logged(current: str | None, expected: str) -> bool:
     return current is not None and current.startswith(expected.rstrip("\n"))
 
 
+TARGET_DONE = "done"
+TARGET_INCOMPLETE = "incomplete"
+TARGET_FOREIGN = "foreign"
+
+
+def _target_state(current: str | None, old: str | None, new: str, appendable: bool) -> str:
+    """Classify one target against the transaction record.
+
+    ``incomplete`` is the state a target is in when the transaction has not
+    materialized it yet: absent, or still carrying the content the plan
+    recorded as its prior version. It is the same fact whether the manifest
+    says ``pending`` or ``applied``, because a rename that never reached disk
+    leaves exactly this trace, so both recovery paths read it the same way.
+    ``foreign`` is content the transaction neither wrote nor replaced.
+    """
+    if current == new or (appendable and _is_logged(current, new)):
+        return TARGET_DONE
+    if current is None or current == old:
+        return TARGET_INCOMPLETE
+    return TARGET_FOREIGN
+
+
+def _target_states(root: Path, manifest: Mapping[str, Any]) -> dict[str, str]:
+    log_rel = _log_rel(manifest)
+    return {
+        rel: _target_state(_read_text(root, rel), old, new, rel == log_rel)
+        for rel, old, new in _manifest_changes(manifest)
+    }
+
+
 def _undo(root: Path, manifest: Mapping[str, Any], written: list[str]) -> None:
     backups = manifest["backups"]
     for rel in reversed(written):
         restore = backups.get(rel)
         if isinstance(restore, str):
-            atomic_write(root, rel, restore)
+            atomic_write(root, rel, restore, durable=True)
         else:
-            remove_contained(root, rel)
-    remove_contained(root, str(manifest["plan"]["path"]))
-    remove_contained(root, _manifest_rel(str(manifest["plan"]["plan_id"])))
+            remove_contained(root, rel, durable=True)
+    remove_contained(root, str(manifest["plan"]["path"]), durable=True)
+    remove_contained(root, _manifest_rel(str(manifest["plan"]["plan_id"])), durable=True)
 
 
 def _commit(root: Path, manifest: dict[str, Any], created: list[str]) -> list[str]:
@@ -1020,6 +1067,18 @@ def _commit(root: Path, manifest: dict[str, Any], created: list[str]) -> list[st
     for change in plan["changes"]:
         if isinstance(change, dict) and change.get("path") == log_rel and log_text is not None:
             change["new"] = log_text
+    if log_text is not None:
+        # The event append is the last mutation of a target, so the log crosses
+        # the same durability boundary as every other file before the record
+        # that commits it can claim they all landed.
+        atomic_write(root, log_rel, log_text, durable=True)
+    incomplete = [
+        rel for rel, state in _target_states(root, manifest).items() if state != TARGET_DONE
+    ]
+    if incomplete:
+        raise GardenError(
+            f"provisional wiki apply did not land every target: {', '.join(sorted(incomplete))}"
+        )
     manifest["state"] = "applied"
     manifest["created"] = created
     _write_manifest(root, manifest)
@@ -1046,18 +1105,17 @@ def _resume(root: Path, manifest: dict[str, Any]) -> list[str]:
     The manifest carries the whole plan, so recovery never needs a second plan
     and never trusts anything the transaction did not itself write.
     """
-    log_rel = _log_rel(manifest)
     changes = _manifest_changes(manifest)
-    for rel, old, new in changes:
-        current = _read_text(root, rel)
-        if current == new or (rel == log_rel and _is_logged(current, new)):
-            continue
-        if current is not None and current != old:
-            raise GardenError(
-                f"provisional wiki apply cannot resume: {rel} changed outside the transaction; "
-                "roll back with `--rollback --plan-id` and re-plan"
-            )
-        atomic_write(root, rel, new)
+    states = _target_states(root, manifest)
+    foreign = sorted(rel for rel, state in states.items() if state == TARGET_FOREIGN)
+    if foreign:
+        raise GardenError(
+            f"provisional wiki apply cannot resume: {foreign[0]} changed outside the "
+            "transaction; roll back with `--rollback --plan-id` and re-plan"
+        )
+    for rel, _old, new in changes:
+        if states[rel] != TARGET_DONE:
+            atomic_write(root, rel, new, durable=True)
     return _commit(root, manifest, [rel for rel, _old, _new in changes])
 
 
@@ -1071,13 +1129,18 @@ def _resume_or_verify(
             f"{plan['path']}, not {name} at {path}; re-run the dry run for these arguments"
         )
     if manifest["state"] == "applied":
-        expected = {rel: new for rel, _old, new in _manifest_changes(manifest)}
-        for rel in manifest["created"]:
-            if _read_text(root, rel) != expected.get(rel):
-                raise GardenError(
-                    f"provisional wiki apply is not idempotent: generated file changed: {rel}"
-                )
-        return "noop", []
+        states = _target_states(root, manifest)
+        foreign = sorted(rel for rel, state in states.items() if state == TARGET_FOREIGN)
+        if foreign:
+            raise GardenError(
+                f"provisional wiki apply is not idempotent: generated file changed: {foreign[0]}"
+            )
+        if all(state == TARGET_DONE for state in states.values()):
+            return "noop", []
+        # An applied marker over targets that did not all land is an incomplete
+        # commit, not a success, so it finishes the transaction instead of
+        # reporting a no-op over content that is not there.
+        return "applied", _resume(root, manifest)
     return "applied", _resume(root, manifest)
 
 
@@ -1147,7 +1210,7 @@ def apply_provision_plan(root: Path, plan: ProvisionPlan, approved_plan_id: str)
     written: list[str] = []
     try:
         for rel, _old, new in resolved_changes:
-            atomic_write(root, rel, new)
+            atomic_write(root, rel, new, durable=True)
             written.append(rel)
         return _commit(root, manifest, written)
     except BaseException:
@@ -1162,33 +1225,24 @@ def rollback_provision(root: Path, plan_id: str) -> list[str]:
         raise GardenError(f"provisional wiki rollback manifest not found: {plan_id}")
     if manifest["state"] == "rolled_back":
         raise GardenError(f"provisional wiki plan was already rolled back: {plan_id}")
-    pending = manifest["state"] == "pending"
-    log_rel = _log_rel(manifest)
-    changes = _manifest_changes(manifest)
-    expected = {rel: new for rel, _old, new in changes}
-    previous = {rel: old for rel, old, _new in changes}
+    # A target the transaction never materialized is undone whatever the record
+    # says, so a commit that did not fully reach disk rolls back rather than
+    # wedging between a `noop` it cannot honour and a refusal it does not earn.
+    states = _target_states(root, manifest)
     created = [str(rel) for rel in manifest["created"]]
     for rel in created:
-        current = _read_text(root, rel)
-        if current is None or current == expected.get(rel):
-            continue
-        # A pending transaction may not have reached this target yet, and may
-        # already have appended its evaluation event to the wiki log.
-        untouched = current == previous.get(rel)
-        logged = rel == log_rel and _is_logged(current, expected.get(rel, ""))
-        if pending and (untouched or logged):
-            continue
-        raise GardenError(f"rollback refused: generated file changed: {rel}")
+        if states.get(rel, TARGET_FOREIGN) == TARGET_FOREIGN:
+            raise GardenError(f"rollback refused: generated file changed: {rel}")
     removed: list[str] = []
     backups = manifest["backups"]
     for rel in reversed(created):
         restore = backups.get(rel)
         if isinstance(restore, str):
-            atomic_write(root, rel, restore)
+            atomic_write(root, rel, restore, durable=True)
         else:
-            remove_contained(root, rel)
+            remove_contained(root, rel, durable=True)
         removed.append(rel)
-    remove_contained(root, str(manifest["plan"]["path"]))
+    remove_contained(root, str(manifest["plan"]["path"]), durable=True)
     manifest["state"] = "rolled_back"
     manifest["created"] = []
     _write_manifest(root, manifest)

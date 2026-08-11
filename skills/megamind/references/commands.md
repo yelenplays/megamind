@@ -161,9 +161,11 @@ omitted flag can reopen a gap. An omitted `--cooldown-until` keeps the recorded
 backoff; pass it explicitly to change or clear it. Transitioning to the status
 a gap already holds is an idempotent `status: unchanged` no-op; a repeat that
 would change a rejection reason, supersession target, or cooldown refuses.
-`--today` must be ISO `YYYY-MM-DD`; it is validated before any write. `list`
-returns at most 20 rows with `total` and a truncation note, and reports
-`attempt_count` only - `--full` lifts both bounds.
+`--today` and `--cooldown-until` must both be ISO `YYYY-MM-DD` (or, for the
+cooldown, an explicit empty string to clear it); they are validated before any
+write, and replay revalidates every date already in the journal. `list` returns
+at most 20 rows with `total` and a truncation note, and reports `attempt_count`
+only - `--full` lifts both bounds.
 
 ## megamind-axi research-wave GAP_ID [capacity flags]
 
@@ -190,10 +192,12 @@ vault `init` has not created, and refuses a v1 registry until `migrate` has run
 explicitly. Without `--apply` it plans with no side effects and returns a
 content-bound `plan_id`; `--apply --plan-id <id>` applies exactly that plan as
 a write-ahead transaction whose manifest and backups are flushed before the
-first file changes. Re-running the same apply is a verified `status: noop`, an
-interrupted apply resumes from the manifest, and `--rollback --plan-id <id>`
-undoes it completely; a plan id from other arguments, stale targets, or edited
-generated content all refuse. It registers the card immediately with
+first file changes and whose targets are all flushed and verified before the
+record commits. Re-running the same apply is a verified `status: noop`, an
+interrupted apply resumes from the manifest (including one whose targets did
+not all reach disk), and `--rollback --plan-id <id>` undoes it completely; a
+plan id from other arguments, stale targets, or edited generated content all
+refuse. It registers the card immediately with
 `provisional: true`; provisional knowledge is not trusted, so route, catalog,
 and preflight surface it and only ever offer it, never load it. No remote
 repository, collaborators, account action, publication, merge, or spend is

@@ -794,6 +794,7 @@ def _gap_row(record: GapRecord, full: bool) -> Doc:
 
 def cmd_gap(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc, int]:
     store = GapStore(root)
+    cooldown = _garden_cooldown(args)
     if args.gap_action == "list":
         notes: list[str] = []
         records = store.records()
@@ -842,7 +843,7 @@ def cmd_gap(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc, int]
             args.status,
             today=today,
             reason=args.reason,
-            cooldown_until=args.cooldown_until,
+            cooldown_until=cooldown,
             superseded_by=args.superseded_by,
         )
         return {
@@ -858,7 +859,7 @@ def cmd_gap(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc, int]
         args.outcome,
         correlation_id=args.correlation_id,
         today=today,
-        cooldown_until=args.cooldown_until,
+        cooldown_until=cooldown,
     )
     return {
         "schema_version": "megamind/gap-attempt/v1",
@@ -1453,18 +1454,37 @@ def _error_doc(code: str, message: str, operation: str, help_entries: list[str])
     }
 
 
-def _parse_today(raw: str | None) -> date | None:
+def _parse_iso(raw: str | None, flag: str) -> date | None:
     if raw is None:
         return None
     try:
         return date.fromisoformat(raw)
     except ValueError as error:
-        raise UsageError(f"--today must be an ISO date (YYYY-MM-DD): {raw}") from error
+        raise UsageError(f"{flag} must be an ISO date (YYYY-MM-DD): {raw}") from error
+
+
+def _parse_today(raw: str | None) -> date | None:
+    return _parse_iso(raw, "--today")
 
 
 def _garden_today(args: argparse.Namespace) -> str:
     """The gardening surfaces persist dates, so they use the same ISO validator."""
     parsed = _parse_today(getattr(args, "today", None))
+    return parsed.isoformat() if parsed else ""
+
+
+def _garden_cooldown(args: argparse.Namespace) -> str | None:
+    """An omitted cooldown stays None; an explicit one is a date like any other.
+
+    The empty string is the documented way to clear a backoff, so it is passed
+    through rather than parsed.
+    """
+    raw = args.cooldown_until
+    if raw is None:
+        return None
+    if raw == "":
+        return ""
+    parsed = _parse_iso(str(raw), "--cooldown-until")
     return parsed.isoformat() if parsed else ""
 
 
