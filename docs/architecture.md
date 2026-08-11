@@ -258,4 +258,7 @@ at all: without `--today` freshness is simply reported as unknown rather than
 computed, and a gap record, wave id, or provisioning plan keeps an empty date
 rather than inventing one. Semantic reranking is equally deterministic: the
 char-ngram backend is a pure function of its inputs and rerank ties keep the
-lexical order. The only non-deterministic output is audit timestamps.
+lexical order. The only non-deterministic outputs are audit timestamps and
+`experiment keygen`, the one command that draws on OS entropy: a blinding key
+must be unpredictable or the published commitment is enumerable. Planning,
+validation, and scoring stay fully deterministic once that frozen key exists.

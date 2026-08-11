@@ -60,6 +60,7 @@ from .evaluation import (
     score_sealed,
     seal_experiment,
     validate_outputs,
+    write_blinding_key,
     write_document,
 )
 from .evolve import EvolveError, apply_plan, plan
@@ -1155,6 +1156,22 @@ def _guard_evaluation_outs(raw: Sequence[str | None], forbidden: Sequence[Path] 
             guard_output_path(Path(value), forbidden)
 
 
+def _unsettled_guard_map(plan: Doc, map_path: Path, *, required: bool) -> Doc | None:
+    """The map, read only to derive the roots an unsettled result must avoid.
+
+    With nothing to write there is nothing to contain, so an unreadable map
+    still yields the typed unsettled document. With a destination to protect,
+    the map is the only artifact naming the arm snapshots, so a map that cannot
+    be validated is refused rather than written around.
+    """
+    try:
+        return load_unblinding_map(plan, map_path)
+    except EvaluationError:
+        if required:
+            raise
+        return None
+
+
 def _evaluation_out(document: Doc, raw: str | None, forbidden: Sequence[Path] = ()) -> Doc:
     if raw:
         write_document(Path(raw), document, forbidden_roots=forbidden)
@@ -1183,6 +1200,8 @@ def cmd_bench(args: argparse.Namespace) -> tuple[Doc, int]:
 
 def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
     action = args.experiment_command
+    if action == "keygen":
+        return write_blinding_key(Path(args.out)), 0
     if action == "plan":
         arm_roots = [Path(args.no_wiki), Path(args.current_wiki), Path(args.updated_wiki)]
         evaluated = [*arm_roots, Path(args.output_root)]
@@ -1228,11 +1247,15 @@ def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
         # blind grades are fixed is the map opened, the protected roots derived
         # from it, the destination checked, and the result unblinded and written.
         sealed = seal_experiment(plan_path, outputs)
+        map_path = Path(args.unblinding_map)
         if sealed.unsettled is not None:
-            forbidden = evaluation_roots(sealed.plan)
+            # An incomplete set stays typed and blind, but still may not write
+            # into an arm snapshot, and only the map names those roots.
+            partial = _unsettled_guard_map(sealed.plan, map_path, required=bool(args.out))
+            forbidden = evaluation_roots(sealed.plan, partial)
             _guard_evaluation_outs([args.out], forbidden)
             return _evaluation_out(sealed.unsettled, args.out, forbidden), 1
-        unblinding = load_unblinding_map(sealed.plan, Path(args.unblinding_map))
+        unblinding = load_unblinding_map(sealed.plan, map_path)
         forbidden = evaluation_roots(sealed.plan, unblinding)
         _guard_evaluation_outs([args.out], forbidden)
         result = score_sealed(sealed, unblinding)
@@ -1647,6 +1670,13 @@ def build_parser() -> AxiParser:
     )
     _common_flags(p_experiment)
     experiment_sub = p_experiment.add_subparsers(dest="experiment_command")
+    p_exp_keygen = experiment_sub.add_parser(
+        "keygen",
+        help="write a new private 256-bit blinding key file (mode 0600)",
+        epilog=f"example: {EXECUTABLE} experiment keygen --out blinding.key",
+    )
+    _common_flags(p_exp_keygen)
+    p_exp_keygen.add_argument("--out", required=True, help="destination for the new key file")
     p_exp_plan = experiment_sub.add_parser(
         "plan", help="freeze task, model, rubric, threshold, and arm inputs"
     )
@@ -1917,8 +1947,14 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             raise UsageError("usage: megamind-axi bench run|check ...")
         return cmd_bench(args)
     if command in {"experiment", "eval", "evaluation"}:
-        if getattr(args, "experiment_command", None) not in {"plan", "validate", "score", "record"}:
-            raise UsageError("usage: megamind-axi experiment plan|validate|score|record ...")
+        if getattr(args, "experiment_command", None) not in {
+            "keygen",
+            "plan",
+            "validate",
+            "score",
+            "record",
+        }:
+            raise UsageError("usage: megamind-axi experiment keygen|plan|validate|score|record ...")
         return cmd_experiment(args)
     if command == "setup":
         if getattr(args, "setup_command", None) != "skill":

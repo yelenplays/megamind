@@ -45,10 +45,12 @@ The fixture, query set, threshold file, and task-set versions are immutable rele
 Blinding rests entirely on the key being unguessable. The published commitment plus a six-element assignment space makes an offline guess-and-check cost one HMAC per candidate, so length alone protects nothing: a padded project name is enumerable. `--blinding-key-file` therefore accepts only a machine-generated 256-bit key, written as exactly 64 lowercase hex characters, in its own regular file that is not readable by group or others. Keys that are not hex, are the wrong length, or are visibly repetitive are refused, and so is a file with loose permissions. Generate one with:
 
 ```
-python3 -c "import pathlib, secrets; p = pathlib.Path('blinding.key'); p.write_text(secrets.token_hex(32)); p.chmod(0o600)"
+megamind-axi experiment keygen --out blinding.key
 ```
 
-Megamind never generates the key itself: key generation needs OS entropy, and every Megamind command stays deterministic. Once the frozen key is supplied, planning and scoring are fully reproducible. The plan publishes a `key_id` fingerprint (an HMAC of a fixed domain string, never the key), so two plans built with one key are visibly related; Megamind cannot detect reuse it never sees, so rotating the key per experiment stays a host responsibility.
+`keygen` creates the file private from its very first syscall - `O_CREAT | O_EXCL` with mode 0600 - so the secret is never on disk under broader permissions, not even between a write and a `chmod`. It refuses to overwrite an existing key, writes the whole key, fsyncs the file and its directory, and removes a partial file if the write fails. It emits a `megamind/evaluation-key/v1` document naming the path and a `key_id` fingerprint, never the key itself.
+
+This is the one command that draws on OS entropy, and it is the only deliberate exception to Megamind's no-randomness rule: a blinding key must be unpredictable. Everything downstream stays deterministic - the same public inputs and the same frozen key always reproduce the same plan, assignment, and score. The plan publishes the same `key_id` fingerprint (an HMAC of a fixed domain string, never the key), so two plans built with one key are visibly related; Megamind cannot detect reuse it never sees, so rotating the key per experiment stays a host responsibility.
 
 ### Plan, grade, unblind
 
@@ -70,6 +72,8 @@ The host then submits one output per opaque arm to `experiment validate`, which 
 
 ## Where evidence may be written
 
-Every `--out`, `--grader-out`, and `--map-out` destination is resolved and refused when it lands inside an evaluated fixture, snapshot, output, or audit root, or inside any vault. `plan` forbids all three arm snapshot roots and the output root; `validate` and `score` derive the same roots from the validated plan and, for `score`, from the validated unblinding map, which is the only artifact naming the arm snapshot roots. An empty no-wiki snapshot is not a vault, so the ancestor scan alone would not catch evidence written into it. Every check runs before any artifact is written, so a refused destination leaves no partial artifact set and no audit event. All of these are atomic external writes.
+Every `--out`, `--grader-out`, and `--map-out` destination is resolved and refused when it lands inside an evaluated fixture, snapshot, output, or audit root, or inside any vault. `plan` forbids all three arm snapshot roots and the output root; `validate` and `score` derive the same roots from the validated plan and, for `score`, from the validated unblinding map, which is the only artifact naming the arm snapshot roots. An empty no-wiki snapshot is not a vault, so the ancestor scan alone would not catch evidence written into it.
+
+Containment holds for an incomplete arm set too. Sealing still runs first and stays blind, and the map is then read only to derive the roots the destination must avoid: with no `--out` there is nothing to contain, so an unreadable map still yields the typed `unsettled` document, but with a destination to protect an unvalidated map is refused rather than written around. Every check runs before any artifact is written, so a refused destination leaves no partial artifact set and no audit event. All of these are atomic external writes, and `--map-out` and generated key files land mode 0600.
 
 Evaluation output is evidence, not authorization to dispatch a worker or publish a wiki. Provisional wikis remain untrusted until the complete evaluation pass and an explicit governed card change.

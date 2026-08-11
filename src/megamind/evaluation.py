@@ -8,6 +8,7 @@ answer itself.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import itertools
@@ -15,6 +16,7 @@ import json
 import math
 import os
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -24,7 +26,13 @@ from pathlib import Path
 from typing import Any
 
 from .access import effective_policy
-from .fsops import atomic_write, atomic_write_path, content_hash, resolve_contained
+from .fsops import (
+    atomic_write,
+    atomic_write_path,
+    content_hash,
+    resolve_contained,
+    sync_directory,
+)
 from .registry import RegistryError, load_registry
 
 Doc = dict[str, Any]
@@ -38,6 +46,7 @@ TASK_SCHEMA = "megamind/evaluation-task-set/v1"
 OUTPUT_SCHEMA = "megamind/evaluation-arm-output/v1"
 GRADER_SCHEMA = "megamind/evaluation-grader-packet/v1"
 MAP_SCHEMA = "megamind/evaluation-unblinding-map/v1"
+KEY_SCHEMA = "megamind/evaluation-key/v1"
 QUERY_SET_SCHEMA = "megamind/benchmark-query-set/v1"
 
 PREFLIGHT_PREFIX = "megamind/preflight-result/"
@@ -58,10 +67,7 @@ BLINDING_SCHEME = "hmac-sha256"
 _HEX_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 _MIN_DISTINCT_KEY_CHARS = 8
 _MAX_REPEATED_KEY_BLOCK = 32
-KEYGEN_COMMAND = (
-    "python3 -c \"import pathlib, secrets; p = pathlib.Path('blinding.key'); "
-    'p.write_text(secrets.token_hex(32)); p.chmod(0o600)"'
-)
+KEYGEN_COMMAND = "megamind-axi experiment keygen --out blinding.key"
 _KEY_ID_DOMAIN = "megamind/blinding-key-id/v1"
 
 # The public inputs the assignment is derived from. Publishing all of them is
@@ -774,7 +780,7 @@ def require_blinding_key(raw: str) -> str:
     if not _HEX_KEY_RE.match(key):
         raise EvaluationError(
             f"blinding key must be {BLINDING_KEY_HEX_CHARS} lowercase hex characters "
-            f"(256 machine-generated bits); generate one with: {KEYGEN_COMMAND}"
+            f"(256 machine-generated bits); generate one with `{KEYGEN_COMMAND}`"
         )
     repetitive = len(set(key)) < _MIN_DISTINCT_KEY_CHARS or any(
         len(key) % block == 0 and key == key[:block] * (len(key) // block)
@@ -783,9 +789,56 @@ def require_blinding_key(raw: str) -> str:
     if repetitive:
         raise EvaluationError(
             "blinding key is too repetitive to be machine-generated; "
-            f"generate one with: {KEYGEN_COMMAND}"
+            f"generate one with `{KEYGEN_COMMAND}`"
         )
     return key
+
+
+def write_blinding_key(path: Path) -> Doc:
+    """Create a new private blinding key file, 0600 from the first syscall.
+
+    The one command in Megamind that draws on OS entropy, and deliberately so:
+    a blinding key must be unguessable, and planning and scoring stay fully
+    deterministic once the frozen key exists. The secret is never written under
+    broader permissions even transiently - ``O_CREAT | O_EXCL`` with mode 0600
+    creates it private and refuses to clobber an existing key - and a failed
+    write leaves no partial key behind.
+    """
+    resolved = guard_output_path(path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    key = secrets.token_hex(BLINDING_KEY_HEX_CHARS // 2)
+    try:
+        handle = os.open(resolved, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as error:
+        raise EvaluationError("refusing to overwrite an existing blinding key file") from error
+    except OSError as error:
+        raise EvaluationError("cannot create the blinding key file") from error
+    try:
+        payload = key.encode("utf-8") + b"\n"
+        written = 0
+        while written < len(payload):
+            written += os.write(handle, payload[written:])
+        os.fsync(handle)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(handle)
+        with contextlib.suppress(OSError):
+            resolved.unlink()
+        raise
+    os.close(handle)
+    sync_directory(resolved.parent)
+    return {
+        "schema_version": KEY_SCHEMA,
+        "status": "created",
+        "path": str(resolved),
+        "bits": BLINDING_KEY_HEX_CHARS * 4,
+        "mode": "0600",
+        "key_id": _blinding_key_id(key),
+        "help": [
+            "Keep this file private: it is the only secret that blinds the arms",
+            "Pass it to `megamind-axi experiment plan --blinding-key-file <file>`",
+        ],
+    }
 
 
 def read_blinding_key(path: Path) -> str:
@@ -922,9 +975,6 @@ def load_plan(path: Path) -> Doc:
     return plan
 
 
-_load_plan = load_plan
-
-
 def _plan_labels(plan: Doc) -> list[str]:
     labels = [str(arm.get("blind_label")) for arm in plan.get("arms", []) if isinstance(arm, dict)]
     if sorted(labels) != sorted(f"arm-{index}" for index in range(len(_CONDITIONS))):
@@ -1021,16 +1071,21 @@ def plan_experiment(
         "status": "planned",
     }
     identity_id = content_hash(_canonical(identity))
+    # One full-tree walk per arm: the digest feeds both the recorded snapshot
+    # and its commitment, and digest_tree reads every byte under the root.
+    snapshot_digests = {
+        condition: digest_tree(Path(root)) for condition, root in sorted(roots.items())
+    }
     snapshots = {
         label: {
             "root": roots[condition],
-            "wiki_sha256": digest_tree(Path(roots[condition])),
+            "wiki_sha256": snapshot_digests[condition],
             "commitment": _snapshot_commitment(
                 key,
                 identity_id,
                 label,
                 condition,
-                digest_tree(Path(roots[condition])),
+                snapshot_digests[condition],
                 assignment,
             ),
         }

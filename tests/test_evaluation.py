@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -34,8 +35,6 @@ from megamind.evaluation import (
     seal_experiment,
     validate_experiment,
 )
-
-_load_plan = load_plan
 
 ROOT = Path(__file__).parents[1]
 FIXTURES = ROOT / "evals/fixtures/release-mini"
@@ -567,6 +566,95 @@ def test_plan_accepts_only_a_machine_generated_256_bit_key(tmp_path: Path, weak:
         _plan(workspace, key=weak)
 
 
+def test_plan_hashes_each_snapshot_tree_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """digest_tree reads every byte under a root, so one walk per arm."""
+    walked: list[str] = []
+    real_digest_tree = evaluation_module.digest_tree
+
+    def counting(root: Path) -> str:
+        walked.append(str(root))
+        return real_digest_tree(root)
+
+    monkeypatch.setattr(evaluation_module, "digest_tree", counting)
+    _plan(tmp_path)
+    assert len(walked) == 3
+    assert len(set(walked)) == 3
+
+
+def test_keygen_creates_a_private_key_from_the_first_syscall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, int, int]] = []
+    real_open = os.open
+    target = tmp_path / "keys" / "blinding.key"
+
+    def probe(path: Any, flags: int, mode: int = 0o777, **kwargs: Any) -> int:
+        calls.append((str(path), flags, mode))
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(os, "open", probe)
+    document = evaluation_module.write_blinding_key(target)
+    monkeypatch.undo()
+    # The secret is never on disk under broader permissions, not even briefly.
+    creations = [call for call in calls if call[0] == str(target.resolve())]
+    assert len(creations) == 1
+    _path, flags, mode = creations[0]
+    assert mode == 0o600
+    assert flags & os.O_EXCL
+    assert flags & os.O_CREAT
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert document["schema_version"] == "megamind/evaluation-key/v1"
+    assert document["help"]
+    # The key itself is never echoed back, only its fingerprint.
+    key = read_blinding_key(target)
+    assert key not in json.dumps(document)
+    assert document["key_id"] == evaluation_module._blinding_key_id(key)
+
+
+def test_keygen_refuses_to_overwrite_an_existing_key(tmp_path: Path) -> None:
+    existing = _key_file(tmp_path)
+    with pytest.raises(EvaluationError, match="refusing to overwrite"):
+        evaluation_module.write_blinding_key(existing)
+    assert read_blinding_key(existing) == BLINDING_KEY
+
+
+def test_keygen_leaves_no_partial_key_when_the_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "blinding.key"
+
+    def explode(handle: int, data: bytes) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "write", explode)
+    with pytest.raises(OSError):
+        evaluation_module.write_blinding_key(target)
+    monkeypatch.undo()
+    assert not target.exists()
+
+
+def test_keygen_produces_usable_distinct_keys_through_the_cli(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first_path = tmp_path / "first.key"
+    code, first, err = run_json(capsys, "experiment", "keygen", "--out", str(first_path))
+    assert code == 0
+    assert err == ""
+    assert first["status"] == "created"
+    assert first["bits"] == 256
+    code, second, _ = run_json(capsys, "experiment", "keygen", "--out", str(tmp_path / "b.key"))
+    assert code == 0
+    assert first["key_id"] != second["key_id"]
+    # A generated key satisfies the policy the planner enforces.
+    _paths, docs = _plan(tmp_path / "workspace", key=read_blinding_key(first_path))
+    assert docs["plan"]["blinding"]["key_id"] == first["key_id"]
+    code, doc, _ = run_json(capsys, "experiment", "keygen", "--out", str(first_path))
+    assert code == 1
+    assert doc["code"] == "evaluation_invalid"
+
+
 def test_key_file_must_not_be_readable_by_group_or_others(tmp_path: Path) -> None:
     loose = _key_file(tmp_path, mode=0o644)
     with pytest.raises(EvaluationError, match="chmod 600"):
@@ -581,7 +669,7 @@ def test_key_error_names_a_safe_generation_command(tmp_path: Path) -> None:
     weak = tmp_path / "weak.key"
     weak.write_text("not-a-key\n", encoding="utf-8")
     weak.chmod(0o600)
-    with pytest.raises(EvaluationError, match=r"secrets\.token_hex"):
+    with pytest.raises(EvaluationError, match=r"experiment keygen"):
         read_blinding_key(weak)
 
 
@@ -714,9 +802,10 @@ def test_score_reads_the_map_only_after_every_arm_output(
     assert opened[:first_map].count("arm output") == len(outputs)
 
 
-def test_incomplete_arms_never_open_the_unblinding_map(
+def test_incomplete_arms_stay_typed_and_blind_with_an_unreadable_map(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """With nothing to write there is nothing to contain, so the map is optional."""
     paths, docs = _plan(tmp_path)
     labels = [arm["blind_label"] for arm in docs["plan"]["arms"]]
     outputs = _write_arms(paths, docs, labels=labels[:2])
@@ -736,6 +825,84 @@ def test_incomplete_arms_never_open_the_unblinding_map(
     assert code == 1
     assert doc["status"] == "unsettled"
     assert doc["missing_arms"] == [labels[2]]
+    assert "assignments" not in json.dumps(doc)
+
+
+def test_incomplete_score_still_refuses_an_out_inside_an_arm_snapshot(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An incomplete run stays blind, but never writes into an evaluated snapshot."""
+    paths, docs = _plan(tmp_path)
+    labels = [arm["blind_label"] for arm in docs["plan"]["arms"]]
+    outputs = _write_arms(paths, docs, labels=labels[:2])
+    target = paths["none"] / "score.json"
+    code, doc, _ = run_json(
+        capsys,
+        "experiment",
+        "score",
+        "--plan",
+        str(paths["artifacts"] / "plan.json"),
+        "--outputs",
+        *[str(path) for path in outputs],
+        "--unblinding-map",
+        str(paths["artifacts"] / "map.json"),
+        "--out",
+        str(target),
+    )
+    assert code == 1
+    assert doc["code"] == "evaluation_invalid"
+    assert not target.exists()
+
+
+def test_incomplete_score_with_an_out_requires_a_readable_map(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths, docs = _plan(tmp_path)
+    labels = [arm["blind_label"] for arm in docs["plan"]["arms"]]
+    outputs = _write_arms(paths, docs, labels=labels[:2])
+    (paths["artifacts"] / "map.json").write_text("not json at all", encoding="utf-8")
+    target = tmp_path / "score.json"
+    code, doc, _ = run_json(
+        capsys,
+        "experiment",
+        "score",
+        "--plan",
+        str(paths["artifacts"] / "plan.json"),
+        "--outputs",
+        *[str(path) for path in outputs],
+        "--unblinding-map",
+        str(paths["artifacts"] / "map.json"),
+        "--out",
+        str(target),
+    )
+    assert code == 1
+    assert doc["code"] == "evaluation_invalid"
+    assert not target.exists()
+
+
+def test_incomplete_score_writes_the_unsettled_document_outside_every_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths, docs = _plan(tmp_path)
+    labels = [arm["blind_label"] for arm in docs["plan"]["arms"]]
+    outputs = _write_arms(paths, docs, labels=labels[:2])
+    target = tmp_path / "unsettled.json"
+    code, doc, _ = run_json(
+        capsys,
+        "experiment",
+        "score",
+        "--plan",
+        str(paths["artifacts"] / "plan.json"),
+        "--outputs",
+        *[str(path) for path in outputs],
+        "--unblinding-map",
+        str(paths["artifacts"] / "map.json"),
+        "--out",
+        str(target),
+    )
+    assert code == 1
+    assert doc["status"] == "unsettled"
+    assert json.loads(target.read_text(encoding="utf-8"))["status"] == "unsettled"
 
 
 def test_validation_needs_no_unblinding_map(tmp_path: Path) -> None:
@@ -828,7 +995,7 @@ def test_plan_rejects_threshold_tampering(tmp_path: Path) -> None:
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
     thresholds.write_text(_release_section(exact_accuracy_min=0.99), encoding="utf-8")
     with pytest.raises(EvaluationError, match="frozen evaluation input"):
-        _load_plan(plan_path)
+        load_plan(plan_path)
 
 
 def test_plan_rejects_a_task_set_the_thresholds_do_not_bind(tmp_path: Path) -> None:
@@ -861,7 +1028,7 @@ def test_plan_identity_tampering_is_refused(tmp_path: Path) -> None:
     plan_path = paths["artifacts"] / "tampered.json"
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
     with pytest.raises(EvaluationError, match="tampered"):
-        _load_plan(plan_path)
+        load_plan(plan_path)
 
 
 def _drop_updated_provenance(paths: dict[str, Path], docs: dict[str, Any]) -> list[Path]:
@@ -1243,6 +1410,30 @@ def test_evaluation_documents_render_identically_in_toon_and_json(
     assert toon.encode(doc) == captured.out
 
 
+def test_unsettled_score_renders_identically_in_toon_and_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths, docs = _plan(tmp_path)
+    labels = [arm["blind_label"] for arm in docs["plan"]["arms"]]
+    outputs = _write_arms(paths, docs, labels=labels[:2])
+    argv = [
+        "experiment",
+        "score",
+        "--plan",
+        str(paths["artifacts"] / "plan.json"),
+        "--outputs",
+        *[str(path) for path in outputs],
+        "--unblinding-map",
+        str(paths["artifacts"] / "map.json"),
+    ]
+    code_json, doc, _ = run_json(capsys, *argv)
+    code_toon = main(argv)
+    captured = capsys.readouterr()
+    assert code_json == code_toon == 1
+    assert captured.err == ""
+    assert toon.encode(doc) == captured.out
+
+
 def test_every_evaluation_document_carries_schema_version_and_runnable_help(
     tmp_path: Path,
 ) -> None:
@@ -1259,6 +1450,7 @@ def test_every_evaluation_document_carries_schema_version_and_runnable_help(
     documents = [
         result,
         check_benchmark(results_path, THRESHOLDS),
+        evaluation_module.write_blinding_key(tmp_path / "generated.key"),
         docs["plan"],
         docs["grader"],
         docs["map"],
