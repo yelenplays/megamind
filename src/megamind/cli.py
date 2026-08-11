@@ -944,7 +944,32 @@ def cmd_research_result(args: argparse.Namespace, root: Path) -> tuple[Doc, int]
     }, 0
 
 
+# dest -> flag, in the order the help hint prints them, so the emitted apply
+# command is deterministic and every criterion has one spelling.
+PROVISION_CRITERIA_FLAGS: tuple[tuple[str, str], ...] = (
+    ("domain", "--domain"),
+    ("repeat_demand", "--repeat-demand"),
+    ("multi_topic", "--multi-topic"),
+    ("overlap", "--overlap"),
+    ("scope", "--scope"),
+    ("exclusions", "--exclusions"),
+    ("owner", "--owner"),
+    ("source_policy", "--source-policy"),
+    ("privacy", "--privacy"),
+    ("model_access", "--model-access"),
+    ("seed_topic", "--seed-topic"),
+    ("maintenance", "--maintenance"),
+)
+
+
 def _provision_criteria(args: argparse.Namespace) -> ProvisionCriteria:
+    """Build the criteria a plan or an apply needs, refusing before any write."""
+    missing = [flag for dest, flag in PROVISION_CRITERIA_FLAGS if getattr(args, dest, None) is None]
+    if missing:
+        raise UsageError(
+            "provision-wiki needs every qualification criterion to plan or apply; missing: "
+            + ", ".join(missing)
+        )
     return ProvisionCriteria(
         args.domain,
         args.repeat_demand,
@@ -961,6 +986,25 @@ def _provision_criteria(args: argparse.Namespace) -> ProvisionCriteria:
     )
 
 
+def _provision_command(args: argparse.Namespace, *tail: str, criteria: bool) -> str:
+    """The exact command that re-runs this invocation with `tail` appended.
+
+    An apply re-derives the plan from the criteria and from `--today`, so both
+    have to travel with the approval token or the printed command would parse
+    and then refuse as a plan-id mismatch. A rollback reads neither.
+    """
+    argv = [EXECUTABLE, "provision-wiki", shlex.quote(args.name), shlex.quote(args.path)]
+    if criteria:
+        for dest, flag in PROVISION_CRITERIA_FLAGS:
+            value = getattr(args, dest)
+            for item in value if isinstance(value, list) else [value]:
+                argv += [flag, shlex.quote(str(item))]
+        today = getattr(args, "today", None)
+        if today:
+            argv += ["--today", shlex.quote(str(today))]
+    return " ".join([*argv, *tail])
+
+
 def _applied_doc(name: str, path: str, plan_id: str, status: str, files: list[str]) -> Doc:
     return {
         "schema_version": "megamind/provisional-wiki-result/v1",
@@ -972,7 +1016,9 @@ def _applied_doc(name: str, path: str, plan_id: str, status: str, files: list[st
         "trusted": False,
         "help": _help(
             "Populate and evaluate confidence coverage before treating this wiki "
-            "as trusted knowledge"
+            "as trusted knowledge",
+            f"Run `{EXECUTABLE} provision-wiki {shlex.quote(name)} {shlex.quote(path)} "
+            f"--rollback --plan-id {plan_id}` to undo it; a rollback needs no criteria flags",
         ),
     }
 
@@ -996,6 +1042,9 @@ def cmd_provision_wiki(args: argparse.Namespace, root: Path, today: str) -> tupl
             "notes": outcome.notes,
             "help": _help(*entries),
         }, 0
+    # Every criterion is checked before a plan is computed and before an apply
+    # can reach the transaction, so neither mode ever writes on partial input.
+    criteria = _provision_criteria(args)
     if args.apply:
         if not args.plan_id:
             raise UsageError("provision-wiki --apply requires --plan-id from the dry run")
@@ -1006,7 +1055,6 @@ def cmd_provision_wiki(args: argparse.Namespace, root: Path, today: str) -> tupl
         if replay is not None:
             status, files = replay
             return _applied_doc(args.name, args.path, args.plan_id, status, files), 0
-    criteria = _provision_criteria(args)
     computed = plan_provision_wiki(root, args.name, args.path, criteria, today=today)
     if args.apply:
         applied = apply_provision_plan(root, computed, args.plan_id)
@@ -1028,9 +1076,12 @@ def cmd_provision_wiki(args: argparse.Namespace, root: Path, today: str) -> tupl
         "notes": list(computed.notes),
         "trusted": False,
         "help": _help(
-            f"Run `{EXECUTABLE} provision-wiki {shlex.quote(args.name)} "
-            f"{shlex.quote(args.path)} --apply --plan-id {computed.plan_id}` "
-            "after reviewing this local-only plan"
+            "Run `"
+            + _provision_command(args, "--apply", "--plan-id", computed.plan_id, criteria=True)
+            + "` after reviewing this local-only plan",
+            "Run `"
+            + _provision_command(args, "--rollback", "--plan-id", computed.plan_id, criteria=False)
+            + "` to undo an applied plan; a rollback needs no criteria flags",
         ),
     }, 0
 
@@ -1411,18 +1462,26 @@ def build_parser() -> AxiParser:
     _common_flags(p_provision)
     p_provision.add_argument("name")
     p_provision.add_argument("path")
-    p_provision.add_argument("--domain", required=True)
-    p_provision.add_argument("--repeat-demand", type=int, required=True)
-    p_provision.add_argument("--multi-topic", type=int, required=True)
-    p_provision.add_argument("--overlap", required=True)
-    p_provision.add_argument("--scope", required=True)
-    p_provision.add_argument("--exclusions", required=True)
-    p_provision.add_argument("--owner", required=True)
-    p_provision.add_argument("--source-policy", required=True)
-    p_provision.add_argument("--privacy", required=True)
-    p_provision.add_argument("--model-access", required=True)
-    p_provision.add_argument("--seed-topic", action="append", required=True)
-    p_provision.add_argument("--maintenance", required=True)
+    # The qualification criteria are required by mode, not by the parser: a plan
+    # and an apply both refuse without every one of them, while a rollback is
+    # driven by `--plan-id` alone and must stay runnable exactly as help[] prints
+    # it. `None` is what "not supplied" means here, so an explicitly empty value
+    # still reaches the criteria check and fails as an unmet criterion.
+    for flag, kind in (
+        ("--domain", str),
+        ("--repeat-demand", int),
+        ("--multi-topic", int),
+        ("--overlap", str),
+        ("--scope", str),
+        ("--exclusions", str),
+        ("--owner", str),
+        ("--source-policy", str),
+        ("--privacy", str),
+        ("--model-access", str),
+        ("--maintenance", str),
+    ):
+        p_provision.add_argument(flag, type=kind, default=None)
+    p_provision.add_argument("--seed-topic", action="append", default=None)
     p_provision.add_argument("--apply", action="store_true", help="apply the reviewed plan")
     p_provision.add_argument("--plan-id", default=None, help="approval token from the dry run")
     p_provision.add_argument("--rollback", action="store_true", help="rollback an applied plan")

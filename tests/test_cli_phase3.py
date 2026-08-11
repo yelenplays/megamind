@@ -9,6 +9,7 @@ recovery reporting. Nothing here touches the network.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -747,6 +748,178 @@ def provision_argv(vault: Path, *extra: str) -> list[str]:
         "2026-01-01",
         *extra,
     ]
+
+
+def rollback_argv(vault: Path, plan_id: str) -> list[str]:
+    """The rollback form help[] prints: identity, `--rollback`, `--plan-id`, nothing else."""
+    return [
+        "--root",
+        str(vault),
+        "provision-wiki",
+        "ReleaseWiki",
+        "ReleaseWiki",
+        "--rollback",
+        "--plan-id",
+        plan_id,
+    ]
+
+
+def help_command(doc: dict[str, Any], marker: str) -> list[str]:
+    """The argv an agent gets by running the help entry that carries `marker`."""
+    entry = next(item for item in doc["help"] if marker in item)
+    argv = shlex.split(entry.split("`")[1])
+    assert argv[0] == "megamind-axi", entry
+    return argv[1:]
+
+
+def test_provision_help_commands_run_verbatim(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """help[] is the agent's exact next command. Both the apply and the rollback
+    the plan prints must reach dispatch, not an argparse usage refusal."""
+    _, planned, _ = run_json(capsys, *provision_argv(vault))
+    plan_id = str(planned["plan_id"])
+
+    apply_argv = help_command(planned, "--apply")
+    assert apply_argv[-2:] == ["--plan-id", plan_id]
+    assert "--today" in apply_argv
+    code, applied, err = run_json(capsys, "--root", str(vault), *apply_argv)
+    assert code == 0, applied
+    assert err == ""
+    # The re-derived plan is the reviewed one: the printed command carried
+    # every criterion and the date the token was hashed over.
+    assert applied["status"] == "applied"
+    assert applied["plan_id"] == plan_id
+
+    undo_argv = help_command(applied, "--rollback")
+    assert "--domain" not in undo_argv
+    code, rolled, err = run_json(capsys, "--root", str(vault), *undo_argv)
+    assert code == 0, rolled
+    assert err == ""
+    assert rolled["status"] == "rolled_back"
+    assert not (vault / "ReleaseWiki").exists()
+
+
+def test_provision_help_commands_run_verbatim_in_toon(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The TOON rendering carries the same runnable commands as the JSON one."""
+    code, planned, _ = run_toon(capsys, *provision_argv(vault))
+    assert code == 0
+    entries = [line.strip() for line in planned.splitlines() if "provision-wiki" in line]
+    apply_entry = next(entry for entry in entries if "--apply" in entry)
+    undo_entry = next(entry for entry in entries if "--rollback" in entry)
+    for entry, expected in ((apply_entry, "applied"), (undo_entry, "rolled_back")):
+        argv = shlex.split(entry.split("`")[1])
+        assert argv[0] == "megamind-axi"
+        code, doc, err = run_json(capsys, "--root", str(vault), *argv[1:])
+        assert code == 0, doc
+        assert err == ""
+        assert doc["status"] == expected
+
+
+def test_provision_rollback_needs_no_criteria_flags(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Rollback is driven by the plan id alone, so the documented short form
+    must reach dispatch rather than argparse's required-argument refusal."""
+    _, plan, _ = run_json(capsys, *provision_argv(vault))
+    plan_id = str(plan["plan_id"])
+    run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+
+    code, rolled, err = run_json(capsys, *rollback_argv(vault, plan_id))
+    assert code == 0
+    assert err == ""
+    assert rolled["status"] == "rolled_back"
+    assert not (vault / "ReleaseWiki").exists()
+
+
+def test_the_recovery_help_template_is_runnable_once_filled_in(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`provision_recovery_required` points at a command form the parser accepts."""
+    from megamind.cli import _ERROR_HELP
+
+    entry = next(
+        item for item in _ERROR_HELP["provision_recovery_required"] if "--rollback" in item
+    )
+    template = entry.split("`")[1]
+    _, plan, _ = run_json(capsys, *provision_argv(vault))
+    plan_id = str(plan["plan_id"])
+    run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+
+    filled = (
+        template.replace("<name>", "ReleaseWiki")
+        .replace("<path>", "ReleaseWiki")
+        # <id> sits inside --plan-id, so the flag name is replaced last.
+        .replace("--plan-id <id>", f"--plan-id {plan_id}")
+    )
+    argv = shlex.split(filled)
+    assert argv[0] == "megamind-axi"
+    code, rolled, err = run_json(capsys, "--root", str(vault), *argv[1:])
+    assert code == 0, rolled
+    assert err == ""
+    assert rolled["status"] == "rolled_back"
+
+
+@pytest.mark.parametrize("extra", [(), ("--apply", "--plan-id", "abc")])
+def test_planning_and_applying_refuse_missing_criteria_as_a_usage_error(
+    vault: Path, capsys: pytest.CaptureFixture[str], extra: tuple[str, ...]
+) -> None:
+    """Dropping `required=True` may not weaken the qualification gate: both
+    modes still refuse, typed and before any write."""
+    code, doc, err = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "provision-wiki",
+        "ReleaseWiki",
+        "ReleaseWiki",
+        "--domain",
+        "synthetic release operations",
+        *extra,
+    )
+    assert code == 2
+    assert err == ""
+    assert doc["code"] == "usage_error"
+    assert "--seed-topic" in doc["message"]
+    assert "--domain" not in doc["message"]
+    assert doc["operation"] == "provision-wiki"
+    assert doc["help"]
+    assert not (vault / "ReleaseWiki").exists()
+    assert load_registry(vault).wiki_by_name("ReleaseWiki") is None
+
+
+def test_provision_refuses_incompatible_modes(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, doc, _ = run_json(
+        capsys, *provision_argv(vault, "--apply", "--rollback", "--plan-id", "abc")
+    )
+    assert code == 2
+    assert doc["code"] == "usage_error"
+    assert "mutually exclusive" in doc["message"]
+
+    code, doc, _ = run_json(capsys, *rollback_argv(vault, "abc")[:-2])
+    assert code == 2
+    assert doc["code"] == "usage_error"
+    assert doc["operation"] == "provision-wiki"
+    assert "--plan-id" in doc["message"]
+    assert not (vault / "ReleaseWiki").exists()
+
+
+def test_an_explicitly_empty_criterion_is_a_criteria_refusal_not_a_usage_error(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A supplied but unmet criterion is a governance refusal; only an absent
+    flag is a usage error, so the two failures stay distinguishable."""
+    argv = [
+        arg if arg != "release notes and rollout steps" else "" for arg in provision_argv(vault)
+    ]
+    code, doc, _ = run_json(capsys, *argv)
+    assert code == 1
+    assert doc["code"] == "garden_invalid"
+    assert "criteria" in doc["message"]
 
 
 def test_provision_apply_replay_reaches_the_verified_noop(

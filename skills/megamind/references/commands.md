@@ -190,7 +190,13 @@ Megamind performs no network or external action and never writes `raw/`.
 ## megamind-axi provision-wiki NAME PATH [criteria flags]
 
 Creates a local provisional wiki only when every domain, demand, scope, owner,
-policy, seed, and maintenance criterion passes. It extends an existing registry
+policy, seed, and maintenance criterion passes. The criteria flags are required
+by mode, not by the parser: a plan and an `--apply` both refuse with
+`usage_error` naming whichever is missing, before any write, while
+`--rollback --plan-id <id>` takes the positional name and path and nothing
+else. `--apply` and `--rollback` are mutually exclusive. Every command printed
+in `help[]` runs verbatim, so an apply hint carries the criteria and `--today`
+it needs to re-derive the same `plan_id`. It extends an existing registry
 vault only: it refuses a canonical single-wiki root, refuses to bootstrap a
 vault `init` has not created, and refuses a v1 registry until `migrate` has run
 explicitly. Without `--apply` it plans with no side effects and returns a

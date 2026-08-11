@@ -268,7 +268,14 @@ canonical card, with paths rooted at the wiki directory, while the registry
 entry keeps its vault-relative paths.
 
 Planning is side-effect-free and yields a content-bound `plan_id`; `--apply`
-takes that id back as the approval token. The apply is a write-ahead
+takes that id back as the approval token. The qualification criteria are
+required by mode rather than by the parser: planning and `--apply` both refuse
+with a typed `usage_error` naming every missing flag before anything is read or
+written, while `--rollback --plan-id <id>` is driven by the plan id and the
+positional name and path alone. `--apply` and `--rollback` are mutually
+exclusive. Because `--apply` re-derives the plan from the criteria and
+`--today`, the apply command printed in `help[]` carries both, so every emitted
+recovery command runs exactly as printed. The apply is a write-ahead
 transaction recorded in `.megamind/audit/provisional-wiki-<plan_id>.json`
 (`megamind/provisional-wiki-rollback/v1`), which carries the whole plan, the
 prior content of every file it will replace, and a `state` of `pending`,
