@@ -20,6 +20,7 @@ from megamind import toon
 from megamind.cli import main
 from megamind.evaluation import (
     EvaluationError,
+    _blinding_commitment,
     _load_plan,
     _PublicRunner,
     check_benchmark,
@@ -62,10 +63,35 @@ _PROVENANCE = {
 }
 
 
+_RELEASE_DEFAULTS: dict[str, float | int] = {
+    "exact_accuracy_min": 0.0,
+    "near_accuracy_min": 0.0,
+    "no_match_accuracy_min": 0.0,
+    "privacy_accuracy_min": 0.0,
+    "canary_leaks_max": 0,
+    "budget_violations_max": 0,
+    "model_access_violations_max": 0,
+    "contract_violations_max": 0,
+}
+BLINDING_KEY = "synthetic-blinding-key-0001"
+
+
 def run_json(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, dict[str, Any], str]:
     code = main(["--format", "json", *argv])
     captured = capsys.readouterr()
     return code, json.loads(captured.out), captured.err
+
+
+def _release_section(**overrides: float | int) -> str:
+    values = {**_RELEASE_DEFAULTS, **overrides}
+    body = "\n".join(f"{name} = {values[name]}" for name in sorted(values))
+    return f"[release]\n{body}\n"
+
+
+def _key_file(tmp_path: Path, key: str = BLINDING_KEY) -> Path:
+    path = tmp_path / "blinding.key"
+    path.write_text(key + "\n", encoding="utf-8")
+    return path
 
 
 # --- frozen release benchmark ------------------------------------------------
@@ -89,6 +115,39 @@ def test_release_benchmark_is_canonical_and_repeatable() -> None:
     assert first["safety"]["contract_violations"] == 0
     assert first["safety"]["public_invocations"] == 2 * len(first["per_query"])
     assert first["help"]
+
+
+def test_measured_public_calls_inherit_the_callers_hash_seed() -> None:
+    """The seed reaches the ladder being measured, not just the harness."""
+    runner = _PublicRunner(FIXTURES)
+    assert runner.hash_seed is None
+    seen: list[str | None] = []
+    real_run = subprocess.run
+
+    def capture(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs["env"].get("PYTHONHASHSEED"))
+        return real_run(*args, **kwargs)
+
+    original = os.environ.get("PYTHONHASHSEED")
+    os.environ["PYTHONHASHSEED"] = "8191"
+    try:
+        subprocess.run = capture  # type: ignore[assignment]
+        runner.run(["route", "release"], "megamind/route-result/")
+        pinned = _PublicRunner(FIXTURES, hash_seed="4093")
+        pinned.run(["route", "release"], "megamind/route-result/")
+    finally:
+        subprocess.run = real_run  # type: ignore[assignment]
+        if original is None:
+            os.environ.pop("PYTHONHASHSEED", None)
+        else:
+            os.environ["PYTHONHASHSEED"] = original
+    assert seen == ["8191", "4093"]
+
+
+def test_measured_ladder_is_identical_under_two_explicit_hash_seeds() -> None:
+    first = run_benchmark(FIXTURES, QUERIES, THRESHOLDS, hash_seed="0")
+    second = run_benchmark(FIXTURES, QUERIES, THRESHOLDS, hash_seed="524287")
+    assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
 
 
 def test_benchmark_repeats_across_processes_temp_roots_and_hash_seeds(tmp_path: Path) -> None:
@@ -263,7 +322,7 @@ def test_check_scores_an_absent_tier_as_zero_instead_of_crashing(tmp_path: Path)
         'benchmark_version = "single-tier-v1"\n'
         f'corpus_sha256 = "{digest_tree(FIXTURES)}"\n'
         f'queries_sha256 = "{digest_file(queries)}"\n'
-        "\n[release]\nexact_accuracy_min = 0.50\n",
+        f"\n{_release_section(exact_accuracy_min=0.50)}",
         encoding="utf-8",
     )
     result = run_benchmark(FIXTURES, queries, thresholds)
@@ -395,7 +454,7 @@ def _workspace(tmp_path: Path) -> dict[str, Path]:
 
 
 def _plan(
-    tmp_path: Path, seed: int = 7, thresholds: Path = THRESHOLDS
+    tmp_path: Path, seed: int = 7, thresholds: Path = THRESHOLDS, key: str = BLINDING_KEY
 ) -> tuple[dict[str, Path], dict[str, Any]]:
     paths = _workspace(tmp_path)
     plan, grader, unblinding = plan_experiment(
@@ -410,6 +469,7 @@ def _plan(
         "fixed",
         seed,
         paths["outputs"],
+        key,
     )
     (paths["artifacts"] / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
     (paths["artifacts"] / "grader.json").write_text(json.dumps(grader), encoding="utf-8")
@@ -422,6 +482,7 @@ def _write_arms(
 ) -> list[Path]:
     plan = docs["plan"]
     assignments = docs["map"]["assignments"]
+    snapshots = docs["map"]["snapshots"]
     written: list[Path] = []
     for index, arm in enumerate(plan["arms"]):
         label = arm["blind_label"]
@@ -437,7 +498,7 @@ def _write_arms(
                     "plan_id": plan["plan_id"],
                     "task_set": plan["task_set"],
                     "arm_label": label,
-                    "wiki_sha256": arm["wiki_sha256"],
+                    "wiki_sha256": snapshots[label]["wiki_sha256"],
                     "session_id": f"session-{index}",
                     "results": [
                         {
@@ -458,36 +519,62 @@ def _write_arms(
     return written
 
 
-def test_plan_blinds_conditions_with_a_seed_dependent_permutation(tmp_path: Path) -> None:
+def test_plan_blinds_conditions_with_a_key_dependent_permutation(tmp_path: Path) -> None:
     seen: set[tuple[tuple[str, str], ...]] = set()
-    for seed in range(8):
-        workspace = tmp_path / f"seed{seed}"
+    for index in range(8):
+        workspace = tmp_path / f"key{index}"
         workspace.mkdir()
-        _, docs = _plan(workspace, seed=seed)
+        _, docs = _plan(workspace, key=f"synthetic-blinding-key-{index:04d}")
         assignments = docs["map"]["assignments"]
         assert sorted(assignments) == ["arm-0", "arm-1", "arm-2"]
         assert sorted(assignments.values()) == ["current-wiki", "no-wiki", "updated-wiki"]
         seen.add(tuple(sorted(assignments.items())))
-    # The seed genuinely moves the assignment; it is not a fixed alphabetical map.
+    # The private key genuinely moves the assignment; it is not a fixed map.
     assert len(seen) > 1
 
 
-def test_plan_is_reproducible_for_the_same_seed(tmp_path: Path) -> None:
+def test_plan_is_reproducible_for_the_same_public_inputs_and_key(tmp_path: Path) -> None:
     _first_paths, first = _plan(tmp_path / "a", seed=11)
     _second_paths, second = _plan(tmp_path / "b", seed=11)
     assert first["map"]["assignments"] == second["map"]["assignments"]
+    assert first["plan"]["blinding"] == second["plan"]["blinding"]
 
 
-def test_grader_packet_carries_no_condition_seed_or_snapshot(tmp_path: Path) -> None:
+def test_plan_rejects_a_guessable_blinding_key(tmp_path: Path) -> None:
+    with pytest.raises(EvaluationError, match="blinding key"):
+        _plan(tmp_path / "weak", key="1")
+
+
+def test_plan_and_grader_packet_cannot_recompute_the_assignment(tmp_path: Path) -> None:
+    """The public artifacts must not carry inputs sufficient to unblind."""
     _, docs = _plan(tmp_path)
-    grader = dict(docs["grader"])
-    grader.pop("help", None)
-    body = json.dumps(grader)
-    for leak in ("no-wiki", "current-wiki", "updated-wiki", "seed", "wiki_sha256", "output_root"):
-        assert leak not in body, leak
-    plan = json.dumps(docs["plan"])
-    for leak in ("no-wiki", "current-wiki", "updated-wiki"):
-        assert leak not in plan, leak
+    real = docs["map"]["assignments"]
+    plan, grader = docs["plan"], docs["grader"]
+    for artifact in (plan, grader):
+        body = json.dumps({k: v for k, v in artifact.items() if k != "help"})
+        for leak in ("no-wiki", "current-wiki", "updated-wiki", "blinding_key", BLINDING_KEY):
+            assert leak not in body, leak
+    # Every candidate key an attacker could read out of the plan fails to open
+    # the commitment, and the empty no-wiki snapshot is no longer tied to a label.
+    commitment = plan["blinding"]["commitment"]
+    frozen = plan["frozen"]
+    for guess in (str(frozen["seed"]), frozen["task_set_sha256"], plan["plan_id"], "1", ""):
+        assert _blinding_commitment(guess, real) != commitment
+    assert "wiki_sha256" not in json.dumps(plan["arms"])
+    empty_digest = digest_tree(tmp_path / "none")
+    assert empty_digest in plan["snapshot_digests"]
+    assert sorted(plan["snapshot_digests"]) == plan["snapshot_digests"]
+
+
+def test_score_refuses_a_map_carrying_the_wrong_key(tmp_path: Path) -> None:
+    paths, docs = _plan(tmp_path)
+    outputs = _write_arms(paths, docs)
+    forged = dict(docs["map"])
+    forged["blinding_key"] = "synthetic-blinding-key-9999"
+    forged_path = paths["artifacts"] / "forged-map.json"
+    forged_path.write_text(json.dumps(forged), encoding="utf-8")
+    with pytest.raises(EvaluationError, match="commitment"):
+        score_experiment(paths["artifacts"] / "plan.json", outputs, forged_path)
 
 
 def test_validation_needs_no_unblinding_map(tmp_path: Path) -> None:
@@ -574,10 +661,11 @@ def test_plan_rejects_threshold_tampering(tmp_path: Path) -> None:
         "fixed",
         3,
         paths["outputs"],
+        BLINDING_KEY,
     )
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
-    thresholds.write_text("[release]\nexact_accuracy_min = 0.99\n", encoding="utf-8")
+    thresholds.write_text(_release_section(exact_accuracy_min=0.99), encoding="utf-8")
     with pytest.raises(EvaluationError, match="frozen evaluation input"):
         _load_plan(plan_path)
 
@@ -601,6 +689,7 @@ def test_plan_rejects_a_task_set_the_thresholds_do_not_bind(tmp_path: Path) -> N
             "fixed",
             3,
             paths["outputs"],
+            BLINDING_KEY,
         )
 
 
@@ -707,7 +796,164 @@ def test_record_refuses_an_unsafe_out_before_appending_anything(
     assert not (paths["audit"] / ".megamind").exists()
 
 
+# --- threshold validation ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("replacement", "match"),
+    [
+        ('exact_accuracy_min = "high"', "finite number"),
+        ("exact_accuracy_min = 1e400", "finite number"),
+        ("exact_accuracy_min = 1.5", "between"),
+        ("exact_accuracy_min = -0.1", "between"),
+        ("exact_accuracy_min = true", "must be a number"),
+        ("exact_accuracy_typo = 1.00", "unknown threshold"),
+    ],
+)
+def test_malformed_release_thresholds_are_typed_not_tracebacks(
+    tmp_path: Path, replacement: str, match: str
+) -> None:
+    thresholds = tmp_path / "thresholds.toml"
+    thresholds.write_text(
+        THRESHOLDS.read_text(encoding="utf-8").replace("exact_accuracy_min = 1.00", replacement),
+        encoding="utf-8",
+    )
+    # Refused when the result is produced, so nothing is ever written against it.
+    with pytest.raises(EvaluationError, match=match):
+        run_benchmark(FIXTURES, QUERIES, thresholds)
+    # The check side is guarded too, for a result that reached it another way.
+    result = run_benchmark(FIXTURES, QUERIES, THRESHOLDS)
+    result["thresholds_sha256"] = digest_file(thresholds)
+    results = tmp_path / "results.json"
+    results.write_text(json.dumps(result), encoding="utf-8")
+    with pytest.raises(EvaluationError, match=match):
+        check_benchmark(results, thresholds)
+
+
+def test_release_thresholds_must_preregister_every_gate(tmp_path: Path) -> None:
+    thresholds = tmp_path / "thresholds.toml"
+    thresholds.write_text(
+        THRESHOLDS.read_text(encoding="utf-8").replace("privacy_accuracy_min = 1.00\n", ""),
+        encoding="utf-8",
+    )
+    with pytest.raises(EvaluationError, match="privacy_accuracy_min"):
+        run_benchmark(FIXTURES, QUERIES, thresholds)
+
+
+def test_counter_thresholds_reject_fractional_values(tmp_path: Path) -> None:
+    thresholds = tmp_path / "thresholds.toml"
+    thresholds.write_text(
+        THRESHOLDS.read_text(encoding="utf-8").replace(
+            "canary_leaks_max = 0", "canary_leaks_max = 0.9"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(EvaluationError, match="whole number"):
+        run_benchmark(FIXTURES, QUERIES, thresholds)
+
+
+def test_malformed_promotion_thresholds_are_refused_at_plan_time(tmp_path: Path) -> None:
+    thresholds = tmp_path / "thresholds.toml"
+    thresholds.write_text(
+        THRESHOLDS.read_text(encoding="utf-8").replace(
+            "improvement_min = 0.05", 'improvement_min = "a lot"'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(EvaluationError, match="finite number"):
+        _plan(tmp_path / "workspace", thresholds=thresholds)
+
+
+def test_binding_digests_must_be_sha256_hex(tmp_path: Path) -> None:
+    thresholds = tmp_path / "thresholds.toml"
+    thresholds.write_text(
+        THRESHOLDS.read_text(encoding="utf-8").replace(
+            f'corpus_sha256 = "{digest_tree(FIXTURES)}"', 'corpus_sha256 = "deadbeef"'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(EvaluationError, match="sha256 digest"):
+        run_benchmark(FIXTURES, QUERIES, thresholds)
+
+
+def test_malformed_thresholds_write_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    thresholds = tmp_path / "thresholds.toml"
+    thresholds.write_text(
+        THRESHOLDS.read_text(encoding="utf-8").replace(
+            "exact_accuracy_min = 1.00", 'exact_accuracy_min = "high"'
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "results.json"
+    code, doc, _ = run_json(
+        capsys,
+        "bench",
+        "run",
+        "--fixtures",
+        str(FIXTURES),
+        "--queries",
+        str(QUERIES),
+        "--thresholds",
+        str(thresholds),
+        "--out",
+        str(out),
+    )
+    assert code == 1
+    assert doc["schema_version"] == "megamind/error/v1"
+    assert doc["code"] == "evaluation_invalid"
+    assert doc["help"]
+    assert not out.exists()
+
+
 # --- CLI surface -------------------------------------------------------------
+
+
+def test_score_refuses_an_out_inside_an_empty_arm_snapshot(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths, docs = _plan(tmp_path)
+    outputs = _write_arms(paths, docs)
+    target = paths["none"] / "score.json"
+    code, doc, _ = run_json(
+        capsys,
+        "experiment",
+        "score",
+        "--plan",
+        str(paths["artifacts"] / "plan.json"),
+        "--outputs",
+        *[str(path) for path in outputs],
+        "--unblinding-map",
+        str(paths["artifacts"] / "map.json"),
+        "--out",
+        str(target),
+    )
+    assert code == 1
+    assert doc["code"] == "evaluation_invalid"
+    assert not target.exists()
+
+
+def test_validate_refuses_an_out_inside_the_arm_output_tree(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths, docs = _plan(tmp_path)
+    outputs = _write_arms(paths, docs)
+    target = paths["outputs"] / "validation.json"
+    code, doc, _ = run_json(
+        capsys,
+        "experiment",
+        "validate",
+        "--plan",
+        str(paths["artifacts"] / "plan.json"),
+        "--outputs",
+        *[str(path) for path in outputs],
+        "--out",
+        str(target),
+    )
+    assert code == 1
+    assert doc["code"] == "evaluation_invalid"
+    assert not target.exists()
 
 
 def test_experiment_flow_through_the_cli(
@@ -743,6 +989,8 @@ def test_experiment_flow_through_the_cli(
         str(artifacts / "grader.json"),
         "--map-out",
         str(artifacts / "map.json"),
+        "--blinding-key-file",
+        str(_key_file(tmp_path)),
     )
     assert code == 0
     assert err == ""
@@ -752,6 +1000,9 @@ def test_experiment_flow_through_the_cli(
     unblinding = json.loads((artifacts / "map.json").read_text(encoding="utf-8"))
     assert grader["schema_version"] == "megamind/evaluation-grader-packet/v1"
     assert unblinding["schema_version"] == "megamind/evaluation-unblinding-map/v1"
+    assert unblinding["blinding_key"] == BLINDING_KEY
+    assert BLINDING_KEY not in json.dumps(plan_doc)
+    assert BLINDING_KEY not in json.dumps(grader)
     outputs = _write_arms(paths, {"plan": plan_doc, "map": unblinding})
 
     code, doc, _ = run_json(

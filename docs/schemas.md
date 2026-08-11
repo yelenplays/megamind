@@ -367,8 +367,13 @@ refused. Each following record carries an `id`, a `tier`, a `query`, the
 Threshold files are deterministic TOML (or JSON) and are hashed into every
 result. A `[binding]` section is mandatory: it names the `benchmark_version`,
 `corpus_sha256`, `queries_sha256`, `task_set_version`, and `task_set_sha256`
-the gates were preregistered against, and a missing, stale, or tampered binding
-is refused rather than defaulted. `megamind/benchmark-result/v1` contains
+the gates were preregistered against, every `*_sha256` is a 64-character hex
+digest, and a missing, stale, or tampered binding is refused rather than
+defaulted. `[release]` must preregister all eight release gates and
+`[promotion]` all three promotion gates: unknown keys and missing keys are both
+refused, accuracy floors and regression tolerances must be finite numbers in
+`[0.0, 1.0]`, and the `*_max` counters must be non-negative whole numbers.
+`megamind/benchmark-result/v1` contains
 `benchmark_version` (taken from the query-set header, never a literal),
 `corpus_sha256`, `queries_sha256`, `thresholds_sha256`, per-tier aggregates,
 per-query canonical rows with separate `candidates` and authorized `loaded`
@@ -377,18 +382,25 @@ sets, safety counts, and honest local baselines. It has no wall-clock field.
 queries scores zero so an absent tier fails closed.
 
 `megamind/evaluation-plan/v1` freezes the task-set, rubric, threshold, model,
-tools, effort, seed, and three distinct snapshot digests. It assigns opaque arm
-labels and distinct output roots and never names a condition beside a label.
+tools, effort, and execution seed. It assigns opaque arm labels and distinct
+output roots, lists `snapshot_digests` as a sorted set never tied to a label,
+and carries `blinding` with the scheme and a keyed commitment. It never names a
+condition beside a label and never carries the blinding key.
 `megamind/evaluation-grader-packet/v1` carries only the blind labels, the task
-prompts, and the rubric. `megamind/evaluation-unblinding-map/v1` is a separate
-host artifact mapping labels to conditions; it is derived from the seed and the
-frozen identity, so a substituted or edited map is refused. Host arm output is
+prompts, the rubric, and the same commitment.
+`megamind/evaluation-unblinding-map/v1` is a separate host artifact holding the
+private `blinding_key`, the label-to-condition `assignments`, and per-arm
+`snapshots` (root and digest). It is accepted only when it belongs to the plan,
+opens the plan's commitment under its own key, re-derives the same assignment,
+and matches the planned digests, so a substituted, re-keyed, or edited map is
+refused. Host arm output is
 `megamind/evaluation-arm-output/v1`; it must carry the plan/task versions,
-opaque label, session id, snapshot digest, every task exactly once, the actual
-non-negative `authorized_context_chars`, provenance, and zero privacy/model
-access violations. Validation rejects malformed output, stale or tampered
-inputs, missing tasks, duplicate arms, path escapes, leakage, or cross-arm
-contamination, and needs no map. Scoring returns
+opaque label, session id, a snapshot digest drawn from the planned set, every
+task exactly once, the actual non-negative `authorized_context_chars`,
+provenance, and zero privacy/model access violations. Validation rejects
+malformed output, stale or tampered inputs, missing tasks, duplicate arms,
+snapshots that do not cover the planned set exactly once, path escapes,
+leakage, or cross-arm contamination, and needs no map or key. Scoring returns
 `megamind/evaluation-score/v1`, sealing the per-label blind scores as
 `blind_scores_sha256` before the map is read: promotion requires improved
 target outcomes, no material adjacent regression, provenance within the

@@ -48,8 +48,10 @@ from .doctor import run_doctor
 from .evaluation import (
     EvaluationError,
     check_benchmark,
+    evaluation_write_guard_roots,
     guard_output_path,
     plan_experiment,
+    read_blinding_key,
     read_json,
     record_evaluation,
     run_benchmark,
@@ -1136,6 +1138,9 @@ def cmd_setup_skill(dest: str | None) -> tuple[Doc, int]:
     return doc, 0
 
 
+REPEAT_HASH_SEED = "524287"
+
+
 def _guard_evaluation_outs(raw: Sequence[str | None], forbidden: Sequence[Path] = ()) -> None:
     """Refuse an unsafe destination before any work runs or any artifact lands.
 
@@ -1159,7 +1164,12 @@ def cmd_bench(args: argparse.Namespace) -> tuple[Doc, int]:
         _guard_evaluation_outs([args.out], [fixtures])
         result = run_benchmark(fixtures, Path(args.queries), Path(args.thresholds))
         if args.repeat:
-            repeated = run_benchmark(fixtures, Path(args.queries), Path(args.thresholds))
+            # The measured pass inherits the caller's hash seed; the repeat forces
+            # a different one, so an identical document proves the ladder itself
+            # is seed-independent rather than merely pinned.
+            repeated = run_benchmark(
+                fixtures, Path(args.queries), Path(args.thresholds), hash_seed=REPEAT_HASH_SEED
+            )
             if json.dumps(result, sort_keys=True) != json.dumps(repeated, sort_keys=True):
                 raise EvaluationError("benchmark repeatability check failed")
         return _evaluation_out(result, args.out, [fixtures]), 0
@@ -1173,6 +1183,7 @@ def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
     if action == "plan":
         arm_roots = [Path(args.no_wiki), Path(args.current_wiki), Path(args.updated_wiki)]
         _guard_evaluation_outs([args.out, args.grader_out, args.map_out], arm_roots)
+        blinding_key = read_blinding_key(Path(args.blinding_key_file))
         result, grader, unblinding = plan_experiment(
             Path(args.tasks),
             arm_roots[0],
@@ -1185,6 +1196,7 @@ def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
             args.effort,
             args.seed,
             Path(args.output_root),
+            blinding_key,
         )
         # The grader packet and the unblinding map are separate artifacts on
         # purpose: whoever grades the arms must never hold the map.
@@ -1200,15 +1212,20 @@ def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
         result = record_evaluation(audit_root, score)
         return _evaluation_out(result, args.out, [audit_root]), 0
     plan = Path(args.plan)
-    _guard_evaluation_outs([args.out])
     if action == "validate":
+        forbidden = evaluation_write_guard_roots(plan)
+        _guard_evaluation_outs([args.out], forbidden)
         result = validate_experiment(plan, [Path(path) for path in args.outputs])
-        return _evaluation_out(result, args.out), 0 if result["status"] == "valid" else 1
+        return _evaluation_out(result, args.out, forbidden), 0 if result["status"] == "valid" else 1
     if action == "score":
-        result = score_experiment(
-            plan, [Path(path) for path in args.outputs], Path(args.unblinding_map)
+        unblinding_map = Path(args.unblinding_map)
+        forbidden = evaluation_write_guard_roots(plan, unblinding_map)
+        _guard_evaluation_outs([args.out], forbidden)
+        result = score_experiment(plan, [Path(path) for path in args.outputs], unblinding_map)
+        return (
+            _evaluation_out(result, args.out, forbidden),
+            0 if result["status"] == "promoted" else 1,
         )
-        return _evaluation_out(result, args.out), 0 if result["status"] == "promoted" else 1
     raise UsageError("unknown experiment action")
 
 
@@ -1637,6 +1654,11 @@ def build_parser() -> AxiParser:
     )
     p_exp_plan.add_argument(
         "--map-out", required=True, help="host-only unblinding map, kept apart from the grader"
+    )
+    p_exp_plan.add_argument(
+        "--blinding-key-file",
+        required=True,
+        help="file holding the host's private blinding key (never copied into the plan)",
     )
     p_exp_validate = experiment_sub.add_parser(
         "validate", help="validate blinded, isolated host arm outputs"

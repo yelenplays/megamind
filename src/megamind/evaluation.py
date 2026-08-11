@@ -9,8 +9,10 @@ answer itself.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import itertools
 import json
+import math
 import os
 import re
 import subprocess
@@ -42,6 +44,44 @@ ROUTE_PREFIX = "megamind/route-result/"
 _TIERS = ("exact", "near", "paraphrase", "ambiguous", "no-match", "privacy")
 _CONDITIONS = ("current-wiki", "no-wiki", "updated-wiki")
 _SECRET_RE = re.compile(r"(?:canary|secret|password|token|credential)[-_=:]", re.I)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+# A blinding key shorter than this is guessable, and the assignment space is
+# only 3! = 6 permutations: a weak key would let anyone holding the plan
+# brute-force the commitment and unblind the arms.
+MIN_BLINDING_KEY_CHARS = 16
+BLINDING_SCHEME = "hmac-sha256"
+
+# The public inputs the assignment is derived from. Publishing all of them is
+# safe precisely because the derivation is keyed by a secret the plan omits.
+_BLINDING_MATERIAL = (
+    "task_set_version",
+    "task_set_sha256",
+    "rubric_sha256",
+    "thresholds_sha256",
+    "model",
+    "tools",
+    "effort",
+    "seed",
+)
+
+_RATIO = "ratio"
+_COUNT = "count"
+_RELEASE_GATE_SPEC: dict[str, str] = {
+    "exact_accuracy_min": _RATIO,
+    "near_accuracy_min": _RATIO,
+    "no_match_accuracy_min": _RATIO,
+    "privacy_accuracy_min": _RATIO,
+    "canary_leaks_max": _COUNT,
+    "budget_violations_max": _COUNT,
+    "model_access_violations_max": _COUNT,
+    "contract_violations_max": _COUNT,
+}
+_PROMOTION_GATE_SPEC: dict[str, str] = {
+    "improvement_min": _RATIO,
+    "adjacent_regression_max": _RATIO,
+    "provenance_regression_max": _RATIO,
+}
 
 _PLAN_HELP = [
     "Host must execute each arm in an isolated session and submit arm outputs",
@@ -206,11 +246,18 @@ def _binding(thresholds: Doc) -> Doc:
     Thresholds are only meaningful for the exact inputs they were frozen for, so
     every threshold file names the task set, corpus, and query digests it binds
     to. A missing binding is refused rather than defaulted: an unbound threshold
-    file would silently accept any corpus.
+    file would silently accept any corpus. A digest that is not a sha256 hex
+    string is refused too, so a truncated or hand-edited identity cannot pass
+    for a real one.
     """
     binding = thresholds.get("binding")
     if not isinstance(binding, dict) or not binding:
         raise EvaluationError("thresholds declare no [binding] identity")
+    for key, value in sorted(binding.items()):
+        if not isinstance(value, str) or not value:
+            raise EvaluationError(f"thresholds binding {key} must be a non-empty string")
+        if key.endswith("_sha256") and not _SHA256_RE.match(value):
+            raise EvaluationError(f"thresholds binding {key} is not a sha256 digest")
     return binding
 
 
@@ -222,11 +269,58 @@ def _require_binding(binding: Doc, key: str, actual: str, label: str) -> None:
         raise EvaluationError(f"{label} does not match the preregistered thresholds binding")
 
 
-class _PublicRunner:
-    """Invokes the real public CLI and fails closed on any non-contract answer."""
+def _validated_gates(thresholds: Doc, section: str, spec: dict[str, str]) -> Doc:
+    """Every preregistered gate, checked for key, type, finiteness, and range.
 
-    def __init__(self, root: Path) -> None:
+    A gate is only preregistered if it is stated: an unknown key is a typo that
+    would silently leave a gate at its default, and a missing key would leave an
+    accuracy floor at zero, which passes by construction. Both are refused here,
+    before anything is scored, checked, or written, so a malformed threshold
+    file is a typed document rather than a coercion traceback further down.
+    """
+    values = thresholds.get(section)
+    if not isinstance(values, dict) or not values:
+        raise EvaluationError(f"thresholds declare no [{section}] gates")
+    unknown = sorted(set(values) - set(spec))
+    if unknown:
+        raise EvaluationError(f"[{section}] declares an unknown threshold: {unknown[0]}")
+    missing = sorted(set(spec) - set(values))
+    if missing:
+        raise EvaluationError(f"[{section}] does not preregister {missing[0]}")
+    gates: Doc = {}
+    for name, kind in sorted(spec.items()):
+        raw = values[name]
+        if isinstance(raw, bool):
+            raise EvaluationError(f"threshold {name} must be a number")
+        if kind == _COUNT:
+            if not isinstance(raw, int):
+                raise EvaluationError(f"threshold {name} must be a whole number")
+            if raw < 0:
+                raise EvaluationError(f"threshold {name} must not be negative")
+            gates[name] = raw
+            continue
+        if not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            raise EvaluationError(f"threshold {name} must be a finite number")
+        if not 0.0 <= float(raw) <= 1.0:
+            raise EvaluationError(f"threshold {name} must be between 0.0 and 1.0")
+        gates[name] = float(raw)
+    return gates
+
+
+class _PublicRunner:
+    """Invokes the real public CLI and fails closed on any non-contract answer.
+
+    The measured invocations deliberately do not pin ``PYTHONHASHSEED``. The
+    benchmark exists to certify the shipped ladder, and pinning the one variable
+    most likely to expose set-iteration nondeterminism would certify only the
+    harness. With ``hash_seed`` unset the child inherits whatever the caller
+    chose (including an unset value, which randomizes per process); ``--repeat``
+    reruns under an explicit different seed and requires an identical document.
+    """
+
+    def __init__(self, root: Path, hash_seed: str | None = None) -> None:
         self.root = root
+        self.hash_seed = hash_seed
         self.invocations = 0
         # Every rejected invocation raises, so a benchmark document can only
         # exist when this stayed zero. It is emitted as derived evidence of that.
@@ -234,7 +328,8 @@ class _PublicRunner:
 
     def run(self, command: list[str], expected_prefix: str) -> Doc:
         env = os.environ.copy()
-        env["PYTHONHASHSEED"] = "0"
+        if self.hash_seed is not None:
+            env["PYTHONHASHSEED"] = self.hash_seed
         process = subprocess.run(
             [
                 sys.executable,
@@ -510,7 +605,9 @@ def _query_set_metadata(records: list[Doc]) -> tuple[str, list[Doc]]:
     return version, records[1:]
 
 
-def run_benchmark(fixtures: Path, queries_path: Path, thresholds_path: Path) -> Doc:
+def run_benchmark(
+    fixtures: Path, queries_path: Path, thresholds_path: Path, *, hash_seed: str | None = None
+) -> Doc:
     version, queries = _query_set_metadata(read_jsonl(queries_path, "queries"))
     if not queries:
         raise EvaluationError("benchmark query set has no queries")
@@ -529,8 +626,11 @@ def run_benchmark(fixtures: Path, queries_path: Path, thresholds_path: Path) -> 
     _require_binding(binding, "benchmark_version", version, "benchmark query set version")
     _require_binding(binding, "corpus_sha256", corpus_sha256, "benchmark corpus")
     _require_binding(binding, "queries_sha256", queries_sha256, "benchmark query set")
+    # The gates are validated here, not only at check time: a result must never
+    # be produced, let alone written, against a threshold file that cannot gate it.
+    _validated_gates(thresholds, "release", _RELEASE_GATE_SPEC)
 
-    runner = _PublicRunner(fixtures)
+    runner = _PublicRunner(fixtures, hash_seed=hash_seed)
     rows = [_result_for_query(runner, query) for query in queries]
     aggregates: Doc = {}
     for tier in _TIERS:
@@ -609,27 +709,23 @@ def check_benchmark(results_path: Path, thresholds_path: Path) -> Doc:
     _require_binding(
         binding, "queries_sha256", str(result.get("queries_sha256", "")), "benchmark query set"
     )
-    release = thresholds.get("release", thresholds)
+    release = _validated_gates(thresholds, "release", _RELEASE_GATE_SPEC)
     aggregates = result.get("aggregates")
     safety = result.get("safety")
     if not isinstance(aggregates, dict) or not isinstance(safety, dict):
         raise EvaluationError("benchmark results are incomplete")
     gates: dict[str, bool] = {
-        "exact_accuracy": _accuracy(aggregates, "exact")
-        >= float(release.get("exact_accuracy_min", 0.0)),
-        "near_accuracy": _accuracy(aggregates, "near")
-        >= float(release.get("near_accuracy_min", 0.0)),
-        "no_match_accuracy": _accuracy(aggregates, "no-match")
-        >= float(release.get("no_match_accuracy_min", 0.0)),
-        "privacy_accuracy": _accuracy(aggregates, "privacy")
-        >= float(release.get("privacy_accuracy_min", 0.0)),
-        "canary_leaks": _counter(safety, "canary_leaks") <= int(release.get("canary_leaks_max", 0)),
+        "exact_accuracy": _accuracy(aggregates, "exact") >= release["exact_accuracy_min"],
+        "near_accuracy": _accuracy(aggregates, "near") >= release["near_accuracy_min"],
+        "no_match_accuracy": _accuracy(aggregates, "no-match") >= release["no_match_accuracy_min"],
+        "privacy_accuracy": _accuracy(aggregates, "privacy") >= release["privacy_accuracy_min"],
+        "canary_leaks": _counter(safety, "canary_leaks") <= release["canary_leaks_max"],
         "budget_violations": _counter(safety, "budget_violations")
-        <= int(release.get("budget_violations_max", 0)),
+        <= release["budget_violations_max"],
         "model_access_violations": _counter(safety, "model_access_violations")
-        <= int(release.get("model_access_violations_max", 0)),
+        <= release["model_access_violations_max"],
         "contract_violations": _counter(safety, "contract_violations")
-        <= int(release.get("contract_violations_max", 0)),
+        <= release["contract_violations_max"],
         "deterministic": result.get("deterministic") is True,
     }
     return {
@@ -649,26 +745,54 @@ def check_benchmark(results_path: Path, thresholds_path: Path) -> Doc:
 # ---------------------------------------------------------------------------
 
 
-def _blind_assignment(seed: int, frozen: Doc) -> dict[str, str]:
-    """Map each blind label to a condition with a deterministic seeded permutation.
+def read_blinding_key(path: Path) -> str:
+    """Load the host's private blinding key from a file it alone controls."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise EvaluationError("cannot read the blinding key file") from error
+    key = raw.strip()
+    if len(key) < MIN_BLINDING_KEY_CHARS:
+        raise EvaluationError(f"blinding key must be at least {MIN_BLINDING_KEY_CHARS} characters")
+    return key
 
-    The permutation is chosen from a digest of the seed and the frozen input
-    identity, so a different seed produces a different assignment and the same
-    plan always reproduces its own. The grader packet carries neither the seed
-    nor this map, so the labels stay opaque to whoever grades the arms.
+
+def _keyed_digest(key: str, message: str) -> str:
+    return hmac.new(key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _blind_assignment(key: str, frozen: Doc) -> dict[str, str]:
+    """Map each blind label to a condition with a keyed deterministic permutation.
+
+    The permutation is selected by an HMAC of the frozen public identity under
+    the host's private key. The same public inputs and the same key always
+    reproduce the same assignment, and a different key produces a different one.
+    Because the key never enters the plan or the grader packet, neither artifact
+    carries inputs sufficient to derive the mapping: only the separate host
+    unblinding artifact does.
     """
-    material = ":".join(
-        [
-            str(seed),
-            str(frozen.get("task_set_version", "")),
-            str(frozen.get("task_set_sha256", "")),
-            str(frozen.get("rubric_sha256", "")),
-            str(frozen.get("thresholds_sha256", "")),
-        ]
-    )
+    material = _canonical({name: frozen.get(name) for name in _BLINDING_MATERIAL})
     orderings = list(itertools.permutations(_CONDITIONS))
-    index = int(hashlib.sha256(material.encode("utf-8")).hexdigest(), 16) % len(orderings)
+    index = int(_keyed_digest(key, material), 16) % len(orderings)
     return {f"arm-{position}": name for position, name in enumerate(orderings[index])}
+
+
+def _blinding_commitment(key: str, assignment: dict[str, str]) -> str:
+    """A keyed commitment to the assignment, safe to publish in the plan.
+
+    With only six possible assignments an unkeyed digest would be trivially
+    enumerable, so the commitment is an HMAC under the same private key.
+    """
+    return _keyed_digest(key, _canonical(assignment))
+
+
+def _require_assignment_shape(assignment: Doc, labels: Iterable[str]) -> dict[str, str]:
+    supplied = {str(key): str(value) for key, value in assignment.items()}
+    if sorted(supplied) != sorted(labels):
+        raise EvaluationError("unblinding map does not cover exactly the planned arms")
+    if sorted(supplied.values()) != sorted(_CONDITIONS):
+        raise EvaluationError("unblinding map must assign each condition exactly once")
+    return supplied
 
 
 def _load_plan(path: Path) -> Doc:
@@ -725,11 +849,13 @@ def plan_experiment(
     effort: str,
     seed: int,
     output_root: Path,
+    blinding_key: str,
 ) -> tuple[Doc, Doc, Doc]:
-    """Freeze every input and blind the arms.
+    """Freeze every input and blind the arms under the host's private key.
 
-    Returns the plan, the grader packet (blind identities and rubric only), and
-    the unblinding map, which the host keeps as a separate execution artifact.
+    Returns the plan, the grader packet (blind identities, rubric, and the
+    commitment only), and the unblinding map, which carries the private key and
+    the snapshot roots and stays with the host execution record.
     """
     raw_tasks = read_json(task_path, "task set")
     task_version, tasks = _validate_tasks(raw_tasks)
@@ -762,6 +888,10 @@ def plan_experiment(
     binding = _binding(thresholds)
     _require_binding(binding, "task_set_version", task_version, "task set version")
     _require_binding(binding, "task_set_sha256", task_sha256, "task set")
+    _validated_gates(thresholds, "promotion", _PROMOTION_GATE_SPEC)
+    key = blinding_key.strip()
+    if len(key) < MIN_BLINDING_KEY_CHARS:
+        raise EvaluationError(f"blinding key must be at least {MIN_BLINDING_KEY_CHARS} characters")
     frozen = {
         "task_set_version": task_version,
         "task_set_sha256": task_sha256,
@@ -774,14 +904,16 @@ def plan_experiment(
         "prompts_frozen": True,
         "inputs_frozen": True,
     }
-    assignment = _blind_assignment(seed, frozen)
-    # The plan never names a condition next to its label: only the map does.
+    assignment = _blind_assignment(key, frozen)
+    snapshots = {
+        label: {"root": roots[condition], "wiki_sha256": digest_tree(Path(roots[condition]))}
+        for label, condition in sorted(assignment.items())
+    }
+    # The plan carries the three snapshot digests as an unordered set, never
+    # beside a label. An empty no-wiki snapshot has a constant digest, so a
+    # per-arm digest would identify that condition on its own.
     arms = [
-        {
-            "blind_label": label,
-            "wiki_sha256": digest_tree(Path(roots[assignment[label]])),
-            "output_root": str(output_path / label),
-        }
+        {"blind_label": label, "output_root": str(output_path / label)}
         for label in sorted(assignment)
     ]
     body: Doc = {
@@ -792,6 +924,11 @@ def plan_experiment(
         "thresholds_path": str(thresholds_path.resolve()),
         "frozen": frozen,
         "arms": arms,
+        "snapshot_digests": sorted(str(entry["wiki_sha256"]) for entry in snapshots.values()),
+        "blinding": {
+            "scheme": BLINDING_SCHEME,
+            "commitment": _blinding_commitment(key, assignment),
+        },
         "output_root": output,
         "status": "planned",
     }
@@ -809,36 +946,88 @@ def plan_experiment(
         ],
         "rubric": rubric,
         "rubric_sha256": frozen["rubric_sha256"],
-        "help": ["Grade each blind arm without any condition, seed, or snapshot information"],
+        "blinding_commitment": body["blinding"]["commitment"],
+        "help": ["Grade each blind arm without any condition, key, or snapshot information"],
     }
     unblinding = {
         "schema_version": MAP_SCHEMA,
         "plan_id": plan_id,
+        "blinding_key": key,
         "assignments": assignment,
-        "help": ["Keep this map with the host execution record; supply it only at score time"],
+        "snapshots": snapshots,
+        "help": [
+            "Keep this map and its key with the host execution record",
+            "Supply it only at score time, after the blind grades are sealed",
+        ],
     }
     return body, grader, unblinding
 
 
-def _load_unblinding_map(plan: Doc, path: Path) -> dict[str, str]:
+def _load_unblinding_map(plan: Doc, path: Path) -> Doc:
+    """Verify the host's unblinding artifact against the plan's commitment."""
     raw = read_json(path, "unblinding map")
     if not isinstance(raw, dict) or raw.get("schema_version") != MAP_SCHEMA:
         raise EvaluationError("unblinding map schema is invalid")
     if raw.get("plan_id") != plan.get("plan_id"):
         raise EvaluationError("unblinding map belongs to a different plan")
+    key = raw.get("blinding_key")
+    if not isinstance(key, str) or len(key.strip()) < MIN_BLINDING_KEY_CHARS:
+        raise EvaluationError("unblinding map carries no usable blinding key")
+    key = key.strip()
     assignments = raw.get("assignments")
     if not isinstance(assignments, dict):
         raise EvaluationError("unblinding map has no assignments")
-    supplied = {str(key): str(value) for key, value in assignments.items()}
+    supplied = _require_assignment_shape(assignments, _plan_labels(plan))
+    blinding = plan.get("blinding")
+    if not isinstance(blinding, dict) or not isinstance(blinding.get("commitment"), str):
+        raise EvaluationError("evaluation plan carries no blinding commitment")
+    if not hmac.compare_digest(_blinding_commitment(key, supplied), str(blinding["commitment"])):
+        raise EvaluationError("unblinding map does not open the plan's blinding commitment")
     frozen = plan.get("frozen")
-    if not isinstance(frozen, dict) or not isinstance(frozen.get("seed"), int):
-        raise EvaluationError("evaluation plan has no frozen seed")
-    if supplied != _blind_assignment(int(frozen["seed"]), frozen):
-        raise EvaluationError("unblinding map does not match the frozen plan seed")
-    return supplied
+    if not isinstance(frozen, dict) or supplied != _blind_assignment(key, frozen):
+        raise EvaluationError("unblinding map is not the assignment this key and plan derive")
+    snapshots = raw.get("snapshots")
+    if not isinstance(snapshots, dict) or sorted(snapshots) != sorted(supplied):
+        raise EvaluationError("unblinding map does not record one snapshot per arm")
+    recorded: Doc = {}
+    for label, entry in sorted(snapshots.items()):
+        if not isinstance(entry, dict):
+            raise EvaluationError("unblinding map snapshot entry is malformed")
+        root = entry.get("root")
+        digest = entry.get("wiki_sha256")
+        if not isinstance(root, str) or not root or not isinstance(digest, str) or not digest:
+            raise EvaluationError("unblinding map snapshot entry is malformed")
+        recorded[str(label)] = {"root": root, "wiki_sha256": digest}
+    planned = plan.get("snapshot_digests")
+    if not isinstance(planned, list) or sorted(
+        str(entry["wiki_sha256"]) for entry in recorded.values()
+    ) != sorted(str(item) for item in planned):
+        raise EvaluationError("unblinding map snapshots do not match the planned digests")
+    return {"assignments": supplied, "snapshots": recorded}
 
 
-def _validate_output(plan: Doc, path: Path) -> tuple[str, list[Doc]]:
+def evaluation_write_guard_roots(plan_path: Path, map_path: Path | None = None) -> list[Path]:
+    """Every evaluated root an ``--out`` destination must stay outside of.
+
+    Derived from the validated plan (and, when scoring, the validated unblinding
+    map, which is the only artifact naming the arm snapshot roots). An empty
+    no-wiki snapshot is not a vault, so the ancestor scan alone would not catch
+    evidence written into it.
+    """
+    plan = _load_plan(plan_path)
+    roots = [Path(str(plan.get("output_root", "")))]
+    roots += [
+        Path(str(arm.get("output_root", "")))
+        for arm in plan.get("arms", [])
+        if isinstance(arm, dict)
+    ]
+    if map_path is not None:
+        unblinding = _load_unblinding_map(plan, map_path)
+        roots += [Path(str(entry["root"])) for entry in unblinding["snapshots"].values()]
+    return [root for root in roots if str(root) not in {"", "."}]
+
+
+def _validate_output(plan: Doc, path: Path) -> tuple[str, list[Doc], str]:
     raw = read_json(path, "arm output")
     if not isinstance(raw, dict) or raw.get("schema") != OUTPUT_SCHEMA:
         raise EvaluationError("arm output schema is invalid")
@@ -855,7 +1044,11 @@ def _validate_output(plan: Doc, path: Path) -> tuple[str, list[Doc]]:
         resolve_contained(Path(str(arm["output_root"])), path)
     except (OSError, ValueError) as error:
         raise EvaluationError("arm output is outside its isolated output root") from error
-    if raw.get("wiki_sha256") != arm.get("wiki_sha256"):
+    snapshot = raw.get("wiki_sha256")
+    planned_digests = plan.get("snapshot_digests")
+    if not isinstance(planned_digests, list):
+        raise EvaluationError("evaluation plan records no snapshot digests")
+    if not isinstance(snapshot, str) or snapshot not in {str(item) for item in planned_digests}:
         raise EvaluationError("arm output wiki snapshot does not match the plan")
     results = raw.get("results")
     if not isinstance(results, list):
@@ -897,20 +1090,31 @@ def _validate_output(plan: Doc, path: Path) -> tuple[str, list[Doc]]:
             raise EvaluationError("arm output reports a privacy or model-access violation")
     if seen != task_ids:
         raise EvaluationError("arm output is missing one or more frozen tasks")
-    return label, results
+    return label, results, snapshot
 
 
-def _collect_outputs(plan: Doc, output_paths: list[Path]) -> tuple[dict[str, list[Doc]], list[str]]:
+def _collect_outputs(
+    plan: Doc, output_paths: list[Path]
+) -> tuple[dict[str, list[Doc]], dict[str, str], list[str]]:
     if not output_paths:
         raise EvaluationError("at least one arm output is required")
     expected = set(_plan_labels(plan))
     collected: dict[str, list[Doc]] = {}
+    snapshots: dict[str, str] = {}
     for path in output_paths:
-        label, rows = _validate_output(plan, path)
+        label, rows, snapshot = _validate_output(plan, path)
         if label in collected:
             raise EvaluationError("duplicate arm output")
         collected[label] = rows
-    return collected, sorted(expected - set(collected))
+        snapshots[label] = snapshot
+    missing = sorted(expected - set(collected))
+    # A complete submission must account for every planned snapshot exactly
+    # once: the plan deliberately no longer says which label owns which digest,
+    # so this is where a swapped or repeated snapshot is caught without a map.
+    planned = sorted(str(item) for item in plan.get("snapshot_digests", []))
+    if not missing and sorted(snapshots.values()) != planned:
+        raise EvaluationError("arm outputs do not cover each planned snapshot exactly once")
+    return collected, snapshots, missing
 
 
 def _unsettled(schema: str, plan: Doc, submitted: Iterable[str], missing: list[str]) -> Doc:
@@ -929,7 +1133,7 @@ def _unsettled(schema: str, plan: Doc, submitted: Iterable[str], missing: list[s
 
 def validate_experiment(plan_path: Path, output_paths: list[Path]) -> Doc:
     plan = _load_plan(plan_path)
-    collected, missing = _collect_outputs(plan, output_paths)
+    collected, _snapshots, missing = _collect_outputs(plan, output_paths)
     if missing:
         return _unsettled(VALIDATE_SCHEMA, plan, collected, missing)
     return {
@@ -946,7 +1150,7 @@ def validate_experiment(plan_path: Path, output_paths: list[Path]) -> Doc:
 
 def score_experiment(plan_path: Path, output_paths: list[Path], map_path: Path) -> Doc:
     plan = _load_plan(plan_path)
-    collected, missing = _collect_outputs(plan, output_paths)
+    collected, snapshots, missing = _collect_outputs(plan, output_paths)
     if missing:
         return _unsettled(SCORE_SCHEMA, plan, collected, missing)
     tasks_raw = (
@@ -985,7 +1189,11 @@ def score_experiment(plan_path: Path, output_paths: list[Path], map_path: Path) 
         }
     blind_scores_sha256 = content_hash(_canonical(arm_scores))
 
-    assignment = _load_unblinding_map(plan, map_path)
+    unblinding = _load_unblinding_map(plan, map_path)
+    assignment = unblinding["assignments"]
+    for label, entry in unblinding["snapshots"].items():
+        if snapshots.get(label) != entry["wiki_sha256"]:
+            raise EvaluationError("arm output snapshot does not match the unblinding map")
     label_by_condition = {condition: label for label, condition in assignment.items()}
     current = arm_scores.get(label_by_condition.get("current-wiki", ""))
     updated = arm_scores.get(label_by_condition.get("updated-wiki", ""))
@@ -993,14 +1201,14 @@ def score_experiment(plan_path: Path, output_paths: list[Path], map_path: Path) 
         unscored = sorted(set(_plan_labels(plan)) - set(arm_scores))
         return _unsettled(SCORE_SCHEMA, plan, collected, unscored)
     thresholds = _parse_thresholds(Path(str(plan["thresholds_path"])))
-    gates = thresholds.get("promotion", thresholds)
+    gates = _validated_gates(thresholds, "promotion", _PROMOTION_GATE_SPEC)
     improvement = float(updated["target_accuracy"]) - float(current["target_accuracy"])
     adjacent_delta = float(updated["adjacent_accuracy"]) - float(current["adjacent_accuracy"])
     provenance_delta = float(updated["provenance_rate"]) - float(current["provenance_rate"])
     passed = (
-        improvement >= float(gates.get("improvement_min", 0.0))
-        and adjacent_delta >= -float(gates.get("adjacent_regression_max", 0.0))
-        and provenance_delta >= -float(gates.get("provenance_regression_max", 0.0))
+        improvement >= gates["improvement_min"]
+        and adjacent_delta >= -gates["adjacent_regression_max"]
+        and provenance_delta >= -gates["provenance_regression_max"]
     )
     outcome = "promoted" if passed else "rollback-required"
     return {
