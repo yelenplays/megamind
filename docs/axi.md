@@ -35,6 +35,8 @@ with a stable `schema_version`:
 | `megamind/research-wave/v1` | `research-wave` |
 | `megamind/research-result/v1` | `research-result` |
 | `megamind/provisional-wiki-result/v1` | `provision-wiki` |
+| `megamind/benchmark-result/v1`, `megamind/benchmark-check/v1` | `bench run|check` |
+| `megamind/evaluation-plan/v1`, `megamind/evaluation-validation/v1`, `megamind/evaluation-score/v1`, `megamind/evaluation-record/v1` | `experiment plan|validate|score|record` |
 | `megamind/error/v1` | any failure |
 
 The v2 retrieval documents are additive over their v1 shapes: every v1 field
@@ -202,14 +204,20 @@ the full component rationale.
 `capture_invalid`, `proposal_not_found`, `plan_mismatch`, `approval_required`,
 `evolve_invalid`, `adopt_invalid`, `init_invalid`, `path_escape`,
 `frontmatter_invalid`, `io_error`, `garden_invalid`, `gap_not_found`,
-`gap_transition_invalid`, `provision_recovery_required`. Malformed vault
-content and filesystem failures are reported as `frontmatter_invalid` and
-`io_error` documents with exit 1; no invocation ever ends in a traceback.
+`gap_transition_invalid`, `provision_recovery_required`, `evaluation_invalid`.
+Malformed vault content and filesystem failures are reported as
+`frontmatter_invalid` and `io_error` documents with exit 1; malformed frozen
+evaluation inputs are `evaluation_invalid`; no invocation ever ends in a
+traceback.
 `provision_recovery_required` is the one failure that deliberately leaves
 durable state: an apply that could not fully undo itself keeps its transaction
 record so the retry or the explicit rollback stays available. Messages never
 include machine-specific absolute paths from inside the vault model; registry
 paths are always root-relative.
+
+## Evaluation contract
+
+`bench run` invokes the public `preflight` and `route` commands over the checked-in synthetic release fixture and emits tier-specific canonical metrics, context accounting, safety counts, and honest local baselines. `bench check` applies the versioned machine-readable gates. `experiment plan` freezes a task-set digest, prompt/model/tools/effort inputs, rubric, thresholds, seed, and three isolated wiki snapshots. The host supplies opaque-label arm outputs; `experiment validate` rejects malformed, incomplete, cross-arm, contaminated, or wrong-provenance outputs. `experiment score` applies only the frozen rubric and promotion rules. `experiment record` appends a bounded safe audit event with a rollback reference when needed. None of these commands invokes a model, worker, network, account, or external service.
 
 ## Testing the contract
 

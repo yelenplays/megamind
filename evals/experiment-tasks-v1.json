@@ -1,0 +1,10 @@
+{
+  "schema": "megamind/evaluation-task-set/v1",
+  "version": "synthetic-value-v1",
+  "frozen": true,
+  "tasks": [
+    {"id":"t01","prompt":"How is the synthetic product priced?","required_terms":["starter","team"],"required_provenance":["ProductWiki/pricing.md"]},
+    {"id":"t02","prompt":"What is the release process?","required_terms":["staged","release"],"required_provenance":["ProductWiki/release.md"],"adjacent_terms":["release"]},
+    {"id":"t03","prompt":"What should we do with an unknown private request?","required_terms":["unavailable"],"required_provenance":[]}
+  ]
+}

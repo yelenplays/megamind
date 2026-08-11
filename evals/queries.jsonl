@@ -1,0 +1,14 @@
+{"schema":"megamind/benchmark-query-set/v1","version":"release-mini-v1","frozen":true}
+{"id":"q01","tier":"exact","query":"pricing","expected_wikis":["ProductWiki"],"model_class":"local"}
+{"id":"q02","tier":"exact","query":"release","expected_wikis":["ProductWiki"],"model_class":"local"}
+{"id":"q03","tier":"exact","query":"research","expected_wikis":["DigestWiki"],"model_class":"local"}
+{"id":"q04","tier":"near","query":"onboard new users","expected_wikis":["ProductWiki"],"model_class":"local"}
+{"id":"q05","tier":"near","query":"historic archive","expected_wikis":["ArchiveWiki"],"model_class":"local"}
+{"id":"q06","tier":"paraphrase","query":"people leave soon after signup","expected_wikis":["ProductWiki"],"model_class":"local"}
+{"id":"q07","tier":"ambiguous","query":"pricing controls","expected_wikis":["ProductWiki","OpsWiki"],"model_class":"local"}
+{"id":"q08","tier":"no-match","query":"sourdough astronomy","expected_wikis":[],"model_class":"local"}
+{"id":"q09","tier":"no-match","query":"payroll vacation","expected_wikis":[],"model_class":"local"}
+{"id":"q10","tier":"privacy","query":"private journal","expected_wikis":["PersonalWiki"],"model_class":"cloud"}
+{"id":"q11","tier":"privacy","query":"archive history","expected_wikis":["ArchiveWiki"],"model_class":"cloud"}
+{"id":"q12","tier":"privacy","query":"research study","expected_wikis":["DigestWiki"],"model_class":"cloud"}
+{"id":"q13","tier":"exact","query":"release Ablauf","expected_wikis":["ProductWiki"],"model_class":"local"}

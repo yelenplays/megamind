@@ -44,6 +44,17 @@ from .confidence import (
     claim_confidence,
 )
 from .doctor import run_doctor
+from .evaluation import (
+    EvaluationError,
+    check_benchmark,
+    plan_experiment,
+    read_json,
+    record_evaluation,
+    run_benchmark,
+    score_experiment,
+    validate_experiment,
+    write_document,
+)
 from .evolve import EvolveError, apply_plan, plan
 from .fsops import PathEscapeError
 from .gardening import (
@@ -1123,6 +1134,57 @@ def cmd_setup_skill(dest: str | None) -> tuple[Doc, int]:
     return doc, 0
 
 
+def _evaluation_out(document: Doc, raw: str | None) -> Doc:
+    if raw:
+        write_document(Path(raw), document)
+    return document
+
+
+def cmd_bench(args: argparse.Namespace) -> tuple[Doc, int]:
+    if args.bench_command == "run":
+        result = run_benchmark(Path(args.fixtures), Path(args.queries), Path(args.thresholds))
+        if args.repeat:
+            repeated = run_benchmark(Path(args.fixtures), Path(args.queries), Path(args.thresholds))
+            if json.dumps(result, sort_keys=True) != json.dumps(repeated, sort_keys=True):
+                raise EvaluationError("benchmark repeatability check failed")
+        return _evaluation_out(result, args.out), 0
+    result = check_benchmark(Path(args.results), Path(args.thresholds))
+    return _evaluation_out(result, args.out), 0 if result["status"] == "passed" else 1
+
+
+def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
+    action = args.experiment_command
+    if action == "plan":
+        result = plan_experiment(
+            Path(args.tasks),
+            Path(args.no_wiki),
+            Path(args.current_wiki),
+            Path(args.updated_wiki),
+            Path(args.rubric),
+            Path(args.thresholds),
+            args.model,
+            args.tools,
+            args.effort,
+            args.seed,
+            Path(args.output_root),
+        )
+        return _evaluation_out(result, args.out), 0
+    if action == "record":
+        score = read_json(Path(args.score), "evaluation score")
+        if not isinstance(score, dict):
+            raise EvaluationError("evaluation score must be an object")
+        result = record_evaluation(Path(args.audit_root), score)
+        return _evaluation_out(result, args.out), 0
+    plan = Path(args.plan)
+    if action == "validate":
+        result = validate_experiment(plan, [Path(path) for path in args.outputs])
+        return _evaluation_out(result, args.out), 0 if result["status"] == "valid" else 1
+    if action == "score":
+        result = score_experiment(plan, [Path(path) for path in args.outputs])
+        return _evaluation_out(result, args.out), 0 if result["status"] == "promoted" else 1
+    raise UsageError("unknown experiment action")
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
@@ -1493,6 +1555,78 @@ def build_parser() -> AxiParser:
     p_provision.add_argument("--rollback", action="store_true", help="rollback an applied plan")
     p_provision.add_argument("--today", default=argparse.SUPPRESS)
 
+    p_bench = sub.add_parser(
+        "bench",
+        help="run or check the frozen synthetic release benchmark",
+        epilog=(
+            f"example: {EXECUTABLE} bench run --fixtures evals/fixtures/release-mini "
+            "--queries evals/queries.jsonl --thresholds evals/thresholds.toml --out results.json"
+        ),
+    )
+    _common_flags(p_bench)
+    bench_sub = p_bench.add_subparsers(dest="bench_command")
+    p_bench_run = bench_sub.add_parser(
+        "run", help="invoke the real public CLI over synthetic fixtures"
+    )
+    _common_flags(p_bench_run)
+    p_bench_run.add_argument("--fixtures", required=True)
+    p_bench_run.add_argument("--queries", required=True)
+    p_bench_run.add_argument("--thresholds", required=True)
+    p_bench_run.add_argument("--out", default=None)
+    p_bench_run.add_argument(
+        "--repeat", action="store_true", help="rerun and require byte-identical canonical output"
+    )
+    p_bench_check = bench_sub.add_parser("check", help="check frozen release gates")
+    _common_flags(p_bench_check)
+    p_bench_check.add_argument("--results", required=True)
+    p_bench_check.add_argument("--thresholds", required=True)
+    p_bench_check.add_argument("--out", default=None)
+
+    p_experiment = sub.add_parser(
+        "experiment",
+        aliases=["eval", "evaluation"],
+        help="plan, validate, score, and record a host-executed three-arm evaluation",
+    )
+    _common_flags(p_experiment)
+    experiment_sub = p_experiment.add_subparsers(dest="experiment_command")
+    p_exp_plan = experiment_sub.add_parser(
+        "plan", help="freeze task, model, rubric, threshold, and arm inputs"
+    )
+    _common_flags(p_exp_plan)
+    p_exp_plan.add_argument("--tasks", required=True)
+    p_exp_plan.add_argument("--no-wiki", required=True)
+    p_exp_plan.add_argument("--current-wiki", required=True)
+    p_exp_plan.add_argument("--updated-wiki", required=True)
+    p_exp_plan.add_argument("--rubric", required=True)
+    p_exp_plan.add_argument("--thresholds", required=True)
+    p_exp_plan.add_argument("--model", required=True)
+    p_exp_plan.add_argument("--tools", default="none")
+    p_exp_plan.add_argument("--effort", default="fixed")
+    p_exp_plan.add_argument("--seed", type=int, required=True)
+    p_exp_plan.add_argument("--output-root", required=True)
+    p_exp_plan.add_argument("--out", required=True)
+    p_exp_validate = experiment_sub.add_parser(
+        "validate", help="validate blinded, isolated host arm outputs"
+    )
+    _common_flags(p_exp_validate)
+    p_exp_validate.add_argument("--plan", required=True)
+    p_exp_validate.add_argument("--outputs", nargs="+", required=True)
+    p_exp_validate.add_argument("--out", default=None)
+    p_exp_score = experiment_sub.add_parser(
+        "score", help="score validated outputs and apply frozen promotion gates"
+    )
+    _common_flags(p_exp_score)
+    p_exp_score.add_argument("--plan", required=True)
+    p_exp_score.add_argument("--outputs", nargs="+", required=True)
+    p_exp_score.add_argument("--out", default=None)
+    p_exp_record = experiment_sub.add_parser(
+        "record", help="append a bounded safe evaluation audit event"
+    )
+    _common_flags(p_exp_record)
+    p_exp_record.add_argument("--score", required=True)
+    p_exp_record.add_argument("--audit-root", required=True)
+    p_exp_record.add_argument("--out", default=None)
+
     p_setup = sub.add_parser("setup", help="explicit opt-in integrations (local, zero-network)")
     _common_flags(p_setup)
     setup_sub = p_setup.add_subparsers(dest="setup_command")
@@ -1704,6 +1838,14 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
         if args.rollback and not args.plan_id:
             raise UsageError("provision-wiki --rollback requires --plan-id")
         return cmd_provision_wiki(args, root, _garden_today(args))
+    if command == "bench":
+        if getattr(args, "bench_command", None) not in {"run", "check"}:
+            raise UsageError("usage: megamind-axi bench run|check ...")
+        return cmd_bench(args)
+    if command in {"experiment", "eval", "evaluation"}:
+        if getattr(args, "experiment_command", None) not in {"plan", "validate", "score", "record"}:
+            raise UsageError("usage: megamind-axi experiment plan|validate|score|record ...")
+        return cmd_experiment(args)
     if command == "setup":
         if getattr(args, "setup_command", None) != "skill":
             raise UsageError("usage: megamind-axi setup skill [--dest DIR]")
@@ -1779,6 +1921,7 @@ def main(argv: list[str] | None = None) -> int:
         InitError,
         PathEscapeError,
         GardenError,
+        EvaluationError,
     ) as error:
         code = str(getattr(error, "code", "operation_failed"))
         exit_code = 2 if code in {"not_initialized", "registry_invalid"} else 1

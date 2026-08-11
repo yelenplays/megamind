@@ -1,0 +1,11 @@
+[release]
+exact_accuracy_min = 0.50
+near_accuracy_min = 0.00
+no_match_accuracy_min = 0.50
+canary_leaks_max = 0
+budget_violations_max = 0
+
+[promotion]
+improvement_min = 0.05
+adjacent_regression_max = 0.05
+provenance_regression_max = 0.00

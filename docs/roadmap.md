@@ -94,13 +94,23 @@ model are non-negotiable at every stage.
   once confidence coverage and a later evaluation clear it, with no command
   behind it
 
+## v0.5 (Phase 4 evaluation): shipped
+
+- Frozen, publishable synthetic release benchmark (`bench run|check`) over real
+  public CLI interfaces, with tier-specific routing, privacy/access, pointer and
+  digest, canary, context, repeatability, and honest local baseline metrics
+- Versioned machine-readable task sets, rubrics, thresholds, canonical results,
+  and bounded safe evaluation audit records
+- Isolated three-arm evaluation contract (`experiment plan|validate|score|record`)
+  for no-wiki, current-wiki, and updated-wiki conditions. The host supplies arm
+  outputs; Megamind never invokes a model, worker, network, account, or service
+- Blind opaque arm labels, frozen provenance digests, cross-arm contamination
+  checks, authorized-context accounting, rollback-required and unsettled outcomes,
+  and restrictive provisional governance
+
 ## Later / undecided
 
-- Benchmark suite (bench-mini): a frozen synthetic corpus with a tiered query
-  set (exact, near, paraphrase, ambiguous, no-match, privacy), canary-string
-  leak detection, context-cost accounting, and honest baselines (full-vault
-  stuffing, grep-style search) with per-tier reporting and hard safety gates,
-  runnable in CI without any hosted API
+- Larger bench-mid corpus and seeded scale curves
 - Pluggable local embedding adapters behind the `megamind.semantic` protocol
   (the deterministic ladder stays the source of truth and the offline
   default; adapters only re-order already-authorized candidates and are

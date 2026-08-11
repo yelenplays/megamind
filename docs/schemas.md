@@ -353,6 +353,32 @@ as a typed field, and `notes` names it as a governance decision and never as a
 confidence one. Privacy-safe offers and research nominations may still name a
 provisional wiki explicitly.
 
+## Evaluation schemas (Phase 4)
+
+Release inputs are immutable by version and safe to publish. A task set is an
+object with `schema: megamind/evaluation-task-set/v1`, a frozen `version`, and
+unique pre-authored task objects. Threshold files are deterministic TOML (or
+JSON) and are hashed into every result. `megamind/benchmark-result/v1` contains
+`corpus_sha256`, `queries_sha256`, `thresholds_sha256`, per-tier aggregates,
+per-query canonical rows, safety counts, and honest local baselines. It has no
+wall-clock field. `benchmark-check/v1` reports each gate and failed gate names.
+
+`megamind/evaluation-plan/v1` freezes the task-set, rubric, threshold, model,
+tools, effort, seed, and three distinct snapshot digests. It assigns opaque arm
+labels and distinct output roots. Host arm output is
+`megamind/evaluation-arm-output/v1`; it must carry the plan/task versions,
+opaque label, session id, snapshot digest, every task exactly once, the actual
+non-negative `authorized_context_chars`, provenance, and zero privacy/model
+access violations. Validation rejects malformed output, stale or tampered
+inputs, missing tasks, duplicate arms, path escapes, leakage, or cross-arm
+contamination. Scoring returns `megamind/evaluation-score/v1`: promotion requires
+improved target outcomes, no material adjacent regression, preserved provenance,
+and zero new safety violations. Failure is `rollback-required`; incomplete or
+unvalidated input is unsettled and never promoted. `experiment record` appends
+`megamind/evaluation-record/v1` to an audit JSONL journal with a deterministic
+hash-chain event, bounded safe summary, and rollback reference. Prompts,
+answers, canaries, secrets, and sensitive content are never copied to the event.
+
 ## Canonical wiki root
 
 `megamind-axi init <path> --wiki <Name>` scaffolds the canonical layout:
