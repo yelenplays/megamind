@@ -13,10 +13,13 @@ from megamind.gardening import (
     GardenError,
     PriorityInputs,
     ProvisionCriteria,
+    apply_provision_plan,
     ingest_research_result,
     make_nomination,
+    plan_provision_wiki,
     plan_research_wave,
     provision_local_wiki,
+    rollback_provision,
     validate_gap_journal,
 )
 from megamind.registry import RegistryError, load_registry, save_registry
@@ -191,6 +194,50 @@ def test_provision_requires_all_criteria_and_registers_restrictively(tmp_path: P
     assert card["provisional"] is True
     with pytest.raises(GardenError):
         make_criteria(accepted_domain="", repeat_demand=1, seed_topics=("one",)).validate()
+
+
+def test_provision_plan_apply_is_idempotent_and_rollback_verifies_content(tmp_path: Path) -> None:
+    init_vault(tmp_path, starter=False)
+    plan = plan_provision_wiki(
+        tmp_path, "PlanWiki", "PlanWiki", make_criteria(), today="2026-01-01"
+    )
+    assert not (tmp_path / "PlanWiki").exists()
+    with pytest.raises(GardenError, match="plan id mismatch"):
+        apply_provision_plan(tmp_path, plan, "tampered")
+    apply_provision_plan(tmp_path, plan, plan.plan_id)
+    assert apply_provision_plan(tmp_path, plan, plan.plan_id) == []
+    (tmp_path / "PlanWiki/wiki/index.md").write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(GardenError, match="rollback refused"):
+        rollback_provision(tmp_path, plan.plan_id)
+    (tmp_path / "PlanWiki/wiki/index.md").write_text(
+        "# PlanWiki compiled index\n", encoding="utf-8"
+    )
+    assert rollback_provision(tmp_path, plan.plan_id)
+    assert not (tmp_path / "PlanWiki").exists()
+
+
+def test_provision_apply_crash_recovers_without_an_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_vault(tmp_path, starter=False)
+    plan = plan_provision_wiki(tmp_path, "CrashWiki", "CrashWiki", make_criteria())
+    import megamind.gardening as gardening
+
+    original = gardening.atomic_write
+    calls = 0
+
+    def crash(root: Path, target: str | Path, content: str) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise OSError("synthetic crash")
+        return original(root, target, content)
+
+    monkeypatch.setattr(gardening, "atomic_write", crash)
+    with pytest.raises(OSError, match="synthetic crash"):
+        apply_provision_plan(tmp_path, plan, plan.plan_id)
+    assert not (tmp_path / "CrashWiki").exists()
+    assert "CrashWiki" not in load_registry(tmp_path).wikis
 
 
 def test_provision_card_paths_are_rooted_at_the_wiki(tmp_path: Path) -> None:

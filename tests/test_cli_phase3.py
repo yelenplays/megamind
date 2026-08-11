@@ -401,6 +401,19 @@ def test_provision_wiki_leaves_a_registry_backup_and_audit_link(
     vault: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     before = (vault / ".megamind/registry.json").read_text(encoding="utf-8")
+    code, plan, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "provision-wiki",
+        "ReleaseWiki",
+        "ReleaseWiki",
+        *PROVISION_FLAGS,
+        "--today",
+        "2026-01-01",
+    )
+    assert code == 0
+    assert plan["status"] == "planned"
     code, doc, _ = run_json(
         capsys,
         "--root",
@@ -411,6 +424,9 @@ def test_provision_wiki_leaves_a_registry_backup_and_audit_link(
         *PROVISION_FLAGS,
         "--today",
         "2026-01-01",
+        "--apply",
+        "--plan-id",
+        plan["plan_id"],
     )
     assert code == 0
     assert doc["trusted"] is False
@@ -548,6 +564,17 @@ def test_v1_registry_keeps_working_and_provisioning_demands_explicit_migrate(
 
 
 def provisioned_vault(capsys: pytest.CaptureFixture[str], vault: Path) -> Path:
+    _, plan, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "provision-wiki",
+        "ReleaseWiki",
+        "ReleaseWiki",
+        *PROVISION_FLAGS,
+        "--today",
+        "2026-01-01",
+    )
     run_json(
         capsys,
         "--root",
@@ -558,6 +585,9 @@ def provisioned_vault(capsys: pytest.CaptureFixture[str], vault: Path) -> Path:
         *PROVISION_FLAGS,
         "--today",
         "2026-01-01",
+        "--apply",
+        "--plan-id",
+        plan["plan_id"],
     )
     return vault
 

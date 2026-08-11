@@ -22,6 +22,7 @@ from .fsops import (
     atomic_write,
     backup_existing,
     content_hash,
+    remove_contained,
     resolve_contained,
 )
 from .registry import (
@@ -31,12 +32,12 @@ from .registry import (
     ROUTER_HEADER,
     ModelAccess,
     Registry,
+    RegistryError,
     SourcePolicy,
     WikiEntry,
     generate_router,
     load_registry,
     registry_file,
-    save_registry,
     serialize_registry,
 )
 
@@ -731,32 +732,28 @@ class ProvisionCriteria:
             raise GardenError("provisional wiki criteria are not all satisfied")
 
 
-def provision_local_wiki(
-    root: Path, name: str, path: str, criteria: ProvisionCriteria, *, today: str | None = None
-) -> list[str]:
-    criteria.validate()
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name):
-        raise GardenError("wiki name must be a simple local identifier")
-    # A root is one shape or the other, never both: adding a registry beside an
-    # authoritative canonical card would leave discovery guessing which card
-    # wins. Init and adopt refuse the same way.
-    if card_file(root).is_file() and not registry_file(root).is_file():
-        raise GardenError(
-            "this root is a canonical single-wiki root, not a registry vault; provisioning "
-            "a registry here would leave two cards claiming authority. Provision the new "
-            "wiki in a registry vault instead"
-        )
-    # Never bootstrap a vault as a side effect, and never migrate one either:
-    # a v1 registry has to be upgraded explicitly so its operator notes are seen.
-    registry = load_registry(root)
-    if registry.version < CURRENT_VERSION:
-        raise GardenError(
-            "registry is schema v1; run `megamind-axi migrate` first so every existing wiki "
-            "gets its explicit access policy before a provisional wiki is registered"
-        )
-    if registry.wiki_by_name(name) is not None:
-        raise GardenError(f"wiki already exists: {name}")
-    entry = WikiEntry(
+@dataclass(frozen=True)
+class ProvisionPlan:
+    plan_id: str
+    name: str
+    path: str
+    changes: tuple[dict[str, str | None], ...]
+    notes: tuple[str, ...] = ()
+
+    def to_data(self) -> dict[str, Any]:
+        return {
+            "schema": "megamind/provisional-wiki-plan/v1",
+            "plan_id": self.plan_id,
+            "wiki": self.name,
+            "path": self.path,
+            "files": [change["path"] for change in self.changes],
+            "changes": list(self.changes),
+            "notes": list(self.notes),
+        }
+
+
+def _provision_entry(name: str, path: str, criteria: ProvisionCriteria) -> WikiEntry:
+    return WikiEntry(
         name=name,
         path=path,
         privacy=criteria.privacy,
@@ -774,73 +771,252 @@ def provision_local_wiki(
         source_policy=SourcePolicy(summary=criteria.source_policy),
         provisional=True,
     )
-    new_registry = Registry(
-        version=registry.version,
-        budgets=registry.budgets,
-        wikis=[*registry.wikis, entry],
-    )
-    # The complete registry plan is validated before a single byte is written,
-    # so a rejected entry can never leave an orphan scaffold behind.
-    serialize_registry(new_registry)
+
+
+def plan_provision_wiki(
+    root: Path, name: str, path: str, criteria: ProvisionCriteria, *, today: str | None = None
+) -> ProvisionPlan:
+    """Build a side-effect-free, content-bound provisional-wiki plan."""
+    criteria.validate()
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name):
+        raise GardenError("wiki name must be a simple local identifier")
+    relative = Path(path)
+    if relative.is_absolute() or ".." in relative.parts or not path.strip():
+        raise RegistryError("provisional wiki path must be root-relative and must not contain '..'")
+    if card_file(root).is_file() and not registry_file(root).is_file():
+        raise GardenError(
+            "this root is a canonical single-wiki root, not a registry vault; provisioning "
+            "a registry here would leave two cards claiming authority"
+        )
+    registry = load_registry(root)
+    if registry.version < CURRENT_VERSION:
+        raise GardenError(
+            "registry is schema v1; run `megamind-axi migrate` first so every existing wiki "
+            "gets its explicit access policy before a provisional wiki is registered"
+        )
+    if registry.wiki_by_name(name) is not None:
+        raise GardenError(f"wiki already exists: {name}")
     wiki_dir = resolve_contained(root, path)
     if wiki_dir.exists():
         raise GardenError(f"wiki path already exists: {path}")
-    wiki_dir.mkdir(parents=True)
-    for directory in ("raw", "wiki", f"{MEGAMIND_DIR}/proposals", f"{MEGAMIND_DIR}/audit"):
-        resolve_contained(root, Path(path) / directory).mkdir(parents=True, exist_ok=True)
+    entry = _provision_entry(name, path, criteria)
+    new_registry = Registry(
+        version=registry.version, budgets=registry.budgets, wikis=[*registry.wikis, entry]
+    )
+    registry_text = serialize_registry(new_registry)
     card_text = (
-        "---\n"
-        "megamind: routing-card\n"
+        "---\nmegamind: routing-card\n"
         f"wiki: {name}\nprivacy: {criteria.privacy}\n"
-        f"keywords: [{', '.join(entry.keywords)}]\n"
-        "---\n\n"
+        f"keywords: [{', '.join(entry.keywords)}]\n---\n\n"
         f"# {name} routing card\n\nAnswers: {criteria.scope}\n"
         f"Does not answer: {criteria.exclusions}\n"
     )
-    files = {
+    files: dict[str, str] = {
         f"{path}/CARD.md": card_text,
         f"{path}/INDEX.md": f"---\nmegamind: index\nwiki: {name}\n---\n\n# {name} index\n\n",
         f"{path}/wiki/index.md": f"# {name} compiled index\n",
         f"{path}/wiki/log.md": f"# {name} log\n\n",
-        # The nested card is authoritative for the wiki root itself, so its
-        # paths are rooted there, not at the vault. Serializing it through the
-        # card module also stops the two card formats from drifting apart.
         f"{path}/{MEGAMIND_DIR}/wiki-card.json": serialize_wiki_card(
             replace(entry, path=".", card="CARD.md", index="INDEX.md")
         ),
         f"{path}/{MEGAMIND_DIR}/gaps.jsonl": "",
+        REGISTRY_PATH.as_posix(): registry_text,
     }
-    for rel, text in files.items():
-        atomic_write(root, rel, text)
-    registry_backup = backup_existing(root, REGISTRY_PATH)
-    save_registry(root, new_registry)
     router_path = resolve_contained(root, ROUTER_FILENAME)
-    router_old = router_path.read_text(encoding="utf-8") if router_path.is_file() else ""
-    if not router_old or ROUTER_HEADER in router_old:
-        backup_existing(root, ROUTER_FILENAME)
-        atomic_write(root, ROUTER_FILENAME, generate_router(new_registry))
-    append_audit(
-        root,
-        "provisional-wiki-create",
+    router_old = router_path.read_text(encoding="utf-8") if router_path.is_file() else None
+    notes: list[str] = []
+    if router_old is None or ROUTER_HEADER in router_old:
+        files[ROUTER_FILENAME] = generate_router(new_registry)
+    else:
+        notes.append("ROUTER.md is hand-edited and is left unchanged")
+    changes = tuple(
         {
-            "wiki": name,
-            "path": path,
-            "provisional": True,
-            "registry_backup": registry_backup.name if registry_backup else None,
-        },
+            "path": rel,
+            "old": (
+                registry_file(root).read_text(encoding="utf-8")
+                if rel == REGISTRY_PATH.as_posix()
+                else router_old
+                if rel == ROUTER_FILENAME
+                else None
+            ),
+            "new": text,
+        }
+        for rel, text in sorted(files.items())
     )
-    append_log_event(
-        wiki_dir,
-        "evaluation",
-        _date(today),
-        "qualified provisional local wiki created",
-        pages=[],
-        sources=[],
-        confidence="unknown",
-        outcome="provisional",
-        audit=f"provisional-wiki:{name}",
+    plan_id = content_hash(
+        _stable({"name": name, "path": path, "today": today or "", "changes": changes})
     )
-    return [*sorted(files), REGISTRY_PATH.as_posix()]
+    return ProvisionPlan(plan_id, name, path, changes, tuple(notes))
+
+
+def apply_provision_plan(root: Path, plan: ProvisionPlan, approved_plan_id: str) -> list[str]:
+    """Apply exactly a reviewed plan, recovering all partial writes on failure."""
+    if approved_plan_id != plan.plan_id:
+        raise GardenError(
+            f"provisional wiki plan id mismatch: expected {plan.plan_id}; re-run the dry run"
+        )
+    manifest_rel = Path(MEGAMIND_DIR) / "audit" / f"provisional-wiki-{plan.plan_id}.json"
+    manifest_path = resolve_contained(root, manifest_rel)
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        created_manifest = manifest.get("created", [])
+        changes_manifest = manifest.get("plan", {}).get("changes", [])
+        if not isinstance(created_manifest, list) or not isinstance(changes_manifest, list):
+            raise GardenError("provisional wiki rollback manifest is malformed")
+        for raw_rel in created_manifest:
+            if not isinstance(raw_rel, str):
+                raise GardenError("provisional wiki rollback manifest has an invalid path")
+            rel = raw_rel
+            path = resolve_contained(root, rel)
+            expected = next(
+                (
+                    x.get("new")
+                    for x in changes_manifest
+                    if isinstance(x, dict) and x.get("path") == rel
+                ),
+                None,
+            )
+            if not path.is_file() or content_hash(path.read_text(encoding="utf-8")) != content_hash(
+                str(expected)
+            ):
+                raise GardenError(
+                    f"provisional wiki apply is not idempotent: generated file changed: {rel}"
+                )
+        return []
+    resolved_changes: list[tuple[str, str | None, str]] = []
+    for change in plan.changes:
+        raw_rel, raw_old, raw_new = change["path"], change["old"], change["new"]
+        if (
+            not isinstance(raw_rel, str)
+            or (raw_old is not None and not isinstance(raw_old, str))
+            or not isinstance(raw_new, str)
+        ):
+            raise GardenError("provisional wiki plan contains invalid change data")
+        resolved_changes.append((raw_rel, raw_old, raw_new))
+    for rel, old, _new in resolved_changes:
+        current = resolve_contained(root, rel)
+        current_text = current.read_text(encoding="utf-8") if current.is_file() else None
+        if current_text != old:
+            raise GardenError(f"provisional wiki plan is stale or tampered: {rel}")
+    created: list[str] = []
+    backups: dict[str, str] = {}
+    registry_backup_name: str | None = None
+    try:
+        for rel, old, new in resolved_changes:
+            if old is not None:
+                backups[rel] = old
+                backup = backup_existing(root, rel)
+                if rel == REGISTRY_PATH.as_posix() and backup is not None:
+                    registry_backup_name = backup.name
+            atomic_write(root, rel, str(new))
+            created.append(rel)
+        append_log_event(
+            resolve_contained(root, plan.path),
+            "evaluation",
+            "",
+            "qualified provisional local wiki created",
+            pages=[],
+            sources=[],
+            confidence="unknown",
+            outcome="provisional",
+            audit=manifest_rel.as_posix(),
+        )
+        plan_data = plan.to_data()
+        log_rel = f"{plan.path}/wiki/log.md"
+        log_path = resolve_contained(root, log_rel)
+        for change in plan_data["changes"]:
+            if isinstance(change, dict) and change.get("path") == log_rel:
+                change["new"] = log_path.read_text(encoding="utf-8")
+        manifest = {
+            "schema": "megamind/provisional-wiki-rollback/v1",
+            "plan": plan_data,
+            "created": created,
+            "backups": backups,
+        }
+        atomic_write(root, manifest_rel, json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+        append_audit(
+            root,
+            "provisional-wiki-create",
+            {
+                "wiki": plan.name,
+                "path": plan.path,
+                "plan_id": plan.plan_id,
+                "provisional": True,
+                "registry_backup": registry_backup_name,
+                "manifest": manifest_rel.as_posix(),
+            },
+        )
+    except BaseException:
+        for rel in reversed(created):
+            if rel in backups:
+                atomic_write(root, rel, backups[rel])
+            else:
+                remove_contained(root, rel)
+        remove_contained(root, plan.path)
+        raise
+    return created
+
+
+def rollback_provision(root: Path, plan_id: str) -> list[str]:
+    manifest_rel = Path(MEGAMIND_DIR) / "audit" / f"provisional-wiki-{plan_id}.json"
+    manifest_path = resolve_contained(root, manifest_rel)
+    if not manifest_path.is_file():
+        raise GardenError(f"provisional wiki rollback manifest not found: {plan_id}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema") != "megamind/provisional-wiki-rollback/v1":
+        raise GardenError("provisional wiki rollback manifest is invalid")
+    created_manifest = manifest.get("created", [])
+    changes_manifest = manifest.get("plan", {}).get("changes", [])
+    backups_manifest = manifest.get("backups", {})
+    plan_manifest = manifest.get("plan", {})
+    if (
+        not isinstance(created_manifest, list)
+        or not isinstance(changes_manifest, list)
+        or not isinstance(backups_manifest, dict)
+        or not isinstance(plan_manifest, dict)
+    ):
+        raise GardenError("provisional wiki rollback manifest is malformed")
+    removed: list[str] = []
+    for raw_rel in created_manifest:
+        if not isinstance(raw_rel, str):
+            raise GardenError("provisional wiki rollback manifest has an invalid path")
+        rel = raw_rel
+        path = resolve_contained(root, rel)
+        expected = next(
+            (
+                x.get("new")
+                for x in changes_manifest
+                if isinstance(x, dict) and x.get("path") == rel
+            ),
+            None,
+        )
+        if path.is_file() and content_hash(path.read_text(encoding="utf-8")) != content_hash(
+            str(expected)
+        ):
+            raise GardenError(f"rollback refused: generated file changed: {rel}")
+    for raw_rel in reversed(created_manifest):
+        if not isinstance(raw_rel, str):
+            raise GardenError("provisional wiki rollback manifest has an invalid path")
+        rel = raw_rel
+        if rel in backups_manifest and isinstance(backups_manifest[rel], str):
+            atomic_write(root, rel, backups_manifest[rel])
+        else:
+            remove_contained(root, rel)
+        removed.append(rel)
+    plan_path = plan_manifest.get("path")
+    if not isinstance(plan_path, str):
+        raise GardenError("provisional wiki rollback manifest has no wiki path")
+    remove_contained(root, plan_path)
+    append_audit(root, "provisional-wiki-rollback", {"plan_id": plan_id, "removed": removed})
+    return removed
+
+
+def provision_local_wiki(
+    root: Path, name: str, path: str, criteria: ProvisionCriteria, *, today: str | None = None
+) -> list[str]:
+    """Backward-compatible API: explicitly plans then applies its own plan."""
+    plan = plan_provision_wiki(root, name, path, criteria, today=today)
+    return apply_provision_plan(root, plan, plan.plan_id)
 
 
 def validate_gap_journal(root: Path) -> list[str]:

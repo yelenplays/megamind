@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -95,6 +96,16 @@ def backup_existing(root: Path, target: str | Path) -> Path | None:
     if not backup_path.exists():
         atomic_write(root, backup_rel, text)
     return backup_path
+
+
+def remove_contained(root: Path, target: str | Path) -> None:
+    """Remove a contained file or tree, failing closed on path escapes."""
+    resolved = resolve_contained(root, target)
+    if resolved.is_dir() and not resolved.is_symlink():
+        shutil.rmtree(resolved)
+    else:
+        with contextlib.suppress(FileNotFoundError):
+            resolved.unlink()
 
 
 def append_audit(

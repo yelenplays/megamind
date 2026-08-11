@@ -55,10 +55,12 @@ from .gardening import (
     GardenError,
     PriorityInputs,
     ProvisionCriteria,
+    apply_provision_plan,
     ingest_research_result,
     make_nomination,
+    plan_provision_wiki,
     plan_research_wave,
-    provision_local_wiki,
+    rollback_provision,
 )
 from .models import FrontmatterError, parse_document
 from .preflight import MODEL_CLASSES, run_preflight
@@ -918,8 +920,8 @@ def cmd_research_result(args: argparse.Namespace, root: Path) -> tuple[Doc, int]
     }, 0
 
 
-def cmd_provision_wiki(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
-    criteria = ProvisionCriteria(
+def _provision_criteria(args: argparse.Namespace) -> ProvisionCriteria:
+    return ProvisionCriteria(
         args.domain,
         args.repeat_demand,
         args.multi_topic,
@@ -933,17 +935,50 @@ def cmd_provision_wiki(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
         tuple(args.seed_topic),
         args.maintenance,
     )
-    files = provision_local_wiki(root, args.name, args.path, criteria, today=args.today)
+
+
+def cmd_provision_wiki(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
+    if args.rollback:
+        removed = rollback_provision(root, args.plan_id or "")
+        return {
+            "schema_version": "megamind/provisional-wiki-result/v1",
+            "status": "rolled_back",
+            "removed": removed,
+            "help": _help("Re-run provision-wiki without --apply to inspect a fresh plan"),
+        }, 0
+    criteria = _provision_criteria(args)
+    computed = plan_provision_wiki(root, args.name, args.path, criteria, today=args.today)
+    if args.apply:
+        if not args.plan_id:
+            raise UsageError("provision-wiki --apply requires --plan-id from the dry run")
+        applied = apply_provision_plan(root, computed, args.plan_id)
+        return {
+            "schema_version": "megamind/provisional-wiki-result/v1",
+            "status": "applied" if applied else "noop",
+            "wiki": args.name,
+            "path": args.path,
+            "plan_id": computed.plan_id,
+            "files": applied,
+            "trusted": False,
+            "help": _help(
+                "Populate and evaluate confidence coverage before treating this wiki "
+                "as trusted knowledge"
+            ),
+        }, 0
     return {
         "schema_version": "megamind/provisional-wiki-result/v1",
-        "status": "provisional",
-        "wiki": args.name,
-        "path": args.path,
-        "files": files,
+        "status": "planned",
+        "wiki": computed.name,
+        "path": computed.path,
+        "plan_id": computed.plan_id,
+        "files": [change["path"] for change in computed.changes],
+        "changes": list(computed.changes),
+        "notes": list(computed.notes),
         "trusted": False,
         "help": _help(
-            "Populate and evaluate confidence coverage before treating this wiki "
-            "as trusted knowledge"
+            f"Run `{EXECUTABLE} provision-wiki {shlex.quote(args.name)} "
+            f"{shlex.quote(args.path)} --apply --plan-id {computed.plan_id}` "
+            "after reviewing this local-only plan"
         ),
     }, 0
 
@@ -1333,6 +1368,9 @@ def build_parser() -> AxiParser:
     p_provision.add_argument("--model-access", required=True)
     p_provision.add_argument("--seed-topic", action="append", required=True)
     p_provision.add_argument("--maintenance", required=True)
+    p_provision.add_argument("--apply", action="store_true", help="apply the reviewed plan")
+    p_provision.add_argument("--plan-id", default=None, help="approval token from the dry run")
+    p_provision.add_argument("--rollback", action="store_true", help="rollback an applied plan")
     p_provision.add_argument("--today", default=argparse.SUPPRESS)
 
     p_setup = sub.add_parser("setup", help="explicit opt-in integrations (local, zero-network)")
@@ -1516,6 +1554,10 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
     if command == "research-result":
         return cmd_research_result(args, root)
     if command == "provision-wiki":
+        if args.apply and args.rollback:
+            raise UsageError("provision-wiki --apply and --rollback are mutually exclusive")
+        if args.rollback and not args.plan_id:
+            raise UsageError("provision-wiki --rollback requires --plan-id")
         return cmd_provision_wiki(args, root)
     if command == "setup":
         if getattr(args, "setup_command", None) != "skill":
