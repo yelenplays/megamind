@@ -53,13 +53,14 @@ their approved digest. Fixed route-confidence thresholds decide `status`:
 the 0.05 ambiguity band (`offers[]` choices, nothing loaded), `no-match`
 under the 0.25 floor, plus `unavailable` and `privacy-filtered`. Matches
 carry per-match `confidence`, `freshness`, `reasons`, and a privacy-safe
-`evidence` summary (routing class, numeric coverage, signal classes/counts,
-and declared card provenance; `evidence.lexical_classes` contains only
-signal-class labels, with no raw request-derived tokens or page content);
-`offers[]` entries carry the same evidence but no path, follow-up, or budget.
-An authorized match that carries a load path also carries the card's exact
-numeric `context_budget` override; offers, filtered, withheld, broken,
-pointer, and other outcomes with no loadable path carry no budget.
+`evidence` summary (routing class, numeric coverage, per-class signal counts,
+and declared card provenance; `evidence.lexical_classes` is the fired subset
+of those counts and contains only signal-class labels, with no raw
+request-derived tokens or page content); `offers[]` entries carry the same
+evidence but no path, follow-up, or budget. An authorized match whose
+follow-up hands out a load path also carries the card's exact numeric
+`context_budget` override; offers, filtered, withheld, broken, pointer, and
+other outcomes told to load nothing carry no budget.
 `preflight_id` is a deterministic content hash over the request hash, catalog
 snapshot, model class, and result - proof the consultation happened, without
 storing the raw request. `--semantic` reranks the authorized matches locally;

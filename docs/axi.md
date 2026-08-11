@@ -183,13 +183,14 @@ path is returned, pointer wikis expose location metadata only, digest-only
 wikis allow only their approved digest, and the deterministic `preflight_id`
 binds the request hash, catalog snapshot, model class, and result so a host
 can prove preflight ran without storing the raw request. An authorized match
-that carries a load path also carries the card's numeric `context_budget`
-exactly as declared; offers, filtered, withheld, broken, pointer, and other
-outcomes with no loadable path never carry a budget. Match and offer entries
-carry a bounded, privacy-safe `evidence` summary of the routing class, numeric
-coverage, signal classes/counts, and card-only provenance; it never includes
-request-derived tokens or page content, and `reasons`, confidence, freshness,
-and semantic fallback semantics are unchanged. [schemas.md](schemas.md) owns
+whose follow-up hands out a load path also carries the card's numeric
+`context_budget` exactly as declared; offers, filtered, withheld, broken,
+pointer, and other outcomes told to load nothing never carry a budget. Match
+and offer entries carry a bounded, privacy-safe `evidence` summary of the
+routing class, numeric coverage, per-class signal counts, and card-only
+provenance; it never includes request-derived tokens or page content, and
+`reasons`, confidence, freshness, and semantic fallback semantics are
+unchanged. [schemas.md](schemas.md) owns
 the packet's field-level shape and its v2 compatibility notes. The
 route-confidence thresholds above decide the status: a confident match carries
 per-match confidence, freshness, and this evidence summary; below-floor matches

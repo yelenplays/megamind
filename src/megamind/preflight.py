@@ -40,8 +40,9 @@ WEIGHT_TEXT = 1
 
 MODEL_CLASSES = ("local", "cloud")
 
-# The one owner of the lexical signal classes. `_score_row` emits reasons for
-# exactly these classes and every derived summary reads them back from here.
+# The one owner of the lexical signal classes. `_score_row` emits reasons and
+# counts for exactly these classes and every derived summary reads them back
+# from here.
 SIGNAL_CLASSES = ("trigger", "name", "scope")
 
 THRESHOLDS: dict[str, float] = {
@@ -99,22 +100,26 @@ def _reason(signal_class: str, token: str) -> str:
     return f"{signal_class} match: {token}"
 
 
-def _signal_counts(reasons: list[str]) -> dict[str, int]:
-    """Count reasons per signal class, reading the classes from one owner."""
-    counts = dict.fromkeys(SIGNAL_CLASSES, 0)
-    for reason in reasons:
-        signal_class = reason.split(" match:", 1)[0]
-        if signal_class in counts:
-            counts[signal_class] += 1
-    return counts
+@dataclass(frozen=True)
+class _Lexical:
+    """One card's lexical scoring outcome, produced once by `_score_row`.
+
+    `reasons` keeps the literal public reason strings and `counts` records the
+    same evidence per signal class as it is produced, so nothing downstream has
+    to take the reason wording apart again to recover what matched.
+    """
+
+    score: int
+    reasons: list[str]
+    signals: dict[str, float]
+    counts: dict[str, int]
 
 
-def _score_row(
-    row: dict[str, object], query_tokens: list[str]
-) -> tuple[int, list[str], dict[str, float]]:
+def _score_row(row: dict[str, object], query_tokens: list[str]) -> _Lexical:
     score = 0
     reasons: list[str] = []
     signals: dict[str, float] = {}
+    counts = dict.fromkeys(SIGNAL_CLASSES, 0)
     trigger_tokens: set[str] = set()
     for item in _str_list(row.get("keywords")) + _str_list(row.get("triggers")):
         trigger_tokens.update(_token_set(item))
@@ -139,8 +144,9 @@ def _score_row(
             if token in candidates:
                 score += weight
                 reasons.append(_reason(signal_class, token))
+                counts[signal_class] += 1
                 _best_signal(signals, token, strength)
-    return score, reasons, signals
+    return _Lexical(score=score, reasons=reasons, signals=signals, counts=counts)
 
 
 def _card_text(row: dict[str, object]) -> str:
@@ -168,34 +174,54 @@ def _declined(row: dict[str, object], query_tokens: list[str]) -> str | None:
     return None
 
 
-def _follow_up(row: dict[str, object], request: str, access: str) -> str:
+@dataclass(frozen=True)
+class _FollowUp:
+    """The single owner of what an authorized match may load next.
+
+    `loadable` states whether `text` actually hands the host a path it may
+    load. Every follow-up that instead says "load nothing" or exposes location
+    metadata only reports ``False``, so nothing derived from a load path (the
+    context budget above all) can disagree with the sentence beside it.
+    """
+
+    text: str
+    loadable: bool
+
+
+def _follow_up(row: dict[str, object], request: str, access: str) -> _FollowUp:
     root = str(row.get("root", ""))
     paths = row.get("paths", {})
     assert isinstance(paths, dict)
     if row.get("routing_mode") == "pointer":
-        return f"Open {root} manually; pointer wikis expose location metadata only"
+        return _FollowUp(
+            f"Open {root} manually; pointer wikis expose location metadata only", False
+        )
     if access == "digest-only":
         digest = str(paths.get("digest") or "")
         if digest:
-            return f"Read only the approved digest {root}/{digest}; nothing else may be loaded"
-        return f"{root} allows digest-only access but declares no digest; load nothing"
+            return _FollowUp(
+                f"Read only the approved digest {root}/{digest}; nothing else may be loaded", True
+            )
+        return _FollowUp(
+            f"{root} allows digest-only access but declares no digest; load nothing", False
+        )
     if row.get("source") == "registry":
         # `help[]` steps are executable with runtime values filled in. Both the
         # root and the host-supplied request are untrusted text, so shell-quote
         # each so the emitted follow-up stays exactly one runnable command.
-        return (
+        return _FollowUp(
             f"Run `megamind-axi --root {shlex.quote(root)} route {shlex.quote(request)}` "
-            "for the bounded ladder"
+            "for the bounded ladder",
+            True,
         )
     index = str(paths.get("index") or "wiki/index.md")
-    return f"Open {root}/{index} and follow its links within the context budget"
+    return _FollowUp(f"Open {root}/{index} and follow its links within the context budget", True)
 
 
 def _evidence_summary(
     row: dict[str, object],
     query_tokens: list[str],
-    reasons: list[str],
-    signals: dict[str, float],
+    lexical: _Lexical,
     semantic_score: float | None,
 ) -> dict[str, object]:
     """Return bounded card provenance without echoing request tokens.
@@ -204,24 +230,27 @@ def _evidence_summary(
     confidence, and `matches[].reasons` still carries them verbatim. This
     summary is the privacy-minimized view: signal classes and numeric coverage
     explain the route without retaining query-derived words or page content.
+    `lexical_classes` is the ordered subset of `signal_counts` that actually
+    fired, stated once so a consumer never has to guess which encoding leads.
     """
-    counts = _signal_counts(reasons)
-    classes = [signal_class for signal_class in SIGNAL_CLASSES if counts[signal_class]]
+    counts = lexical.counts
+    matched_terms = len(lexical.signals)
     return {
         "routing_class": "lexical-card",
         "coverage": {
-            "matched_terms": len(signals),
+            "matched_terms": matched_terms,
             "request_terms": len(query_tokens),
-            "ratio": round(len(signals) / len(query_tokens), 4) if query_tokens else 0.0,
+            "ratio": round(matched_terms / len(query_tokens), 4) if query_tokens else 0.0,
         },
-        "signal_classes": list(classes),
-        "signal_counts": counts,
+        "signal_counts": dict(counts),
         "provenance": {
             "source": "canonical-card" if row.get("source") == "wiki-card" else "registry-card",
             "scope": "declared card metadata only",
             "page_content": False,
         },
-        "lexical_classes": list(classes),
+        "lexical_classes": [
+            signal_class for signal_class in SIGNAL_CLASSES if counts[signal_class]
+        ],
         "semantic": semantic_score,
     }
 
@@ -264,7 +293,7 @@ def run_preflight(
     for note in catalog.notes:
         result.notes.append(note)
 
-    scored: list[tuple[int, dict[str, object], list[str], dict[str, float]]] = []
+    scored: list[tuple[_Lexical, dict[str, object]]] = []
     for row in catalog.rows:
         status = str(row.get("status", "ok"))
         if status != "ok":
@@ -286,16 +315,16 @@ def run_preflight(
                 {"name": row.get("name"), "root": row.get("root"), "reason": reason}
             )
             continue
-        score, reasons, signals = _score_row(row, query_tokens)
-        if score > 0:
-            scored.append((score, row, reasons, signals))
+        lexical = _score_row(row, query_tokens)
+        if lexical.score > 0:
+            scored.append((lexical, row))
 
-    eligible: list[tuple[int, dict[str, object], list[str], dict[str, float]]] = []
-    for score, row, reasons, signals in scored:
+    eligible: list[tuple[_Lexical, dict[str, object]]] = []
+    for lexical, row in scored:
         # Pointer mode exposes location metadata and zero content; that is the
         # privacy-safe pointer a "none" access level is still allowed to return.
         if row.get("routing_mode") == "pointer":
-            eligible.append((score, row, reasons, signals))
+            eligible.append((lexical, row))
             continue
         access = _access_level(row, model_class)
         if access == "none":
@@ -308,7 +337,7 @@ def run_preflight(
                 }
             )
             continue
-        eligible.append((score, row, reasons, signals))
+        eligible.append((lexical, row))
 
     ok_rows = [row for row in catalog.rows if str(row.get("status", "ok")) == "ok"]
     if not catalog.rows:
@@ -330,22 +359,22 @@ def run_preflight(
         result.status = "privacy-filtered"
         result.notes.append("matching wikis are not accessible to this model class")
     else:
-        eligible.sort(key=lambda item: (-item[0], str(item[1].get("name"))))
+        eligible.sort(key=lambda item: (-item[0].score, str(item[1].get("name"))))
         confidences = [
-            route_confidence([signals.get(token, 0.0) for token in query_tokens], len(query_tokens))
-            for _score, _row, _reasons, signals in eligible
+            route_confidence(
+                [lexical.signals.get(token, 0.0) for token in query_tokens], len(query_tokens)
+            )
+            for lexical, _row in eligible
         ]
         # The no-match floor drops evidence too weak to offer, by name only.
         paired = list(zip(eligible, confidences, strict=True))
         strong = [
-            (score, row, reasons, signals, confidence)
-            for (score, row, reasons, signals), confidence in paired
+            (lexical, row, confidence)
+            for (lexical, row), confidence in paired
             if confidence >= OFFER_FLOOR
         ]
         too_weak = [
-            str(row.get("name"))
-            for (_s, row, _r, _sig), confidence in paired
-            if confidence < OFFER_FLOOR
+            str(row.get("name")) for (_lex, row), confidence in paired if confidence < OFFER_FLOOR
         ]
         if too_weak:
             result.notes.append(
@@ -356,7 +385,7 @@ def run_preflight(
         # confidence in lexical order, before any reranking. `authorize` names
         # which rows the decision covers, so only a row that itself reached the
         # reliance floor can ever become a loadable match.
-        lexical_confs = [confidence for _s, _r, _re, _sig, confidence in strong]
+        lexical_confs = [confidence for _lex, _row, confidence in strong]
         decision, authorized = authorize(lexical_confs)
         result.confidence = max(lexical_confs) if lexical_confs else None
 
@@ -410,7 +439,7 @@ def run_preflight(
         shown = sorted(set(match_indices) | set(offer_indices))
         order, outcome = semantic_rerank(
             request,
-            [float(strong[index][0]) for index in shown],
+            [float(strong[index][0].score) for index in shown],
             [_card_text(strong[index][1]) for index in shown],
             semantic,
         )
@@ -420,26 +449,22 @@ def run_preflight(
         ranked = [shown[position] for position in order]
 
         def _entry(index: int) -> dict[str, object]:
-            score, row, reasons, signals, confidence = strong[index]
+            lexical, row, confidence = strong[index]
             return {
                 "name": row.get("name"),
                 "root": row.get("root"),
-                "score": score,
+                "score": lexical.score,
                 "confidence": {
                     "score": confidence,
                     "meets_floor": confidence >= RELIANCE_FLOOR,
                 },
                 "freshness": row.get("freshness"),
+                # The per-token signals stay internal to confidence; the public
+                # summary keeps only their counts and classes.
                 "evidence": _evidence_summary(
-                    row,
-                    query_tokens,
-                    reasons,
-                    # The signals are kept internal for confidence and reduced
-                    # to counts/classes in the public evidence summary.
-                    signals,
-                    semantic_scores.get(index),
+                    row, query_tokens, lexical, semantic_scores.get(index)
                 ),
-                "reasons": reasons[:5],
+                "reasons": lexical.reasons[:5],
             }
 
         match_set, offer_set = set(match_indices), set(offer_indices)
@@ -457,15 +482,19 @@ def run_preflight(
                 allows = [digest] if digest else []
             else:
                 allows = [str(paths[key]) for key in ("card", "digest", "index") if paths.get(key)]
+            follow_up = _follow_up(row, request, access)
             entry = _entry(index)
             entry["access"] = access
             entry["routing_mode"] = row.get("routing_mode")
             entry["allows"] = allows
-            entry["follow_up"] = _follow_up(row, request, access)
+            entry["follow_up"] = follow_up.text
             # A budget only bounds what a load path may consume, so it belongs
-            # to an authorized entry that actually carries one. Pointer wikis
-            # and digest-only wikis without a digest never do.
-            if access != "none" and allows:
+            # to an authorized entry whose follow-up actually hands one out.
+            # `allows` alone cannot answer that: a registry match with no
+            # declared card, digest, or index still gets the executable route
+            # ladder, while pointer wikis and digest-only wikis without a
+            # digest are told to load nothing at all.
+            if access != "none" and follow_up.loadable:
                 budget = _context_budget(row)
                 if budget is not None:
                     entry["context_budget"] = budget
@@ -478,8 +507,11 @@ def run_preflight(
 
     result.semantic = outcome.to_dict()
     # The public packet grew, but proof inputs stay stable: the card budget is
-    # already covered by catalog_hash and the evidence summary is a
+    # already covered by catalog_hash and the lexical evidence summary is a
     # deterministic function of the request hash, catalog, and model class.
+    # `evidence.semantic` is the exception: it reflects the host-selected
+    # semantic backend, which is not a proof input, so a rerank that changes
+    # scores without changing the ranked order keeps the same preflight_id.
     proof = {
         "request_hash": result.request_hash,
         "catalog_hash": result.catalog_hash,

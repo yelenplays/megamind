@@ -134,7 +134,6 @@ def test_matches_carry_confidence_freshness_and_evidence(vault: Path) -> None:
     assert set(evidence) == {
         "routing_class",
         "coverage",
-        "signal_classes",
         "signal_counts",
         "provenance",
         "lexical_classes",
@@ -144,6 +143,12 @@ def test_matches_carry_confidence_freshness_and_evidence(vault: Path) -> None:
     assert evidence["lexical_classes"] == ["trigger", "scope"]
     assert set(evidence["lexical_classes"]) <= {"trigger", "name", "scope"}
     assert "lexical" not in evidence
+    # exactly one class list: the fired subset of the counts, in fixed order
+    assert "signal_classes" not in evidence
+    counts = evidence["signal_counts"]
+    assert counts == {"trigger": 1, "name": 0, "scope": 1}
+    assert isinstance(counts, dict)
+    assert evidence["lexical_classes"] == [name for name in counts if counts[name]]
     assert evidence["coverage"] == {"matched_terms": 1, "request_terms": 2, "ratio": 0.5}
     assert evidence["provenance"] == {
         "source": "registry-card",
@@ -159,6 +164,40 @@ def test_matches_carry_confidence_freshness_and_evidence(vault: Path) -> None:
     assert match["reasons"] == ["trigger match: pricing", "scope match: pricing"]
     # the packet stays card-level: no page content path is ever handed out
     assert "topics/" not in json.dumps(match)
+
+
+def test_signal_counts_are_tallied_with_the_reasons_they_describe(vault: Path) -> None:
+    """The counts come from the scorer itself, not from parsing reason wording."""
+    registry = load_registry(vault)
+    (vault / "LedgerWiki").mkdir()
+    registry.wikis.append(
+        WikiEntry(
+            name="LedgerWiki",
+            path="LedgerWiki",
+            privacy="public-reference",
+            purpose="Synthetic ledger reconciliation notes.",
+            keywords=["invoice"],
+            sensitivity="public-reference",
+        )
+    )
+    save_registry(vault, registry)
+
+    result = run_preflight([_ref(vault)], "ledgerwiki invoice ledger", "local")
+    assert result.status == "matched"
+    match = result.matches[0]
+    assert match["name"] == "LedgerWiki"
+    reasons = match["reasons"]
+    assert isinstance(reasons, list)
+    assert len(reasons) < 5  # untruncated, so the tally below is exact
+    evidence = match["evidence"]
+    assert isinstance(evidence, dict)
+    tallied = {
+        signal_class: sum(1 for reason in reasons if reason.startswith(f"{signal_class} "))
+        for signal_class in ("trigger", "name", "scope")
+    }
+    assert tallied == {"trigger": 1, "name": 1, "scope": 1}
+    assert evidence["signal_counts"] == tallied
+    assert evidence["lexical_classes"] == ["trigger", "name", "scope"]
 
 
 def test_authorized_matches_preserve_card_context_budgets(vault: Path) -> None:
@@ -208,8 +247,44 @@ def test_authorized_matches_preserve_card_context_budgets(vault: Path) -> None:
     assert all("context_budget" not in item for item in broken.root_issues)
 
 
+def test_executable_ladder_follow_up_states_its_budget(vault: Path) -> None:
+    """A registry match with no declared artifacts still gets the route ladder.
+
+    `allows` is empty because the card declares no card, digest, or index, but
+    the follow-up is a real bounded load path, so the budget that bounds it is
+    stated rather than silently dropped.
+    """
+    registry = load_registry(vault)
+    (vault / "LedgerWiki").mkdir()
+    registry.wikis.append(
+        WikiEntry(
+            name="LedgerWiki",
+            path="LedgerWiki",
+            privacy="public-reference",
+            purpose="Synthetic ledger reconciliation notes.",
+            keywords=["invoice"],
+            sensitivity="public-reference",
+            context_budget=ContextBudget(max_candidates=3, max_context_chars=1234),
+        )
+    )
+    save_registry(vault, registry)
+
+    first = run_preflight([_ref(vault)], "invoice", "local")
+    assert first.status == "matched"
+    match = first.matches[0]
+    assert match["name"] == "LedgerWiki"
+    assert match["access"] == "full"
+    assert match["allows"] == []  # nothing declared, yet the ladder still loads
+    assert "route" in str(match["follow_up"])
+    assert match["context_budget"] == {"max_candidates": 3, "max_context_chars": 1234}
+
+    second = run_preflight([_ref(vault)], "invoice", "local")
+    assert json.dumps(first.matches, sort_keys=True) == json.dumps(second.matches, sort_keys=True)
+    assert first.preflight_id == second.preflight_id
+
+
 def test_matches_without_a_load_path_never_carry_a_budget(vault: Path) -> None:
-    """A budget bounds a load path, so an entry with no path never ships one."""
+    """A budget bounds a load path, so an entry told to load nothing has none."""
     registry = load_registry(vault)
     archive = registry.wiki_by_name("ArchiveBox")
     research = registry.wiki_by_name("ResearchDigest")

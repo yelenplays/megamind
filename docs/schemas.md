@@ -116,12 +116,15 @@ and cloud-restrictive until the owner classifies it. Malformed cards raise
 ## Preflight result packet (`megamind/preflight-result/v2`)
 
 `preflight-result/v2` carries `context_budget` only on an authorized `matches[]`
-entry that actually holds a load path in `allows`. It is the card's exact
+entry whose `follow_up` actually hands out a load path. It is the card's exact
 numeric `max_candidates` and/or `max_context_chars` override, not a
 host-generated estimate. Offers, filtered, redacted, broken-root, unavailable,
 and no-match outcomes carry no budget or load path, and neither do pointer
-matches or digest-only matches that declare no digest: they expose no loadable
-path, so there is nothing for a budget to bound.
+matches or digest-only matches that declare no digest: they are told to load
+nothing, so there is nothing for a budget to bound. `allows` does not decide
+this on its own - a registry match that declares no card, digest, or index
+still receives the executable bounded-ladder follow-up, so its declared budget
+is stated even though `allows` is empty.
 
 Each `matches[]` and `offers[]` entry also carries a bounded `evidence`
 summary:
@@ -130,7 +133,6 @@ summary:
 {
   "routing_class": "lexical-card",
   "coverage": {"matched_terms": 2, "request_terms": 3, "ratio": 0.6667},
-  "signal_classes": ["trigger", "scope"],
   "signal_counts": {"trigger": 1, "name": 0, "scope": 1},
   "provenance": {
     "source": "registry-card",
@@ -149,14 +151,19 @@ lexical reason strings, and confidence and freshness remain authoritative
 alongside it. `evidence.semantic` is unchanged, but
 `evidence.lexical_classes` contains only deterministic signal-class labels and
 never repeats those reason strings, so request-derived tokens live in `reasons`
-only.
+only. There is exactly one class list: `lexical_classes` is the fired subset of
+`signal_counts`, in the fixed `trigger`, `name`, `scope` order.
 
 The schema version stays `preflight-result/v2` and the proof identity is
 unchanged: `preflight_id` continues to bind the request hash, catalog hash,
-model class, and result. The budget and the summary are already covered by
-those inputs - the budget is part of the card and therefore of `catalog_hash`,
-and the summary is a pure function of the request, catalog, and model class -
-so neither is added to the proof and repeated inputs stay byte-stable.
+model class, and result. The budget and the lexical summary are already covered
+by those inputs - the budget is part of the card and therefore of
+`catalog_hash`, and the lexical summary is a pure function of the request,
+catalog, and model class - so neither is added to the proof. `evidence.semantic`
+is the one field that is not: it reflects the host-selected `--semantic`
+backend, which is not a proof input, so a rerank that changes scores without
+changing the ranked order keeps the same `preflight_id`. Repeated inputs with
+the same backend selection stay byte-stable.
 
 ## Canonical wiki root
 
