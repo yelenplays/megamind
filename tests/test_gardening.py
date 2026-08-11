@@ -11,14 +11,17 @@ from megamind.gardening import (
     GapRecord,
     GapStore,
     GardenError,
+    InvalidTransition,
     PriorityInputs,
     ProvisionCriteria,
+    _short,
     apply_provision_plan,
     ingest_research_result,
     make_nomination,
     plan_provision_wiki,
     plan_research_wave,
     provision_local_wiki,
+    resume_provision,
     rollback_provision,
     validate_gap_journal,
 )
@@ -109,7 +112,7 @@ def test_malformed_journal_lines_are_typed_errors_not_crashes(tmp_path: Path, li
 def test_research_result_rejects_a_source_without_an_origin(tmp_path: Path) -> None:
     gap = GapRecord.new("A", "topic")
     wave = plan_research_wave([gap], gap.gap_id, CapacityInput(True, 0, {}, 100, 25))
-    nomination = make_nomination(type("Wave", (), {"wave_id": wave.wave_id})(), wave.nominations[0])
+    nomination = make_nomination(wave.wave_id, wave.nominations[0])
     for sources in ([{"summary": "s", "eligible": True}], [{"origin": 7, "eligible": True}]):
         with pytest.raises(GardenError, match="origin"):
             ingest_research_result(
@@ -125,8 +128,8 @@ def test_research_bridge_rejects_non_object_payloads(tmp_path: Path, payload: ob
     gap = GapRecord.new("A", "topic")
     wave = plan_research_wave([gap], gap.gap_id, CapacityInput(True, 0, {}, 100, 25))
     with pytest.raises(GardenError, match="JSON object"):
-        make_nomination(type("Wave", (), {"wave_id": wave.wave_id})(), payload)  # type: ignore[arg-type]
-    nomination = make_nomination(type("Wave", (), {"wave_id": wave.wave_id})(), wave.nominations[0])
+        make_nomination(wave.wave_id, payload)  # type: ignore[arg-type]
+    nomination = make_nomination(wave.wave_id, wave.nominations[0])
     with pytest.raises(GardenError, match="JSON object"):
         ingest_research_result(tmp_path, nomination, payload)  # type: ignore[arg-type]
 
@@ -153,7 +156,7 @@ def test_wave_is_one_hop_and_capacity_is_typed() -> None:
 def test_research_bridge_is_eligible_bounded_and_idempotent(tmp_path: Path) -> None:
     gap = GapRecord.new("A", "topic")
     wave = plan_research_wave([gap], gap.gap_id, CapacityInput(True, 0, {}, 100, 25))
-    nomination = make_nomination(type("Wave", (), {"wave_id": wave.wave_id})(), wave.nominations[0])
+    nomination = make_nomination(wave.wave_id, wave.nominations[0])
     result = ingest_research_result(
         tmp_path,
         nomination,
@@ -180,6 +183,135 @@ def test_research_bridge_is_eligible_bounded_and_idempotent(tmp_path: Path) -> N
     )
     assert again.ingest_proposal == result.ingest_proposal
     assert len(list((tmp_path / ".megamind/proposals").glob("research-ingest-*.json"))) == 1
+
+
+def test_research_result_without_an_eligible_source_writes_nothing(tmp_path: Path) -> None:
+    """A proposal keyed by correlation can never be repaired, so an empty
+    result must not create one, audit one, or log one."""
+    gap = GapRecord.new("A", "topic")
+    wave = plan_research_wave([gap], gap.gap_id, CapacityInput(True, 0, {}, 100, 25))
+    nomination = make_nomination(wave.wave_id, wave.nominations[0])
+    for sources in ([], [{"origin": "private", "summary": "s", "eligible": False}]):
+        rejected = ingest_research_result(
+            tmp_path,
+            nomination,
+            {"correlation_id": nomination.correlation_id, "sources": sources},
+        )
+        assert rejected.status == "rejected"
+        assert rejected.ingest_proposal == ""
+        assert rejected.reason == "no eligible sources"
+        assert not (tmp_path / ".megamind/proposals").exists()
+        assert not (tmp_path / ".megamind/audit/log.jsonl").exists()
+    # The replay that finally carries a real source is still the first write.
+    accepted = ingest_research_result(
+        tmp_path,
+        nomination,
+        {
+            "correlation_id": nomination.correlation_id,
+            "sources": [{"origin": "synthetic-source", "eligible": True}],
+        },
+    )
+    assert accepted.status == "proposed"
+    proposal = json.loads((tmp_path / accepted.ingest_proposal).read_text(encoding="utf-8"))
+    assert [item["origin"] for item in proposal["sources"]] == ["synthetic-source"]
+
+
+def test_research_result_refuses_to_diverge_from_its_stored_proposal(tmp_path: Path) -> None:
+    gap = GapRecord.new("A", "topic")
+    wave = plan_research_wave([gap], gap.gap_id, CapacityInput(True, 0, {}, 100, 25))
+    nomination = make_nomination(wave.wave_id, wave.nominations[0])
+    base = {"correlation_id": nomination.correlation_id}
+    ingest_research_result(
+        tmp_path, nomination, {**base, "sources": [{"origin": "one", "eligible": True}]}
+    )
+    with pytest.raises(GardenError, match="already ingested with different"):
+        ingest_research_result(
+            tmp_path,
+            nomination,
+            {
+                **base,
+                "sources": [
+                    {"origin": "one", "eligible": True},
+                    {"origin": "two", "eligible": True},
+                ],
+            },
+        )
+    assert len(list((tmp_path / ".megamind/proposals").glob("research-ingest-*.json"))) == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("https://docs.example.com/home/getting-started", "kept"),
+        ("https://docs.example.com/Users/guide", "kept"),
+        ("capital: raised", "kept"),
+        ("the topic is skirmish", "kept"),
+        ("see /home/someone/notes.md", "redacted"),
+        ("see /Users/someone/notes.md", "redacted"),
+        ("api_key=CANARY", "redacted"),
+        ("token: CANARY", "redacted"),
+    ],
+)
+def test_redaction_only_fires_on_structurally_identified_values(text: str, expected: str) -> None:
+    """An origin has to survive as a citable identifier, so redaction may never
+    fire on a keyword or path prefix buried inside a longer token."""
+    short = _short(text)
+    if expected == "kept":
+        assert short == text
+    else:
+        assert "CANARY" not in short and "someone" not in short
+        assert "[redacted]" in short or "[path]" in short
+
+
+@pytest.mark.parametrize("bad", ["yesterday", "2026-13-01", "01/01/2026", "  "])
+def test_non_iso_dates_never_reach_a_durable_record(tmp_path: Path, bad: str) -> None:
+    with pytest.raises(GardenError, match="ISO"):
+        GapRecord.new("ProductWiki", "rate limits", today=bad)
+    assert not (tmp_path / ".megamind/gaps.jsonl").exists()
+    store = GapStore(tmp_path)
+    gap = store.create(GapRecord.new("ProductWiki", "rate limits", today="2026-01-01"))
+    with pytest.raises(GardenError, match="ISO"):
+        store.transition(gap.gap_id, "planned", today=bad)
+    assert store.get(gap.gap_id).status == "open"
+
+
+def test_an_exact_self_transition_is_idempotent_and_keeps_terminal_meaning(
+    tmp_path: Path,
+) -> None:
+    store = GapStore(tmp_path)
+    first = store.create(GapRecord.new("A", "one", today="2026-01-01"))
+    other = store.create(GapRecord.new("A", "two", today="2026-01-01"))
+    store.transition(first.gap_id, "rejected", reason="needs owner review", today="2026-01-02")
+    lines = len((tmp_path / ".megamind/gaps.jsonl").read_text(encoding="utf-8").splitlines())
+
+    # Repeating the rejection may not blank the recorded reason or restamp it.
+    repeated = store.transition(first.gap_id, "rejected", today="2026-03-01")
+    assert repeated.rejection == {"reason": "needs owner review", "date": "2026-01-02"}
+    assert repeated.updated == "2026-01-02"
+    assert len((tmp_path / ".megamind/gaps.jsonl").read_text().splitlines()) == lines
+    # A different reason is not an exact repeat, so it refuses rather than wins.
+    with pytest.raises(InvalidTransition, match="cannot change reason"):
+        store.transition(first.gap_id, "rejected", reason="something else")
+    assert store.get(first.gap_id).rejection == {
+        "reason": "needs owner review",
+        "date": "2026-01-02",
+    }
+
+    store.transition(first.gap_id, "superseded", superseded_by=other.gap_id, today="2026-01-03")
+    assert store.transition(first.gap_id, "superseded").superseded_by == other.gap_id
+    with pytest.raises(InvalidTransition, match="cannot change superseded_by"):
+        store.transition(first.gap_id, "superseded", superseded_by="somewhere-else")
+    assert store.get(first.gap_id).superseded_by == other.gap_id
+
+
+def test_a_self_transition_never_silently_rewrites_a_cooldown(tmp_path: Path) -> None:
+    store = GapStore(tmp_path)
+    gap = store.create(GapRecord.new("A", "one", today="2026-01-01"))
+    store.attempt(gap.gap_id, "no source", cooldown_until="2026-02-01", today="2026-01-02")
+    assert store.transition(gap.gap_id, "open").cooldown_until == "2026-02-01"
+    with pytest.raises(InvalidTransition, match="cannot change cooldown_until"):
+        store.transition(gap.gap_id, "open", cooldown_until="")
+    assert store.get(gap.gap_id).cooldown_until == "2026-02-01"
 
 
 def test_provision_requires_all_criteria_and_registers_restrictively(tmp_path: Path) -> None:
@@ -226,18 +358,127 @@ def test_provision_apply_crash_recovers_without_an_orphan(
     original = gardening.atomic_write
     calls = 0
 
-    def crash(root: Path, target: str | Path, content: str) -> Path:
+    def crash(root: Path, target: str | Path, content: str, **kwargs: object) -> Path:
         nonlocal calls
         calls += 1
         if calls == 3:
             raise OSError("synthetic crash")
-        return original(root, target, content)
+        return original(root, target, content, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(gardening, "atomic_write", crash)
     with pytest.raises(OSError, match="synthetic crash"):
         apply_provision_plan(tmp_path, plan, plan.plan_id)
     assert not (tmp_path / "CrashWiki").exists()
-    assert "CrashWiki" not in load_registry(tmp_path).wikis
+    assert load_registry(tmp_path).wiki_by_name("CrashWiki") is None
+    # An in-process recovery undoes the transaction, so no record is left to
+    # resume and a fresh apply is not blocked by it.
+    manifest = tmp_path / f".megamind/audit/provisional-wiki-{plan.plan_id}.json"
+    assert not manifest.exists()
+    monkeypatch.setattr(gardening, "atomic_write", original)
+    assert apply_provision_plan(tmp_path, plan, plan.plan_id)
+
+
+def kill_after(monkeypatch: pytest.MonkeyPatch, writes: int) -> None:
+    """Stop mid-apply the way a signal or power loss does: the in-process
+    recovery never gets to run, so only the durable record survives."""
+    import megamind.gardening as gardening
+
+    original = gardening.atomic_write
+    done = 0
+
+    def killed(root: Path, target: str | Path, content: str, **kwargs: object) -> Path:
+        nonlocal done
+        if done >= writes:
+            raise KeyboardInterrupt("synthetic power loss")
+        done += 1
+        return original(root, target, content, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(gardening, "atomic_write", killed)
+    monkeypatch.setattr(gardening, "_undo", lambda *args, **kwargs: None)
+
+
+def test_an_interrupted_apply_leaves_a_recoverable_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The write-ahead manifest lands before the first target mutation, so a
+    kill in the middle of the writes is resumable without a second plan."""
+    init_vault(tmp_path, starter=False)
+    plan = plan_provision_wiki(
+        tmp_path, "HaltWiki", "HaltWiki", make_criteria(), today="2026-01-01"
+    )
+    manifest = tmp_path / f".megamind/audit/provisional-wiki-{plan.plan_id}.json"
+
+    with monkeypatch.context() as patched:
+        # Manifest, then the registry, then killed part-way through the tree.
+        kill_after(patched, 3)
+        with pytest.raises(KeyboardInterrupt):
+            apply_provision_plan(tmp_path, plan, plan.plan_id)
+    assert manifest.is_file()
+    assert json.loads(manifest.read_text(encoding="utf-8"))["state"] == "pending"
+    assert load_registry(tmp_path).wiki_by_name("HaltWiki") is not None
+    assert not (tmp_path / "HaltWiki/wiki/log.md").exists()
+
+    status, files = resume_provision(tmp_path, plan.plan_id, "HaltWiki", "HaltWiki")  # type: ignore[misc]
+    assert status == "applied"
+    assert files == [str(change["path"]) for change in plan.changes]
+    assert json.loads(manifest.read_text(encoding="utf-8"))["state"] == "applied"
+    assert (tmp_path / "HaltWiki/wiki/log.md").read_text(encoding="utf-8").count(
+        "megamind:event:"
+    ) == 1
+    assert load_wiki_card(tmp_path / "HaltWiki").name == "HaltWiki"
+    # A resumed transaction verifies as a no-op and rolls back completely.
+    assert apply_provision_plan(tmp_path, plan, plan.plan_id) == []
+    assert rollback_provision(tmp_path, plan.plan_id)
+    assert not (tmp_path / "HaltWiki").exists()
+    assert load_registry(tmp_path).wiki_by_name("HaltWiki") is None
+
+
+def test_an_interrupted_apply_rolls_back_without_resuming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_vault(tmp_path, starter=False)
+    before = (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8")
+    plan = plan_provision_wiki(tmp_path, "HaltWiki", "HaltWiki", make_criteria())
+    with monkeypatch.context() as patched:
+        kill_after(patched, 4)
+        with pytest.raises(KeyboardInterrupt):
+            apply_provision_plan(tmp_path, plan, plan.plan_id)
+    assert rollback_provision(tmp_path, plan.plan_id)
+    assert not (tmp_path / "HaltWiki").exists()
+    assert (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8") == before
+    with pytest.raises(GardenError, match="already rolled back"):
+        rollback_provision(tmp_path, plan.plan_id)
+    # Rollback leaves the vault re-plannable, and the plan id is unchanged.
+    replanned = plan_provision_wiki(tmp_path, "HaltWiki", "HaltWiki", make_criteria())
+    assert replanned.plan_id == plan.plan_id
+    assert apply_provision_plan(tmp_path, replanned, replanned.plan_id)
+
+
+def test_a_resume_refuses_content_the_transaction_did_not_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_vault(tmp_path, starter=False)
+    plan = plan_provision_wiki(tmp_path, "HaltWiki", "HaltWiki", make_criteria())
+    with monkeypatch.context() as patched:
+        kill_after(patched, 3)
+        with pytest.raises(KeyboardInterrupt):
+            apply_provision_plan(tmp_path, plan, plan.plan_id)
+    (tmp_path / "HaltWiki/wiki").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "HaltWiki/wiki/index.md").write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(GardenError, match="changed outside the transaction"):
+        apply_provision_plan(tmp_path, plan, plan.plan_id)
+    with pytest.raises(GardenError, match="rollback refused"):
+        rollback_provision(tmp_path, plan.plan_id)
+
+
+def test_a_transaction_manifest_is_refused_for_other_arguments(tmp_path: Path) -> None:
+    init_vault(tmp_path, starter=False)
+    plan = plan_provision_wiki(tmp_path, "PlanWiki", "PlanWiki", make_criteria())
+    apply_provision_plan(tmp_path, plan, plan.plan_id)
+    assert resume_provision(tmp_path, plan.plan_id, "PlanWiki", "PlanWiki") == ("noop", [])
+    with pytest.raises(GardenError, match="was recorded for"):
+        resume_provision(tmp_path, plan.plan_id, "OtherWiki", "PlanWiki")
+    assert resume_provision(tmp_path, "no-such-plan", "PlanWiki", "PlanWiki") is None
 
 
 def test_provision_card_paths_are_rooted_at_the_wiki(tmp_path: Path) -> None:

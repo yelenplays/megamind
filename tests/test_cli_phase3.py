@@ -138,6 +138,61 @@ def test_every_gardening_document_renders_identically_in_toon_and_json(
         assert toon.encode(doc) == toon_out
 
 
+def test_replayed_and_bounded_documents_render_identically_in_toon_and_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The no-op replay and the bounded gap list are documents like any other."""
+    vaults = [build_vault(tmp_path / "a"), build_vault(tmp_path / "b")]
+    plan_ids = []
+    for vault in vaults:
+        for index in range(21):
+            create_gap(capsys, vault, f"topic {index}")
+        _, plan, _ = run_json(
+            capsys,
+            "--root",
+            str(vault),
+            "provision-wiki",
+            "ReleaseWiki",
+            "ReleaseWiki",
+            *PROVISION_FLAGS,
+            "--today",
+            "2026-01-01",
+        )
+        plan_ids.append(str(plan["plan_id"]))
+        run_json(
+            capsys,
+            "--root",
+            str(vault),
+            "provision-wiki",
+            "ReleaseWiki",
+            "ReleaseWiki",
+            *PROVISION_FLAGS,
+            "--today",
+            "2026-01-01",
+            "--apply",
+            "--plan-id",
+            plan_ids[-1],
+        )
+    assert plan_ids[0] == plan_ids[1]
+    replay = [
+        "provision-wiki",
+        "ReleaseWiki",
+        "ReleaseWiki",
+        *PROVISION_FLAGS,
+        "--today",
+        "2026-01-01",
+        "--apply",
+        "--plan-id",
+        plan_ids[0],
+    ]
+    for argv in (["gap", "list"], ["gap", "list", "--full"], replay):
+        code_j, doc, err_j = run_json(capsys, "--root", str(vaults[0]), *argv)
+        code_t, toon_out, err_t = run_toon(capsys, "--root", str(vaults[1]), *argv)
+        assert code_j == code_t == 0, doc
+        assert err_j == err_t == ""
+        assert toon.encode(doc) == toon_out
+
+
 def test_gap_list_empty_state_is_definitive(
     vault: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -149,8 +204,49 @@ def test_gap_list_empty_state_is_definitive(
         "status": "ok",
         "gaps": [],
         "count": 0,
+        "total": 0,
+        "notes": [],
         "help": doc["help"],
     }
+
+
+def test_gap_list_is_bounded_and_hides_attempt_histories_until_full(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for index in range(22):
+        gap_id = create_gap(capsys, vault, f"topic {index}")
+        if index == 0:
+            for attempt in range(3):
+                run_json(
+                    capsys,
+                    "--root",
+                    str(vault),
+                    "gap",
+                    "attempt",
+                    gap_id,
+                    "--outcome",
+                    f"no source {attempt}",
+                    "--today",
+                    "2026-01-02",
+                )
+
+    _, doc, _ = run_json(capsys, "--root", str(vault), "gap", "list")
+    assert doc["count"] == 20
+    assert doc["total"] == 22
+    assert doc["notes"] == ["gaps truncated to 20 of 22; re-run with --full"]
+    assert all("attempts" not in row for row in doc["gaps"])
+    assert sorted(row["attempt_count"] for row in doc["gaps"])[-1] == 3
+
+    _, full, _ = run_json(capsys, "--root", str(vault), "gap", "list", "--full")
+    assert full["count"] == full["total"] == 22
+    assert full["notes"] == []
+    histories = [row["attempts"] for row in full["gaps"] if row["attempt_count"] == 3]
+    assert len(histories) == 1
+    assert [entry["outcome"] for entry in histories[0]] == [
+        "no source 0",
+        "no source 1",
+        "no source 2",
+    ]
 
 
 # --- malformed and crash inputs ---------------------------------------------
@@ -278,6 +374,117 @@ def test_unknown_lifecycle_transition_is_typed(
     assert doc["help"]
     _, listed, _ = run_json(capsys, "--root", str(vault), "gap", "list")
     assert listed["gaps"][0]["status"] == "open"
+
+
+@pytest.mark.parametrize("bad", ["yesterday", "2026-13-01", "01/01/2026"])
+def test_a_malformed_today_never_reaches_a_durable_record(
+    vault: Path, capsys: pytest.CaptureFixture[str], bad: str
+) -> None:
+    code, doc, err = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "gap",
+        "create",
+        "--wiki",
+        "ProductWiki",
+        "--topic",
+        "rate limits",
+        "--today",
+        bad,
+    )
+    assert code == 2
+    assert err == ""
+    assert doc["code"] == "usage_error"
+    assert "--today" in doc["message"]
+    assert not (vault / ".megamind/gaps.jsonl").exists()
+
+    gap_id = create_gap(capsys, vault)
+    for argv in (
+        ["gap", "transition", gap_id, "--status", "planned"],
+        ["gap", "attempt", gap_id, "--outcome", "no source"],
+        ["research-wave", gap_id, *CAPACITY],
+    ):
+        code, doc, _ = run_json(capsys, "--root", str(vault), *argv, "--today", bad)
+        assert code == 2
+        assert doc["code"] == "usage_error"
+    _, listed, _ = run_json(capsys, "--root", str(vault), "gap", "list")
+    assert listed["gaps"][0]["status"] == "open"
+    assert listed["gaps"][0]["updated"] == "2026-01-01"
+    log = (vault / "wiki/log.md").read_text(encoding="utf-8") if (vault / "wiki").is_dir() else ""
+    assert bad not in log
+
+
+def test_repeating_a_terminal_transition_changes_nothing(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gap_id = create_gap(capsys, vault)
+    other = create_gap(capsys, vault, "quotas")
+    run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "gap",
+        "transition",
+        gap_id,
+        "--status",
+        "rejected",
+        "--reason",
+        "needs owner review",
+        "--today",
+        "2026-01-02",
+    )
+    journal = (vault / ".megamind/gaps.jsonl").read_text(encoding="utf-8")
+
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "gap",
+        "transition",
+        gap_id,
+        "--status",
+        "rejected",
+        "--today",
+        "2026-06-01",
+    )
+    assert code == 0
+    assert doc["status"] == "unchanged"
+    assert doc["gap"]["rejection"] == {"reason": "needs owner review", "date": "2026-01-02"}
+    assert (vault / ".megamind/gaps.jsonl").read_text(encoding="utf-8") == journal
+
+    # A terminal supersession is never silently redirected to another gap.
+    run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "gap",
+        "transition",
+        gap_id,
+        "--status",
+        "superseded",
+        "--superseded-by",
+        other,
+        "--today",
+        "2026-01-03",
+    )
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "gap",
+        "transition",
+        gap_id,
+        "--status",
+        "superseded",
+        "--superseded-by",
+        "somewhere-else",
+    )
+    assert code == 1
+    assert doc["code"] == "gap_transition_invalid"
+    _, listed, _ = run_json(capsys, "--root", str(vault), "gap", "list")
+    superseded = [row for row in listed["gaps"] if row["gap_id"] == gap_id]
+    assert superseded[0]["superseded_by"] == other
 
 
 def test_missing_gap_is_typed(vault: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -441,6 +648,108 @@ def test_provision_wiki_leaves_a_registry_backup_and_audit_link(
     assert created[0]["wiki"] == "ReleaseWiki"
     assert created[0]["provisional"] is True
     assert created[0]["registry_backup"] == backups[0].name
+
+
+def provision_argv(vault: Path, *extra: str) -> list[str]:
+    return [
+        "--root",
+        str(vault),
+        "provision-wiki",
+        "ReleaseWiki",
+        "ReleaseWiki",
+        *PROVISION_FLAGS,
+        "--today",
+        "2026-01-01",
+        *extra,
+    ]
+
+
+def test_provision_apply_replay_reaches_the_verified_noop(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The second apply of the same reviewed plan is a structured no-op, not a
+    `wiki already exists` failure from re-planning."""
+    _, plan, _ = run_json(capsys, *provision_argv(vault))
+    plan_id = str(plan["plan_id"])
+    code, applied, _ = run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+    assert code == 0
+    assert applied["status"] == "applied"
+
+    code, replay, err = run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+    assert code == 0
+    assert err == ""
+    assert replay["status"] == "noop"
+    assert replay["files"] == []
+    assert replay["plan_id"] == plan_id
+    assert replay["trusted"] is False
+
+
+def test_provision_apply_replay_refuses_a_plan_id_from_other_arguments(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, plan, _ = run_json(capsys, *provision_argv(vault))
+    plan_id = str(plan["plan_id"])
+    run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "provision-wiki",
+        "OtherWiki",
+        "OtherWiki",
+        *PROVISION_FLAGS,
+        "--apply",
+        "--plan-id",
+        plan_id,
+    )
+    assert code == 1
+    assert doc["code"] == "garden_invalid"
+    assert "was recorded for" in doc["message"]
+    assert not (vault / "OtherWiki").exists()
+
+
+def test_provision_apply_replay_refuses_tampered_content(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, plan, _ = run_json(capsys, *provision_argv(vault))
+    plan_id = str(plan["plan_id"])
+    run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+    (vault / "ReleaseWiki/wiki/index.md").write_text("tampered\n", encoding="utf-8")
+    code, doc, _ = run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+    assert code == 1
+    assert doc["code"] == "garden_invalid"
+    assert "not idempotent" in doc["message"]
+
+
+def test_provision_rollback_leaves_the_vault_replannable(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = (vault / ".megamind/registry.json").read_text(encoding="utf-8")
+    _, plan, _ = run_json(capsys, *provision_argv(vault))
+    plan_id = str(plan["plan_id"])
+    run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+    code, rolled, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "provision-wiki",
+        "ReleaseWiki",
+        "ReleaseWiki",
+        *PROVISION_FLAGS,
+        "--rollback",
+        "--plan-id",
+        plan_id,
+    )
+    assert code == 0
+    assert rolled["status"] == "rolled_back"
+    assert not (vault / "ReleaseWiki").exists()
+    assert (vault / ".megamind/registry.json").read_text(encoding="utf-8") == before
+    # The rolled-back record does not block re-planning or a fresh apply.
+    _, replan, _ = run_json(capsys, *provision_argv(vault))
+    assert replan["plan_id"] == plan_id
+    code, reapplied, _ = run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+    assert code == 0
+    assert reapplied["status"] == "applied"
 
 
 def test_provision_wiki_refuses_a_canonical_root_without_writing(
@@ -687,7 +996,12 @@ def test_governance_sidecar_is_emitted_on_the_default_field_set(
     rows = governance_by_path(doc)
     assert set(rows) == {str(item["path"]) for item in doc["candidates"]}
     entry = rows["ReleaseWiki/INDEX.md"]
-    assert entry == {"path": "ReleaseWiki/INDEX.md", "provisional": True, "trusted": False}
+    assert entry == {
+        "path": "ReleaseWiki/INDEX.md",
+        "provisional": True,
+        "trusted": False,
+        "disposition": "offer",
+    }
 
 
 def test_governance_sidecar_marks_a_trusted_load_packet(
@@ -698,6 +1012,7 @@ def test_governance_sidecar_marks_a_trusted_load_packet(
     assert doc["decision"] == "load"
     assert doc["governance"]
     assert all(row["trusted"] is True and row["provisional"] is False for row in doc["governance"])
+    assert all(row["disposition"] == "load" for row in doc["governance"])
     assert not any("governance" in note for note in doc["notes"])
 
 
@@ -709,9 +1024,23 @@ def test_governance_sidecar_covers_mixed_trusted_and_provisional_offers(
     assert code == 0
     assert doc["decision"] == "load"
     rows = governance_by_path(doc)
-    # The load packet itself is entirely trusted; the withheld provisional wiki
-    # is still named in the notes as a governance decision, not a weak one.
-    assert rows and all(row["trusted"] is True for row in rows.values())
+    emitted = {str(item["path"]) for item in doc["candidates"]}
+    # The load packet itself is entirely trusted, and every path it carries is
+    # dispositioned `load`.
+    assert emitted
+    assert all(
+        rows[path] == {**rows[path], "trusted": True, "disposition": "load"} for path in emitted
+    )
+    # The withheld provisional wiki is not dropped from the response: it stays a
+    # structured offer row beside the notes, never an authorized load.
+    withheld = rows["ReleaseWiki/INDEX.md"]
+    assert "ReleaseWiki/INDEX.md" not in emitted
+    assert withheld == {
+        "path": "ReleaseWiki/INDEX.md",
+        "provisional": True,
+        "trusted": False,
+        "disposition": "offer",
+    }
     governance_notes = [note for note in doc["notes"] if note.startswith("governance gate")]
     assert len(governance_notes) == 1
     assert "ReleaseWiki/INDEX.md" in governance_notes[0]
@@ -845,13 +1174,29 @@ def test_route_governance_sidecar_renders_identically_in_toon_and_json(
 def test_governance_sidecar_leaks_no_unauthorized_path_or_content(
     vault: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The sidecar only ever restates an identity the packet already carries."""
+    """The sidecar restates identities the ladder already surfaced: the emitted
+    packet, plus provisional candidates it withheld from a load and offers
+    instead. It never carries content or an unrouted path."""
     provisioned_vault(capsys, vault)
-    for query in (["operations"], ["release"], ["archive", "history"], ["research", "interview"]):
+    for query in (
+        ["operations"],
+        ["release"],
+        ["release", "operations"],
+        ["archive", "history"],
+        ["research", "interview"],
+    ):
         _, doc, _ = run_json(capsys, "--root", str(vault), "route", *query)
         emitted = {str(item["path"]) for item in doc["candidates"]}
-        assert {str(row["path"]) for row in doc["governance"]} == emitted
-        assert all(set(row) == {"path", "provisional", "trusted"} for row in doc["governance"])
+        rows = {str(row["path"]): row for row in doc["governance"]}
+        assert set(rows) >= emitted
+        assert all(
+            set(row) == {"path", "provisional", "trusted", "disposition"} for row in rows.values()
+        )
+        # Anything beyond the packet is an offered provisional candidate only.
+        for path in set(rows) - emitted:
+            assert rows[path]["provisional"] is True
+            assert rows[path]["disposition"] == "offer"
+            assert any(path in note for note in doc["notes"])
 
 
 def test_doctor_reports_an_escaping_gap_journal_instead_of_losing_the_report(

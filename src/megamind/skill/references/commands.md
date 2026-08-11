@@ -87,9 +87,11 @@ semantic_score,provisional,reason,reasons`. `kind` is `page`, `digest`,
 thresholds: `load` at or above 0.75, `offer` below it or inside the ambiguity
 band, `no-match` under 0.25 (weak candidates are dropped with a note).
 Confidence is necessary but not sufficient: the `governance[]` sidecar
-(`path`, `provisional`, `trusted`, one row per emitted candidate, always
-present) marks provisional wikis, which are never an authorized load and can
-degrade a confident result to `offer` on their own. `notes` states whether a
+(`path`, `provisional`, `trusted`, `disposition`; always present) marks
+provisional wikis, which are never an authorized load and can degrade a
+confident result to `offer` on their own. It covers the emitted packet plus
+every provisional candidate a `load` withheld, which stays an `offer` row
+rather than disappearing from the response. `notes` states whether a
 downgrade was a governance or a confidence decision. No match returns
 `matched: false` and `candidates[0]`, exit 0. `--today` makes per-candidate
 `freshness` (`updated`, `age_days`, `stale`) reproducible; without it those
@@ -149,14 +151,19 @@ as an uninitialized registry.
 
 `megamind/config/v1`: registry path, budgets, and registered wikis.
 
-## megamind-axi gap list|create|transition|attempt
+## megamind-axi gap list|create|transition|attempt [--full]
 
 Durable, append-only gap records for missing, weak, stale, and contradictory
 coverage. `create` deduplicates by normalized semantic identity. Transitions
 and attempts are machine-readable and retain cooldown, rejection, reopen, and
 supersession history. `transition` requires an explicit `--status`, so no
 omitted flag can reopen a gap. An omitted `--cooldown-until` keeps the recorded
-backoff; pass it explicitly to change or clear it.
+backoff; pass it explicitly to change or clear it. Transitioning to the status
+a gap already holds is an idempotent `status: unchanged` no-op; a repeat that
+would change a rejection reason, supersession target, or cooldown refuses.
+`--today` must be ISO `YYYY-MM-DD`; it is validated before any write. `list`
+returns at most 20 rows with `total` and a truncation note, and reports
+`attempt_count` only - `--full` lifts both bounds.
 
 ## megamind-axi research-wave GAP_ID [capacity flags]
 
@@ -170,8 +177,9 @@ typed pause/refusal.
 
 Validates a host round-trip by stable correlation id and turns eligible
 sources into an immutable-source ingest proposal. Results are bounded and
-idempotent. Megamind performs no network or external action and never writes
-`raw/`.
+idempotent; a result with no eligible source is rejected before any proposal,
+audit, or log write, and a replay that changes the eligible sources refuses.
+Megamind performs no network or external action and never writes `raw/`.
 
 ## megamind-axi provision-wiki NAME PATH [criteria flags]
 
@@ -179,11 +187,17 @@ Creates a local provisional wiki only when every domain, demand, scope, owner,
 policy, seed, and maintenance criterion passes. It extends an existing registry
 vault only: it refuses a canonical single-wiki root, refuses to bootstrap a
 vault `init` has not created, and refuses a v1 registry until `migrate` has run
-explicitly. The whole registry plan is validated before any file is written. It
-registers the card immediately with `provisional: true`; provisional knowledge
-is not trusted, so route, catalog, and preflight surface it and only ever offer
-it, never load it. No remote repository, collaborators, account action,
-publication, merge, or spend is possible.
+explicitly. Without `--apply` it plans with no side effects and returns a
+content-bound `plan_id`; `--apply --plan-id <id>` applies exactly that plan as
+a write-ahead transaction whose manifest and backups are flushed before the
+first file changes. Re-running the same apply is a verified `status: noop`, an
+interrupted apply resumes from the manifest, and `--rollback --plan-id <id>`
+undoes it completely; a plan id from other arguments, stale targets, or edited
+generated content all refuse. It registers the card immediately with
+`provisional: true`; provisional knowledge is not trusted, so route, catalog,
+and preflight surface it and only ever offer it, never load it. No remote
+repository, collaborators, account action, publication, merge, or spend is
+possible.
 
 ## megamind-axi setup skill [--dest DIR]
 

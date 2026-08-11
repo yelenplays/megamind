@@ -520,6 +520,7 @@ def route(
     # choice but never enters a packet the host is told it may load.
     untrusted: list[int] = []
     withheld: list[str] = []
+    withheld_candidates: list[RouteCandidate] = []
     governance_downgrade = False
     if decision == "load":
         untrusted = [index for index in authorized if candidates[index].provisional]
@@ -537,6 +538,10 @@ def route(
         demoted = [
             candidate.path for index, candidate in enumerate(candidates) if index not in loadable
         ]
+        # Withheld provisional candidates leave the load packet but stay an
+        # explicit offer in the governance sidecar, so the fact is structured
+        # rather than only stated in prose.
+        withheld_candidates = [candidates[index] for index in untrusted]
         candidates = [candidates[index] for index in authorized]
         if demoted:
             notes.append(
@@ -612,16 +617,35 @@ def route(
     if not selected:
         notes.append("no wiki matched this query")
 
-    # The sidecar states the trust posture of every emitted candidate, whatever
-    # the decision and whatever `--fields` the host asked for. It is named once
-    # more in the notes so a reader of the prose sees the same governance fact.
+    # The sidecar states the trust posture and disposition of every candidate
+    # the response accounts for, whatever the decision and whatever `--fields`
+    # the host asked for: the emitted packet first, then the provisional
+    # candidates a `load` withheld, which stay offers and never loads. It is
+    # named once more in the notes so a reader of the prose sees the same fact.
+    offered = sorted(withheld_candidates, key=lambda candidate: candidate.path)
+    if len(offered) > budgets.max_candidates:
+        notes.append(
+            f"governance offer budget reached: omitted "
+            f"{bounded_names([candidate.path for candidate in offered[budgets.max_candidates :]])}"
+        )
+        offered = offered[: budgets.max_candidates]
     governance: list[dict[str, object]] = [
         {
             "path": candidate.path,
             "provisional": candidate.provisional,
             "trusted": not candidate.provisional,
+            "disposition": "load" if decision == "load" else "offer",
         }
         for candidate in selected
+    ]
+    governance += [
+        {
+            "path": candidate.path,
+            "provisional": True,
+            "trusted": False,
+            "disposition": "offer",
+        }
+        for candidate in offered
     ]
     named = sorted(
         set(withheld) | {candidate.path for candidate in selected if candidate.provisional}

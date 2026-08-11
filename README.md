@@ -83,10 +83,12 @@ Route output carries a `decision`: `load` at or above the 0.75 reliance
 floor, `offer` below it or inside the ambiguity band (choices, nothing
 auto-loads), `no-match` under the 0.25 floor. Confidence is necessary but not
 sufficient: a wiki still marked `provisional` is never an authorized load, so
-it is dropped from a `load` packet and degrades the whole result to `offer`
-when every candidate that cleared the floor is provisional, however confident
-the match is. The `governance[]` sidecar states `provisional` and `trusted`
-for each candidate on every route. `--semantic` opts into local
+it leaves a `load` packet and degrades the whole result to `offer` when every
+candidate that cleared the floor is provisional, however confident the match
+is. The `governance[]` sidecar states `provisional`, `trusted`, and a
+`disposition` of `load` or `offer` on every route, covering the emitted packet
+plus the provisional candidates a load withheld, so nothing is offered only in
+prose. `--semantic` opts into local
 char-ngram reranking of the authorized candidates; `--today` makes freshness
 (`updated`/`age_days`/`stale`) reproducible. `megamind-axi assess claim` and
 `assess answer` score evidence against the same reliance floor.
@@ -146,22 +148,28 @@ megamind-axi research-result --nomination-json <json> --result-json <json>
 - **Durable gaps** (`.megamind/gaps.jsonl`) record missing, weak, stale, and
   contradictory coverage under a semantic identity, so the same gap reported
   twice coalesces instead of piling up. Priority, attempts, cooldowns,
-  rejection, reopen, and supersession are kept, never overwritten.
+  rejection, reopen, and supersession are kept, never overwritten: repeating a
+  transition a gap already holds is an idempotent no-op, and anything that
+  would rewrite a terminal fact refuses instead.
 - **Research waves** are one hop: the direct gap plus bounded first-order
   topics, deeper topics deferred as nominations. Unknown capacity, a full
   three-worker fleet, a worker already on the target wiki, active captain
   work, or less than a 25 percent quota reserve is a typed pause or refusal.
   Megamind starts no worker and calls no quota tool.
 - **Host research results** return by correlation id and are replay-safe;
-  eligible sources become an immutable-source ingest proposal. Nothing is
-  fetched, and `raw/` stays human-curated.
+  eligible sources become an immutable-source ingest proposal. A result with no
+  eligible source is rejected before anything is written. Nothing is fetched,
+  and `raw/` stays human-curated.
 - **Provisional wikis** (`provision-wiki`) are the qualified local creation
   path: accepted domain, repeat demand, multiple topics, overlap, scope and
   exclusions, owner, source policy, privacy and model access, seed topics, and
-  maintenance must all pass. The wiki is registered restrictively as
-  `provisional` - surfaced and offered, never auto-loaded - until confidence
-  coverage and an evaluation pass clear it. No remote repository, account,
-  publication, or spend is ever involved.
+  maintenance must all pass. Planning is side-effect-free and hands back a
+  content-bound `plan_id`; applying it is a write-ahead transaction whose
+  manifest and backups land before the first file changes, so an interrupted
+  apply resumes or rolls back completely and a replay is a verified no-op. The
+  wiki is registered restrictively as `provisional` - surfaced and offered,
+  never auto-loaded - until confidence coverage and an evaluation pass clear
+  it. No remote repository, account, publication, or spend is ever involved.
 
 [docs/schemas.md](docs/schemas.md) owns the record formats and
 [docs/architecture.md](docs/architecture.md) the design.

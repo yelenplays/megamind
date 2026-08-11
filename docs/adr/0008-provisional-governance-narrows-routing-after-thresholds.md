@@ -18,16 +18,21 @@ and lie about the evidence).
 ## Decision
 
 Provisional status is a governance gate that runs after the confidence
-thresholds and may only narrow them. In `route`, provisional candidates are
-removed from a `load` packet; if nothing trusted remains, the decision degrades
-to `offer` and `governance_downgrade` is set. In `preflight`, a provisional
-wiki stays an offer with no loadable path. Consequently an `offer` can be
-returned at or above the 0.75 reliance floor - the one case where the decision
-is not a threshold decision - so `notes` names it as a governance downgrade and
-never as a confidence one, and a `governance[]` sidecar states `provisional`
-and `trusted` for every emitted candidate regardless of `--fields`. The gate
-never widens anything: it cannot promote a filtered or sub-floor wiki, and it
-runs before semantic reranking can reorder the packet. The projected fields are
+thresholds and may only narrow them. In `route`, provisional candidates leave
+the `load` packet, because a load packet carries only candidates the host may
+open; if nothing trusted remains, the decision degrades to `offer` and
+`governance_downgrade` is set. In `preflight`, a provisional wiki stays an
+offer with no loadable path. Consequently an `offer` can be returned at or
+above the 0.75 reliance floor - the one case where the decision is not a
+threshold decision - so `notes` names it as a governance downgrade and never as
+a confidence one, and a `governance[]` sidecar states `provisional`, `trusted`,
+and a `disposition` of `load` or `offer` regardless of `--fields`. Leaving the
+packet is not the same as leaving the response: the sidecar keeps a row for
+every withheld provisional candidate, so `route` and `preflight` agree that a
+provisional wiki is offered rather than loaded, and a consumer reading only
+structured fields sees the same fact the notes state in prose. The gate never
+widens anything: it cannot promote a filtered or sub-floor wiki, and it runs
+before semantic reranking can reorder the packet. The projected fields are
 specified in `docs/schemas.md`.
 
 ## Consequences
@@ -35,8 +40,8 @@ specified in `docs/schemas.md`.
 - Autonomy can create knowledge without that knowledge silently becoming
   trusted; promotion out of `provisional` stays a deliberate card edit.
 - Consumers must not infer trust from confidence alone. The sidecar exists so
-  no host has to re-derive the posture, and it is emitted for every candidate,
-  not only withheld ones.
+  no host has to re-derive the posture, and it is emitted for every candidate
+  the response accounts for, loaded, offered, and withheld alike.
 - `route` and `preflight` now have a decision path where confidence and
   decision disagree; the notes carry the explanation and tests pin both the
   wording's cause and the fact that the load path stays empty.

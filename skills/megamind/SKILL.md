@@ -23,8 +23,9 @@ returned candidate paths, best first; `offer` means weaker or ambiguous
 evidence, or a confident match that is only `provisional`, so present the
 candidates as choices and load nothing until one is picked; `no-match` is
 definitive, so say so instead of guessing. The `governance[]` sidecar names
-which candidates are provisional, and `notes` states whether a downgrade was a
-governance or a confidence decision. Candidates
+which candidates are provisional and whether each is `load` or `offer`,
+including provisional wikis withheld from a load, and `notes` states whether a
+downgrade was a governance or a confidence decision. Candidates
 of kind `pointer` must be opened manually and never quoted; kind `digest`
 exposes only summary content. `--semantic` reranks the surfaced candidates
 locally when phrasing is indirect; check the `semantic.status` field and fall
@@ -107,7 +108,8 @@ research, model choice, quotas, and cost.
   durable gap for `missing`, `weak`, `stale`, or `contradictory` coverage;
   `gap list`, `gap transition <id> --status <s>`, and `gap attempt <id>
   --outcome "<o>"` keep its lifecycle. `transition` always needs an explicit
-  `--status`.
+  `--status`; repeating the status a gap already holds is a no-op, and
+  `gap list` shows 20 rows without attempt histories until `--full`.
 - `megamind-axi research-wave <gap-id>` plans one hop from the capacity facts
   you pass in. A `paused` or `refused` status is final: report it, never work
   around it, and never launch a worker or call a quota tool on its behalf.
@@ -115,9 +117,11 @@ research, model choice, quotas, and cost.
   a host research result back into an immutable-source ingest proposal.
   Megamind fetches nothing and never writes `raw/`.
 - `megamind-axi provision-wiki <Name> <path> ...` creates a local wiki only
-  when every qualification criterion is supplied. It has no dry run and writes
-  the registry immediately, so ask the human first. The new wiki stays
-  `provisional`: offer it, never load it, until it is evaluated.
+  when every qualification criterion is supplied. Without `--apply` it only
+  plans and returns a `plan_id`; show that plan to the human and apply it with
+  `--apply --plan-id <id>`. Re-running the same apply is a no-op, and
+  `--rollback --plan-id <id>` undoes it. The new wiki stays `provisional`:
+  offer it, never load it, until it is evaluated.
 
 ## References
 

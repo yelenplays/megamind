@@ -50,13 +50,30 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
-def atomic_write_path(target: Path, content: str) -> Path:
+def sync_directory(path: Path) -> None:
+    """Flush a directory entry so a completed rename survives a power loss.
+
+    ``os.fsync`` on the file alone only guarantees its bytes; the rename that
+    publishes the name is a directory mutation and needs its own flush before a
+    write-ahead record can be relied on after an abrupt process or power loss.
+    """
+    fd = os.open(path, getattr(os, "O_DIRECTORY", os.O_RDONLY))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_write_path(target: Path, content: str, *, durable: bool = False) -> Path:
     """Write content to an already-resolved absolute path via temp file plus rename.
 
     Low-level mechanism only: no containment check, backup, or audit. Callers that
     write into a vault must go through ``atomic_write`` (which resolves and contains
     the target first); this primitive exists for writes outside any vault root, such
     as installing the packaged skill into an arbitrary destination.
+
+    ``durable`` additionally flushes the parent directory, so the file is present
+    by name after a crash. Use it for write-ahead records another step depends on.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".megamind-tmp-")
@@ -66,6 +83,8 @@ def atomic_write_path(target: Path, content: str) -> Path:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_name, target)
+        if durable:
+            sync_directory(target.parent)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp_name)
@@ -73,13 +92,13 @@ def atomic_write_path(target: Path, content: str) -> Path:
     return target
 
 
-def atomic_write(root: Path, target: str | Path, content: str) -> Path:
+def atomic_write(root: Path, target: str | Path, content: str, *, durable: bool = False) -> Path:
     """Write content atomically to a root-contained path, creating parent dirs."""
     resolved = resolve_contained(root, target)
-    return atomic_write_path(resolved, content)
+    return atomic_write_path(resolved, content, durable=durable)
 
 
-def backup_existing(root: Path, target: str | Path) -> Path | None:
+def backup_existing(root: Path, target: str | Path, *, durable: bool = False) -> Path | None:
     """Copy an existing file into the audit backup area before mutating it.
 
     Returns the backup path, or None when the target does not exist yet.
@@ -94,7 +113,9 @@ def backup_existing(root: Path, target: str | Path) -> Path | None:
     backup_rel = Path(MEGAMIND_DIR) / BACKUP_DIR / f"{resolved.name}.{digest}.bak"
     backup_path = resolve_contained(root, backup_rel)
     if not backup_path.exists():
-        atomic_write(root, backup_rel, text)
+        atomic_write(root, backup_rel, text, durable=durable)
+    elif durable:
+        sync_directory(backup_path.parent)
     return backup_path
 
 

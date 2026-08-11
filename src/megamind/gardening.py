@@ -11,6 +11,7 @@ import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -93,21 +94,37 @@ def _norm(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
 
 
+# Both patterns are anchored to a token boundary on the left. Redaction runs
+# over origins too, and an origin must survive as a citable identifier, so a
+# credential keyword buried inside a word ("capital: raised") and a local-path
+# prefix buried inside a URL ("https://host/home/page") must not match.
+_CREDENTIAL_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:sk|pk|api|token|secret|password|credential)[_-]?\w*\s*[:=]\s*\S+",
+    re.I,
+)
+_LOCAL_PATH_RE = re.compile(r"(?<![\w.\-~%@])(?:/Users|/home|[A-Za-z]:\\)[^\s]+")
+
+
 def _short(text: str, limit: int = MAX_TEXT) -> str:
     """Make a log/bridge summary safe without attempting to retain content."""
-    text = re.sub(
-        r"(?:sk|pk|api|token|secret|password|credential)[_-]?\w*\s*[:=]\s*\S+",
-        "[redacted]",
-        text,
-        flags=re.I,
-    )
-    text = re.sub(r"(?:/Users|/home|[A-Za-z]:\\)[^\s]+", "[path]", text)
+    text = _CREDENTIAL_RE.sub("[redacted]", text)
+    text = _LOCAL_PATH_RE.sub("[path]", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:limit]
 
 
 def _date(today: str | None) -> str:
-    return today or ""
+    """Normalize a host-supplied date, refusing anything that is not ISO.
+
+    Dates reach durable records and log headings, so a non-ISO value has to
+    fail typed before the write rather than becoming permanent journal state.
+    """
+    if not today:
+        return ""
+    try:
+        return date.fromisoformat(today).isoformat()
+    except ValueError as error:
+        raise GardenError(f"dates must be ISO (YYYY-MM-DD): {today}") from error
 
 
 @dataclass(frozen=True)
@@ -354,7 +371,25 @@ class GapStore:
             raise InvalidTransition(f"unknown gap status: {status}")
         record = self.get(gap_id)
         previous_status = record.status
-        if status not in _ALLOWED_TRANSITIONS[record.status] and status != record.status:
+        if status == record.status:
+            # An exact repeat is a no-op: it appends no snapshot, keeps the
+            # recorded date, and never rewrites a terminal rejection or
+            # supersession. Anything that would change the record is not an
+            # exact repeat, so it refuses instead of overwriting silently.
+            conflicts: list[str] = []
+            if cooldown_until is not None and cooldown_until != record.cooldown_until:
+                conflicts.append("cooldown_until")
+            if reason and _short(reason) != (record.rejection or {}).get("reason", ""):
+                conflicts.append("reason")
+            if superseded_by and superseded_by != record.superseded_by:
+                conflicts.append("superseded_by")
+            if conflicts:
+                raise InvalidTransition(
+                    f"gap {gap_id} is already {status}: repeating a transition is idempotent "
+                    f"and cannot change {', '.join(conflicts)}"
+                )
+            return record
+        if status not in _ALLOWED_TRANSITIONS[record.status]:
             raise InvalidTransition(
                 f"cannot transition gap {gap_id} from {record.status} to {status}"
             )
@@ -543,9 +578,7 @@ class Nomination:
         return {"schema": NOMINATION_SCHEMA, **asdict(self)}
 
 
-def make_nomination(
-    wave: ResearchWave, entry: Mapping[str, Any], source_policy: str = ""
-) -> Nomination:
+def make_nomination(wave_id: str, entry: Mapping[str, Any], source_policy: str = "") -> Nomination:
     if not isinstance(entry, Mapping):
         raise GardenError("research nomination must be a JSON object")
     required = ("correlation_id", "gap_id", "wiki", "topic", "relationship")
@@ -555,7 +588,7 @@ def make_nomination(
         raise GardenError("research waves are one-hop; deeper relationships are nominations only")
     return Nomination(
         str(entry["correlation_id"]),
-        wave.wave_id,
+        str(wave_id),
         str(entry["gap_id"]),
         str(entry["wiki"]),
         str(entry["topic"]),
@@ -603,6 +636,13 @@ def ingest_research_result(
             "summary": _short(str(source.get("summary", "")), 500),
         }
         (eligible if source.get("eligible") is True else ineligible).append(item)
+    if not eligible:
+        # Nothing citable: refuse before the proposal, audit, and log writes.
+        # Correlation is the idempotency key, so a proposal written here could
+        # never be repaired by the replay that finally carries a real source.
+        return ResearchResult(
+            nomination.correlation_id, "rejected", [], ineligible, "", "no eligible sources"
+        )
     # Correlation is the idempotency key. A replay cannot create a second
     # proposal merely because ineligible data was redacted or reordered.
     result_id = content_hash(nomination.correlation_id)
@@ -617,7 +657,19 @@ def ingest_research_result(
         "sources": eligible,
     }
     path = resolve_contained(root, proposal_rel)
-    if not path.exists():
+    if path.exists():
+        # The returned document points at this file, so it may never claim a
+        # citation the file does not carry: divergence refuses, it never wins.
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise GardenError(f"existing ingest proposal is unreadable: {error}") from error
+        if not isinstance(stored, Mapping) or stored.get("sources") != eligible:
+            raise GardenError(
+                f"correlation {nomination.correlation_id} was already ingested with different "
+                "eligible sources; nominate a new correlation instead of rewriting the proposal"
+            )
+    else:
         atomic_write(root, proposal_rel, json.dumps(proposal, sort_keys=True, indent=2) + "\n")
         append_audit(
             root,
@@ -641,11 +693,11 @@ def ingest_research_result(
         )
     return ResearchResult(
         nomination.correlation_id,
-        "proposed" if eligible else "rejected",
+        "proposed",
         eligible,
         ineligible,
-        proposal_rel.as_posix() if eligible else "",
-        "" if eligible else "no eligible sources",
+        proposal_rel.as_posix(),
+        "",
     )
 
 
@@ -849,40 +901,217 @@ def plan_provision_wiki(
     return ProvisionPlan(plan_id, name, path, changes, tuple(notes))
 
 
+PROVISION_MANIFEST_SCHEMA = "megamind/provisional-wiki-rollback/v1"
+PROVISION_STATES = ("pending", "applied", "rolled_back")
+
+
+def _manifest_rel(plan_id: str) -> Path:
+    return Path(MEGAMIND_DIR) / "audit" / f"provisional-wiki-{plan_id}.json"
+
+
+def _read_text(root: Path, rel: str) -> str | None:
+    """Read a contained file, treating only absence as a missing value."""
+    path = resolve_contained(root, rel)
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise GardenError(f"provisional wiki target is unreadable: {rel}: {error}") from error
+
+
+def _read_manifest(root: Path, plan_id: str) -> dict[str, Any] | None:
+    """Load the write-ahead transaction record, or None when there is none."""
+    raw = _read_text(root, _manifest_rel(plan_id).as_posix())
+    if raw is None:
+        return None
+    try:
+        manifest = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise GardenError(
+            f"provisional wiki transaction manifest is unreadable: {error}"
+        ) from error
+    if not isinstance(manifest, dict) or manifest.get("schema") != PROVISION_MANIFEST_SCHEMA:
+        raise GardenError("provisional wiki transaction manifest is invalid")
+    plan = manifest.get("plan")
+    created = manifest.get("created")
+    backups = manifest.get("backups")
+    if (
+        manifest.get("state") not in PROVISION_STATES
+        or not isinstance(plan, dict)
+        or not isinstance(plan.get("plan_id"), str)
+        or not isinstance(plan.get("wiki"), str)
+        or not isinstance(plan.get("path"), str)
+        or not isinstance(plan.get("changes"), list)
+        or not isinstance(created, list)
+        or not all(isinstance(item, str) for item in created)
+        or not isinstance(backups, dict)
+        or not all(isinstance(value, str) for value in backups.values())
+    ):
+        raise GardenError("provisional wiki transaction manifest is malformed")
+    return manifest
+
+
+def _manifest_changes(manifest: Mapping[str, Any]) -> list[tuple[str, str | None, str]]:
+    changes: list[tuple[str, str | None, str]] = []
+    for change in manifest["plan"]["changes"]:
+        if not isinstance(change, Mapping):
+            raise GardenError("provisional wiki transaction manifest is malformed")
+        rel, old, new = change.get("path"), change.get("old"), change.get("new")
+        if (
+            not isinstance(rel, str)
+            or not isinstance(new, str)
+            or (old is not None and not isinstance(old, str))
+        ):
+            raise GardenError("provisional wiki transaction manifest is malformed")
+        changes.append((rel, old, new))
+    return changes
+
+
+def _write_manifest(root: Path, manifest: Mapping[str, Any]) -> None:
+    """Persist and flush the transaction record before anything depends on it."""
+    atomic_write(
+        root,
+        _manifest_rel(str(manifest["plan"]["plan_id"])),
+        json.dumps(manifest, sort_keys=True, indent=2) + "\n",
+        durable=True,
+    )
+
+
+def _log_rel(manifest: Mapping[str, Any]) -> str:
+    return f"{manifest['plan']['path']}/wiki/log.md"
+
+
+def _is_logged(current: str | None, expected: str) -> bool:
+    """The wiki log is append-only, so a pending apply may already have added
+    its evaluation event on top of the planned text."""
+    return current is not None and current.startswith(expected.rstrip("\n"))
+
+
+def _undo(root: Path, manifest: Mapping[str, Any], written: list[str]) -> None:
+    backups = manifest["backups"]
+    for rel in reversed(written):
+        restore = backups.get(rel)
+        if isinstance(restore, str):
+            atomic_write(root, rel, restore)
+        else:
+            remove_contained(root, rel)
+    remove_contained(root, str(manifest["plan"]["path"]))
+    remove_contained(root, _manifest_rel(str(manifest["plan"]["plan_id"])))
+
+
+def _commit(root: Path, manifest: dict[str, Any], created: list[str]) -> list[str]:
+    """Close the transaction: log the event, record the real bytes, audit it."""
+    plan = manifest["plan"]
+    plan_id = str(plan["plan_id"])
+    append_log_event(
+        resolve_contained(root, str(plan["path"])),
+        "evaluation",
+        "",
+        "qualified provisional local wiki created",
+        pages=[],
+        sources=[],
+        confidence="unknown",
+        outcome="provisional",
+        audit=_manifest_rel(plan_id).as_posix(),
+    )
+    log_rel = _log_rel(manifest)
+    log_text = _read_text(root, log_rel)
+    for change in plan["changes"]:
+        if isinstance(change, dict) and change.get("path") == log_rel and log_text is not None:
+            change["new"] = log_text
+    manifest["state"] = "applied"
+    manifest["created"] = created
+    _write_manifest(root, manifest)
+    backup_files = manifest.get("backup_files", {})
+    registry_backup = backup_files.get(REGISTRY_PATH.as_posix())
+    append_audit(
+        root,
+        "provisional-wiki-create",
+        {
+            "wiki": str(plan["wiki"]),
+            "path": str(plan["path"]),
+            "plan_id": plan_id,
+            "provisional": True,
+            "registry_backup": registry_backup if isinstance(registry_backup, str) else None,
+            "manifest": _manifest_rel(plan_id).as_posix(),
+        },
+    )
+    return created
+
+
+def _resume(root: Path, manifest: dict[str, Any]) -> list[str]:
+    """Finish an apply that a signal or power loss interrupted mid-transaction.
+
+    The manifest carries the whole plan, so recovery never needs a second plan
+    and never trusts anything the transaction did not itself write.
+    """
+    log_rel = _log_rel(manifest)
+    changes = _manifest_changes(manifest)
+    for rel, old, new in changes:
+        current = _read_text(root, rel)
+        if current == new or (rel == log_rel and _is_logged(current, new)):
+            continue
+        if current is not None and current != old:
+            raise GardenError(
+                f"provisional wiki apply cannot resume: {rel} changed outside the transaction; "
+                "roll back with `--rollback --plan-id` and re-plan"
+            )
+        atomic_write(root, rel, new)
+    return _commit(root, manifest, [rel for rel, _old, _new in changes])
+
+
+def _resume_or_verify(
+    root: Path, manifest: dict[str, Any], name: str, path: str
+) -> tuple[str, list[str]]:
+    plan = manifest["plan"]
+    if plan["wiki"] != name or plan["path"] != path:
+        raise GardenError(
+            f"provisional wiki plan {plan['plan_id']} was recorded for {plan['wiki']} at "
+            f"{plan['path']}, not {name} at {path}; re-run the dry run for these arguments"
+        )
+    if manifest["state"] == "applied":
+        expected = {rel: new for rel, _old, new in _manifest_changes(manifest)}
+        for rel in manifest["created"]:
+            if _read_text(root, rel) != expected.get(rel):
+                raise GardenError(
+                    f"provisional wiki apply is not idempotent: generated file changed: {rel}"
+                )
+        return "noop", []
+    return "applied", _resume(root, manifest)
+
+
+def resume_provision(
+    root: Path, plan_id: str, name: str, path: str
+) -> tuple[str, list[str]] | None:
+    """Replay or recover an apply from its transaction record alone.
+
+    Returns None when there is nothing to resume, so a caller falls through to
+    planning. A record that exists but was written for other arguments refuses
+    rather than applying something the reviewer did not approve.
+    """
+    manifest = _read_manifest(root, plan_id)
+    if manifest is None or manifest["state"] == "rolled_back":
+        return None
+    if manifest["plan"]["plan_id"] != plan_id:
+        raise GardenError(f"provisional wiki transaction manifest is not for plan {plan_id}")
+    return _resume_or_verify(root, manifest, name, path)
+
+
 def apply_provision_plan(root: Path, plan: ProvisionPlan, approved_plan_id: str) -> list[str]:
-    """Apply exactly a reviewed plan, recovering all partial writes on failure."""
+    """Apply exactly a reviewed plan as a write-ahead transaction.
+
+    The manifest and every required backup are persisted and flushed before the
+    first target mutation, so an interrupted apply is always recoverable: a
+    later apply resumes it and `rollback_provision` undoes it completely.
+    """
     if approved_plan_id != plan.plan_id:
         raise GardenError(
             f"provisional wiki plan id mismatch: expected {plan.plan_id}; re-run the dry run"
         )
-    manifest_rel = Path(MEGAMIND_DIR) / "audit" / f"provisional-wiki-{plan.plan_id}.json"
-    manifest_path = resolve_contained(root, manifest_rel)
-    if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        created_manifest = manifest.get("created", [])
-        changes_manifest = manifest.get("plan", {}).get("changes", [])
-        if not isinstance(created_manifest, list) or not isinstance(changes_manifest, list):
-            raise GardenError("provisional wiki rollback manifest is malformed")
-        for raw_rel in created_manifest:
-            if not isinstance(raw_rel, str):
-                raise GardenError("provisional wiki rollback manifest has an invalid path")
-            rel = raw_rel
-            path = resolve_contained(root, rel)
-            expected = next(
-                (
-                    x.get("new")
-                    for x in changes_manifest
-                    if isinstance(x, dict) and x.get("path") == rel
-                ),
-                None,
-            )
-            if not path.is_file() or content_hash(path.read_text(encoding="utf-8")) != content_hash(
-                str(expected)
-            ):
-                raise GardenError(
-                    f"provisional wiki apply is not idempotent: generated file changed: {rel}"
-                )
-        return []
+    existing = _read_manifest(root, plan.plan_id)
+    if existing is not None and existing["state"] != "rolled_back":
+        return _resume_or_verify(root, existing, plan.name, plan.path)[1]
     resolved_changes: list[tuple[str, str | None, str]] = []
     for change in plan.changes:
         raw_rel, raw_old, raw_new = change["path"], change["old"], change["new"]
@@ -894,119 +1123,75 @@ def apply_provision_plan(root: Path, plan: ProvisionPlan, approved_plan_id: str)
             raise GardenError("provisional wiki plan contains invalid change data")
         resolved_changes.append((raw_rel, raw_old, raw_new))
     for rel, old, _new in resolved_changes:
-        current = resolve_contained(root, rel)
-        current_text = current.read_text(encoding="utf-8") if current.is_file() else None
-        if current_text != old:
+        if _read_text(root, rel) != old:
             raise GardenError(f"provisional wiki plan is stale or tampered: {rel}")
-    created: list[str] = []
     backups: dict[str, str] = {}
-    registry_backup_name: str | None = None
+    backup_files: dict[str, str] = {}
+    for rel, old, _new in resolved_changes:
+        if old is not None:
+            backups[rel] = old
+            backup = backup_existing(root, rel, durable=True)
+            if backup is not None:
+                backup_files[rel] = backup.name
+    manifest: dict[str, Any] = {
+        "schema": PROVISION_MANIFEST_SCHEMA,
+        "state": "pending",
+        "plan": plan.to_data(),
+        # The intended set, so a rollback after a crash covers every target the
+        # transaction was still allowed to touch, written or not.
+        "created": [rel for rel, _old, _new in resolved_changes],
+        "backups": backups,
+        "backup_files": backup_files,
+    }
+    _write_manifest(root, manifest)
+    written: list[str] = []
     try:
-        for rel, old, new in resolved_changes:
-            if old is not None:
-                backups[rel] = old
-                backup = backup_existing(root, rel)
-                if rel == REGISTRY_PATH.as_posix() and backup is not None:
-                    registry_backup_name = backup.name
-            atomic_write(root, rel, str(new))
-            created.append(rel)
-        append_log_event(
-            resolve_contained(root, plan.path),
-            "evaluation",
-            "",
-            "qualified provisional local wiki created",
-            pages=[],
-            sources=[],
-            confidence="unknown",
-            outcome="provisional",
-            audit=manifest_rel.as_posix(),
-        )
-        plan_data = plan.to_data()
-        log_rel = f"{plan.path}/wiki/log.md"
-        log_path = resolve_contained(root, log_rel)
-        for change in plan_data["changes"]:
-            if isinstance(change, dict) and change.get("path") == log_rel:
-                change["new"] = log_path.read_text(encoding="utf-8")
-        manifest = {
-            "schema": "megamind/provisional-wiki-rollback/v1",
-            "plan": plan_data,
-            "created": created,
-            "backups": backups,
-        }
-        atomic_write(root, manifest_rel, json.dumps(manifest, sort_keys=True, indent=2) + "\n")
-        append_audit(
-            root,
-            "provisional-wiki-create",
-            {
-                "wiki": plan.name,
-                "path": plan.path,
-                "plan_id": plan.plan_id,
-                "provisional": True,
-                "registry_backup": registry_backup_name,
-                "manifest": manifest_rel.as_posix(),
-            },
-        )
+        for rel, _old, new in resolved_changes:
+            atomic_write(root, rel, new)
+            written.append(rel)
+        return _commit(root, manifest, written)
     except BaseException:
-        for rel in reversed(created):
-            if rel in backups:
-                atomic_write(root, rel, backups[rel])
-            else:
-                remove_contained(root, rel)
-        remove_contained(root, plan.path)
+        _undo(root, manifest, written)
         raise
-    return created
 
 
 def rollback_provision(root: Path, plan_id: str) -> list[str]:
-    manifest_rel = Path(MEGAMIND_DIR) / "audit" / f"provisional-wiki-{plan_id}.json"
-    manifest_path = resolve_contained(root, manifest_rel)
-    if not manifest_path.is_file():
+    """Undo an applied or interrupted transaction, refusing on tampered content."""
+    manifest = _read_manifest(root, plan_id)
+    if manifest is None:
         raise GardenError(f"provisional wiki rollback manifest not found: {plan_id}")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema") != "megamind/provisional-wiki-rollback/v1":
-        raise GardenError("provisional wiki rollback manifest is invalid")
-    created_manifest = manifest.get("created", [])
-    changes_manifest = manifest.get("plan", {}).get("changes", [])
-    backups_manifest = manifest.get("backups", {})
-    plan_manifest = manifest.get("plan", {})
-    if (
-        not isinstance(created_manifest, list)
-        or not isinstance(changes_manifest, list)
-        or not isinstance(backups_manifest, dict)
-        or not isinstance(plan_manifest, dict)
-    ):
-        raise GardenError("provisional wiki rollback manifest is malformed")
+    if manifest["state"] == "rolled_back":
+        raise GardenError(f"provisional wiki plan was already rolled back: {plan_id}")
+    pending = manifest["state"] == "pending"
+    log_rel = _log_rel(manifest)
+    changes = _manifest_changes(manifest)
+    expected = {rel: new for rel, _old, new in changes}
+    previous = {rel: old for rel, old, _new in changes}
+    created = [str(rel) for rel in manifest["created"]]
+    for rel in created:
+        current = _read_text(root, rel)
+        if current is None or current == expected.get(rel):
+            continue
+        # A pending transaction may not have reached this target yet, and may
+        # already have appended its evaluation event to the wiki log.
+        untouched = current == previous.get(rel)
+        logged = rel == log_rel and _is_logged(current, expected.get(rel, ""))
+        if pending and (untouched or logged):
+            continue
+        raise GardenError(f"rollback refused: generated file changed: {rel}")
     removed: list[str] = []
-    for raw_rel in created_manifest:
-        if not isinstance(raw_rel, str):
-            raise GardenError("provisional wiki rollback manifest has an invalid path")
-        rel = raw_rel
-        path = resolve_contained(root, rel)
-        expected = next(
-            (
-                x.get("new")
-                for x in changes_manifest
-                if isinstance(x, dict) and x.get("path") == rel
-            ),
-            None,
-        )
-        if path.is_file() and content_hash(path.read_text(encoding="utf-8")) != content_hash(
-            str(expected)
-        ):
-            raise GardenError(f"rollback refused: generated file changed: {rel}")
-    for raw_rel in reversed(created_manifest):
-        if not isinstance(raw_rel, str):
-            raise GardenError("provisional wiki rollback manifest has an invalid path")
-        rel = raw_rel
-        if rel in backups_manifest and isinstance(backups_manifest[rel], str):
-            atomic_write(root, rel, backups_manifest[rel])
+    backups = manifest["backups"]
+    for rel in reversed(created):
+        restore = backups.get(rel)
+        if isinstance(restore, str):
+            atomic_write(root, rel, restore)
         else:
             remove_contained(root, rel)
         removed.append(rel)
-    plan_path = plan_manifest.get("path")
-    if not isinstance(plan_path, str):
-        raise GardenError("provisional wiki rollback manifest has no wiki path")
-    remove_contained(root, plan_path)
+    remove_contained(root, str(manifest["plan"]["path"]))
+    manifest["state"] = "rolled_back"
+    manifest["created"] = []
+    _write_manifest(root, manifest)
     append_audit(root, "provisional-wiki-rollback", {"plan_id": plan_id, "removed": removed})
     return removed
 
