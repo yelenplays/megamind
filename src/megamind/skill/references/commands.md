@@ -54,7 +54,8 @@ the 0.05 ambiguity band (`offers[]` choices, nothing loaded), `no-match`
 under the 0.25 floor, plus `unavailable` and `privacy-filtered`. Matches
 carry per-match `confidence`, `freshness`, `reasons`, and a privacy-safe
 `evidence` summary (routing class, numeric coverage, signal classes/counts,
-and declared card provenance; no raw request-derived tokens or page content);
+and declared card provenance; `evidence.lexical_classes` contains only
+signal-class labels, with no raw request-derived tokens or page content);
 `offers[]` entries carry the same evidence but no path, follow-up, or budget.
 An authorized match that carries a load path also carries the card's exact
 numeric `context_budget` override; offers, filtered, withheld, broken,

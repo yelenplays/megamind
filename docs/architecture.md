@@ -173,7 +173,8 @@ the result: a confident match states `matched` and gives exact per-wiki
 follow-up commands with per-match confidence, freshness, the exact card
 `context_budget`, and a bounded lexical/semantic evidence summary. That
 summary reports routing class, numeric coverage, signal classes/counts,
-and card-only provenance without request-derived tokens or page content, while
+and card-only provenance without request-derived tokens or page content;
+`evidence.lexical_classes` contains only deterministic signal-class labels, while
 `reasons` keeps its literal lexical strings. Only an authorized match that
 carries a load path carries the budget; sub-floor or banded matches state
 `ambiguous` and offer the same evidence as choices that carry neither a

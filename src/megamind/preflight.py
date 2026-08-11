@@ -221,7 +221,7 @@ def _evidence_summary(
             "scope": "declared card metadata only",
             "page_content": False,
         },
-        "lexical": list(classes),
+        "lexical_classes": list(classes),
         "semantic": semantic_score,
     }
 

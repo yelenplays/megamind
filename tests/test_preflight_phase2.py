@@ -131,15 +131,29 @@ def test_matches_carry_confidence_freshness_and_evidence(vault: Path) -> None:
     assert set(freshness) == {"half_life_days", "last_confirmed", "stale"}
     evidence = match["evidence"]
     assert isinstance(evidence, dict)
+    assert set(evidence) == {
+        "routing_class",
+        "coverage",
+        "signal_classes",
+        "signal_counts",
+        "provenance",
+        "lexical_classes",
+        "semantic",
+    }
     assert evidence["routing_class"] == "lexical-card"
-    assert evidence["lexical"] == ["trigger", "scope"]
+    assert evidence["lexical_classes"] == ["trigger", "scope"]
+    assert set(evidence["lexical_classes"]) <= {"trigger", "name", "scope"}
+    assert "lexical" not in evidence
     assert evidence["coverage"] == {"matched_terms": 1, "request_terms": 2, "ratio": 0.5}
     assert evidence["provenance"] == {
         "source": "registry-card",
         "scope": "declared card metadata only",
         "page_content": False,
     }
-    assert "pricing" not in json.dumps(evidence)
+    evidence_json = json.dumps(evidence)
+    assert all(token not in evidence_json for token in ("how", "does", "pricing", "work"))
+    assert str(vault) not in evidence_json
+    assert "topics/" not in evidence_json
     assert evidence["semantic"] is None  # semantic disabled: no fabricated score
     # `reasons` keeps its v2 semantics: literal lexical reason strings
     assert match["reasons"] == ["trigger match: pricing", "scope match: pricing"]
@@ -180,7 +194,9 @@ def test_authorized_matches_preserve_card_context_budgets(vault: Path) -> None:
 
     filtered = run_preflight([_ref(vault)], "brand color palette", "cloud")
     assert filtered.status == "privacy-filtered"
-    assert all("context_budget" not in item for item in filtered.filtered)
+    assert all(
+        "context_budget" not in item and "evidence" not in item for item in filtered.filtered
+    )
 
     no_match = run_preflight([_ref(vault)], "quantum llama", "local")
     assert no_match.status == "no-match"
@@ -260,6 +276,7 @@ def test_budget_and_evidence_repeat_byte_stable(vault: Path) -> None:
         )
         assert json.dumps(first.offers, sort_keys=True) == json.dumps(second.offers, sort_keys=True)
         assert first.preflight_id == second.preflight_id
+        assert first.matches[0]["evidence"] == second.matches[0]["evidence"]
         assert first.matches[0]["context_budget"] == {
             "max_candidates": 2,
             "max_context_chars": 2345,
