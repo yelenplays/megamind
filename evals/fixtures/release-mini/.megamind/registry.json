@@ -1,11 +1,151 @@
 {
+  "budgets": {
+    "max_candidates": 4,
+    "max_context_chars": 400,
+    "micro_wiki_pages": 4,
+    "stale_days": 180,
+    "top_level_topics": 3
+  },
   "version": 2,
-  "budgets": {"max_candidates": 5, "max_context_chars": 1200, "stale_days": 180, "micro_wiki_pages": 4, "top_level_topics": 3},
   "wikis": [
-    {"name":"ProductWiki","path":"ProductWiki","privacy":"public-reference","description":"Synthetic product facts","purpose":"Pricing and release facts","keywords":["product","pricing","release","onboarding"],"triggers":["pricing","release","onboarding"],"model_access":{"local":"full","cloud":"full"},"context_budget":{"max_candidates":3,"max_context_chars":500}},
-    {"name":"OpsWiki","path":"OpsWiki","privacy":"company-private","description":"Synthetic operations","purpose":"Operations pricing controls","keywords":["operations","pricing","controls"],"triggers":["pricing","controls"],"model_access":{"local":"full","cloud":"none"},"context_budget":{"max_candidates":2,"max_context_chars":500}},
-    {"name":"PersonalWiki","path":"PersonalWiki","privacy":"personal-local","description":"Synthetic personal notes","purpose":"Private onboarding notes","keywords":["journal","onboarding"],"triggers":["journal"],"model_access":{"local":"full","cloud":"none"}},
-    {"name":"DigestWiki","path":"DigestWiki","privacy":"digest-only","description":"Synthetic digest","purpose":"Research digest","keywords":["research","study"],"triggers":["research"],"digest":"DigestWiki/DIGEST.md","model_access":{"local":"digest-only","cloud":"digest-only"}},
-    {"name":"ArchiveWiki","path":"ArchiveWiki","privacy":"pointer-only","description":"Synthetic archive","purpose":"Historical archive","keywords":["archive","history"],"triggers":["archive"],"routing_mode":"pointer","model_access":{"local":"none","cloud":"none"}}
+    {
+      "card": "ProductWiki/CARD.md",
+      "context_budget": {
+        "max_candidates": 3,
+        "max_context_chars": 500
+      },
+      "description": "Synthetic product facts",
+      "index": "ProductWiki/INDEX.md",
+      "keywords": [
+        "product",
+        "pricing",
+        "release",
+        "onboarding"
+      ],
+      "model_access": {
+        "cloud": "full",
+        "local": "full"
+      },
+      "name": "ProductWiki",
+      "path": "ProductWiki",
+      "privacy": "public-reference",
+      "purpose": "Pricing, release, and onboarding facts",
+      "triggers": [
+        "pricing",
+        "release",
+        "onboarding"
+      ]
+    },
+    {
+      "card": "OpsWiki/CARD.md",
+      "context_budget": {
+        "max_candidates": 2,
+        "max_context_chars": 500
+      },
+      "description": "Synthetic operations",
+      "index": "OpsWiki/INDEX.md",
+      "keywords": [
+        "operations",
+        "pricing",
+        "controls"
+      ],
+      "model_access": {
+        "cloud": "none",
+        "local": "full"
+      },
+      "name": "OpsWiki",
+      "path": "OpsWiki",
+      "privacy": "company-private",
+      "purpose": "Operations pricing controls",
+      "triggers": [
+        "pricing",
+        "controls"
+      ]
+    },
+    {
+      "card": "PersonalWiki/CARD.md",
+      "description": "Synthetic personal notes",
+      "index": "PersonalWiki/INDEX.md",
+      "keywords": [
+        "journal",
+        "routine"
+      ],
+      "model_access": {
+        "cloud": "none",
+        "local": "full"
+      },
+      "name": "PersonalWiki",
+      "path": "PersonalWiki",
+      "privacy": "personal-local",
+      "purpose": "Private routine and journal notes",
+      "triggers": [
+        "journal",
+        "routine"
+      ]
+    },
+    {
+      "card": "DigestWiki/CARD.md",
+      "description": "Synthetic digest",
+      "digest": "DigestWiki/DIGEST.md",
+      "index": "DigestWiki/INDEX.md",
+      "keywords": [
+        "research",
+        "study"
+      ],
+      "model_access": {
+        "cloud": "digest-only",
+        "local": "digest-only"
+      },
+      "name": "DigestWiki",
+      "path": "DigestWiki",
+      "privacy": "digest-only",
+      "purpose": "Research digest",
+      "triggers": [
+        "research",
+        "study"
+      ]
+    },
+    {
+      "card": "ArchiveWiki/CARD.md",
+      "description": "Synthetic archive",
+      "keywords": [
+        "archive",
+        "history"
+      ],
+      "model_access": {
+        "cloud": "none",
+        "local": "none"
+      },
+      "name": "ArchiveWiki",
+      "path": "ArchiveWiki",
+      "privacy": "pointer-only",
+      "purpose": "Historical archive",
+      "routing_mode": "pointer",
+      "triggers": [
+        "archive",
+        "history"
+      ]
+    },
+    {
+      "card": "ProvisionalWiki/CARD.md",
+      "description": "Synthetic provisional scaffold",
+      "index": "ProvisionalWiki/INDEX.md",
+      "keywords": [
+        "notification",
+        "draft"
+      ],
+      "model_access": {
+        "cloud": "full",
+        "local": "full"
+      },
+      "name": "ProvisionalWiki",
+      "path": "ProvisionalWiki",
+      "privacy": "public-reference",
+      "provisional": true,
+      "purpose": "Draft notification coverage awaiting evaluation",
+      "triggers": [
+        "notification"
+      ]
+    }
   ]
 }

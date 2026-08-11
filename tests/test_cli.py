@@ -802,6 +802,8 @@ def test_new_commands_emit_schema_version_and_help(
         ["--root", str(vault), "preflight", "pricing", "--model-class", "local"],
         ["--root", str(vault), "migrate"],
         ["adopt", str(tmp_path / "new-legacy")],
+        ["bench"],
+        ["experiment"],
     ):
         if "new-legacy" in argv[-1]:
             (tmp_path / "new-legacy").mkdir(exist_ok=True)

@@ -1,3 +1,4 @@
 # Journal
-Private synthetic onboarding notes.
+
+Private synthetic journal notes.
 CANARY-PRIVATE-PERSONAL-9

@@ -36,7 +36,7 @@ with a stable `schema_version`:
 | `megamind/research-result/v1` | `research-result` |
 | `megamind/provisional-wiki-result/v1` | `provision-wiki` |
 | `megamind/benchmark-result/v1`, `megamind/benchmark-check/v1` | `bench run|check` |
-| `megamind/evaluation-plan/v1`, `megamind/evaluation-validation/v1`, `megamind/evaluation-score/v1`, `megamind/evaluation-record/v1` | `experiment plan|validate|score|record` |
+| `megamind/evaluation-plan/v1`, `megamind/evaluation-grader-packet/v1`, `megamind/evaluation-unblinding-map/v1`, `megamind/evaluation-validation/v1`, `megamind/evaluation-score/v1`, `megamind/evaluation-record/v1` | `experiment plan|validate|score|record` |
 | `megamind/error/v1` | any failure |
 
 The v2 retrieval documents are additive over their v1 shapes: every v1 field
@@ -217,7 +217,9 @@ paths are always root-relative.
 
 ## Evaluation contract
 
-`bench run` invokes the public `preflight` and `route` commands over the checked-in synthetic release fixture and emits tier-specific canonical metrics, context accounting, safety counts, and honest local baselines. `bench check` applies the versioned machine-readable gates. `experiment plan` freezes a task-set digest, prompt/model/tools/effort inputs, rubric, thresholds, seed, and three isolated wiki snapshots. The host supplies opaque-label arm outputs; `experiment validate` rejects malformed, incomplete, cross-arm, contaminated, or wrong-provenance outputs. `experiment score` applies only the frozen rubric and promotion rules. `experiment record` appends a bounded safe audit event with a rollback reference when needed. None of these commands invokes a model, worker, network, account, or external service.
+`bench run` invokes the public `preflight` and `route` commands over the checked-in synthetic release fixture and emits tier-specific canonical metrics, context accounting, safety counts, and honest local baselines. A query set without a registered `megamind/benchmark-query-set/v1` header is refused, and the emitted `benchmark_version` is the version that header declares. Thresholds are preregistered against the exact corpus, query-set, and task-set digests they gate, and `bench run`, `bench check`, and `experiment plan` all refuse a missing, stale, or tampered binding. A route candidate is only counted as loaded once preflight authorizes it for the declared model class, for every model class.
+
+`bench check` applies the versioned machine-readable gates; a tier with no queries scores zero rather than crashing, so an absent tier fails closed. `experiment plan` freezes a task-set digest, prompt/model/tools/effort inputs, rubric, thresholds, seed, and three isolated wiki snapshots, and emits three separate artifacts: the plan, a grader packet carrying only blind identities and the rubric, and a host-only unblinding map. The host supplies opaque-label arm outputs; `experiment validate` needs no map and rejects malformed, incomplete, cross-arm, contaminated, or wrong-provenance outputs. `experiment score` seals the blind per-label scores before it reads the map, then applies only the frozen rubric and promotion rules; an incomplete arm set is a typed `unsettled` document, never a traceback and never a promotion. `experiment record` appends a bounded safe audit event with a non-empty rollback reference when needed. Every evaluation output destination is refused when it resolves inside an evaluated root or any vault. None of these commands invokes a model, worker, network, account, or external service.
 
 ## Testing the contract
 

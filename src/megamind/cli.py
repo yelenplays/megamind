@@ -17,6 +17,7 @@ import argparse
 import json
 import shlex
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
@@ -47,6 +48,7 @@ from .doctor import run_doctor
 from .evaluation import (
     EvaluationError,
     check_benchmark,
+    guard_output_path,
     plan_experiment,
     read_json,
     record_evaluation,
@@ -1134,20 +1136,34 @@ def cmd_setup_skill(dest: str | None) -> tuple[Doc, int]:
     return doc, 0
 
 
-def _evaluation_out(document: Doc, raw: str | None) -> Doc:
+def _guard_evaluation_outs(raw: Sequence[str | None], forbidden: Sequence[Path] = ()) -> None:
+    """Refuse an unsafe destination before any work runs or any artifact lands.
+
+    Checking every destination up front keeps a partially written artifact set
+    and a recorded audit event out of the failure path.
+    """
+    for value in raw:
+        if value:
+            guard_output_path(Path(value), forbidden)
+
+
+def _evaluation_out(document: Doc, raw: str | None, forbidden: Sequence[Path] = ()) -> Doc:
     if raw:
-        write_document(Path(raw), document)
+        write_document(Path(raw), document, forbidden_roots=forbidden)
     return document
 
 
 def cmd_bench(args: argparse.Namespace) -> tuple[Doc, int]:
     if args.bench_command == "run":
-        result = run_benchmark(Path(args.fixtures), Path(args.queries), Path(args.thresholds))
+        fixtures = Path(args.fixtures)
+        _guard_evaluation_outs([args.out], [fixtures])
+        result = run_benchmark(fixtures, Path(args.queries), Path(args.thresholds))
         if args.repeat:
-            repeated = run_benchmark(Path(args.fixtures), Path(args.queries), Path(args.thresholds))
+            repeated = run_benchmark(fixtures, Path(args.queries), Path(args.thresholds))
             if json.dumps(result, sort_keys=True) != json.dumps(repeated, sort_keys=True):
                 raise EvaluationError("benchmark repeatability check failed")
-        return _evaluation_out(result, args.out), 0
+        return _evaluation_out(result, args.out, [fixtures]), 0
+    _guard_evaluation_outs([args.out])
     result = check_benchmark(Path(args.results), Path(args.thresholds))
     return _evaluation_out(result, args.out), 0 if result["status"] == "passed" else 1
 
@@ -1155,11 +1171,13 @@ def cmd_bench(args: argparse.Namespace) -> tuple[Doc, int]:
 def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
     action = args.experiment_command
     if action == "plan":
-        result = plan_experiment(
+        arm_roots = [Path(args.no_wiki), Path(args.current_wiki), Path(args.updated_wiki)]
+        _guard_evaluation_outs([args.out, args.grader_out, args.map_out], arm_roots)
+        result, grader, unblinding = plan_experiment(
             Path(args.tasks),
-            Path(args.no_wiki),
-            Path(args.current_wiki),
-            Path(args.updated_wiki),
+            arm_roots[0],
+            arm_roots[1],
+            arm_roots[2],
             Path(args.rubric),
             Path(args.thresholds),
             args.model,
@@ -1168,19 +1186,28 @@ def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
             args.seed,
             Path(args.output_root),
         )
-        return _evaluation_out(result, args.out), 0
+        # The grader packet and the unblinding map are separate artifacts on
+        # purpose: whoever grades the arms must never hold the map.
+        write_document(Path(args.grader_out), grader, forbidden_roots=arm_roots)
+        write_document(Path(args.map_out), unblinding, forbidden_roots=arm_roots)
+        return _evaluation_out(result, args.out, arm_roots), 0
     if action == "record":
+        audit_root = Path(args.audit_root)
+        _guard_evaluation_outs([args.out], [audit_root])
         score = read_json(Path(args.score), "evaluation score")
         if not isinstance(score, dict):
             raise EvaluationError("evaluation score must be an object")
-        result = record_evaluation(Path(args.audit_root), score)
-        return _evaluation_out(result, args.out), 0
+        result = record_evaluation(audit_root, score)
+        return _evaluation_out(result, args.out, [audit_root]), 0
     plan = Path(args.plan)
+    _guard_evaluation_outs([args.out])
     if action == "validate":
         result = validate_experiment(plan, [Path(path) for path in args.outputs])
         return _evaluation_out(result, args.out), 0 if result["status"] == "valid" else 1
     if action == "score":
-        result = score_experiment(plan, [Path(path) for path in args.outputs])
+        result = score_experiment(
+            plan, [Path(path) for path in args.outputs], Path(args.unblinding_map)
+        )
         return _evaluation_out(result, args.out), 0 if result["status"] == "promoted" else 1
     raise UsageError("unknown experiment action")
 
@@ -1605,6 +1632,12 @@ def build_parser() -> AxiParser:
     p_exp_plan.add_argument("--seed", type=int, required=True)
     p_exp_plan.add_argument("--output-root", required=True)
     p_exp_plan.add_argument("--out", required=True)
+    p_exp_plan.add_argument(
+        "--grader-out", required=True, help="blind grader packet: labels and rubric only"
+    )
+    p_exp_plan.add_argument(
+        "--map-out", required=True, help="host-only unblinding map, kept apart from the grader"
+    )
     p_exp_validate = experiment_sub.add_parser(
         "validate", help="validate blinded, isolated host arm outputs"
     )
@@ -1618,6 +1651,11 @@ def build_parser() -> AxiParser:
     _common_flags(p_exp_score)
     p_exp_score.add_argument("--plan", required=True)
     p_exp_score.add_argument("--outputs", nargs="+", required=True)
+    p_exp_score.add_argument(
+        "--unblinding-map",
+        required=True,
+        help="host execution artifact mapping blind labels to conditions",
+    )
     p_exp_score.add_argument("--out", default=None)
     p_exp_record = experiment_sub.add_parser(
         "record", help="append a bounded safe evaluation audit event"
@@ -1876,6 +1914,10 @@ _ERROR_HELP: dict[str, list[str]] = {
     "garden_invalid": [
         f"Run `{EXECUTABLE} doctor` to validate governed records",
         "Check the typed gap, capacity, or bridge fields and retry",
+    ],
+    "evaluation_invalid": [
+        "Check the frozen fixture, query set, task set, rubric, and threshold digests",
+        f"Run `{EXECUTABLE} bench run --help` or `{EXECUTABLE} experiment plan --help` for inputs",
     ],
     "gap_not_found": [f"Run `{EXECUTABLE} gap list` to inspect durable gap ids"],
     "gap_transition_invalid": [

@@ -62,7 +62,7 @@ model are non-negotiable at every stage.
   baseline; the semantic backend is similarity reranking, not embeddings;
   preflight is host-invoked (no mandatory host enforcement yet)
 
-## v0.4 (this release): governed autonomous gardening
+## v0.4: governed autonomous gardening
 
 - Durable semantic-identity gap journals for missing, weak, stale, and
   contradictory coverage, with priority, attempts, cooldowns, rejection,
@@ -94,19 +94,33 @@ model are non-negotiable at every stage.
   once confidence coverage and a later evaluation clear it, with no command
   behind it
 
-## v0.5 (Phase 4 evaluation): shipped
+## v0.5 (this release): Phase 4 evaluation
 
 - Frozen, publishable synthetic release benchmark (`bench run|check`) over real
   public CLI interfaces, with tier-specific routing, privacy/access, pointer and
   digest, canary, context, repeatability, and honest local baseline metrics
+- Thresholds are preregistered against the exact inputs they gate: every
+  threshold file names the benchmark version and the corpus, query-set, and
+  task-set digests it binds to, and a missing, stale, or tampered identity is
+  refused instead of scored
+- Declared model access is enforced for every model class: a route candidate is
+  only counted as loaded once preflight authorizes it for the declared class,
+  so pointer-only, digest-only, cloud-restricted, and provisional wikis are
+  surfaced without ever entering the authorized context
 - Versioned machine-readable task sets, rubrics, thresholds, canonical results,
   and bounded safe evaluation audit records
 - Isolated three-arm evaluation contract (`experiment plan|validate|score|record`)
   for no-wiki, current-wiki, and updated-wiki conditions. The host supplies arm
   outputs; Megamind never invokes a model, worker, network, account, or service
-- Blind opaque arm labels, frozen provenance digests, cross-arm contamination
-  checks, authorized-context accounting, rollback-required and unsettled outcomes,
-  and restrictive provisional governance
+- Conditions are assigned to blind labels by a deterministic seeded permutation.
+  The grader packet carries only blind identities and the rubric; the unblinding
+  map is a separate host artifact, and scoring seals the blind scores before it
+  reads that map
+- Frozen provenance digests, cross-arm contamination checks, authorized-context
+  accounting, rollback-required and unsettled outcomes, and restrictive
+  provisional governance
+- The frozen fixture is generated, not hand-written: `evals/gen_corpus.py` is
+  the only source of its bytes and a test requires an exact match
 
 ## Later / undecided
 
