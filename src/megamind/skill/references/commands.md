@@ -140,7 +140,10 @@ when non-empty, bounded to 20 items unless `--full`). Read-only.
 
 `megamind/doctor-report/v1`: `status`, `errors`, `warnings`, and a
 `findings[N]{check,severity,path,message}` table (bounded to 50 unless
-`--full`). Exit 1 when any finding is an error.
+`--full`). Exit 1 when any finding is an error. Both root shapes report: a
+canonical wiki root with a card and no registry is validated as a canonical
+root (required directories, a named card, the gap journal) instead of failing
+as an uninitialized registry.
 
 ## megamind-axi config show
 

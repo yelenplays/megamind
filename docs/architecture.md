@@ -222,8 +222,11 @@ turns a provisional wiki into an authorized load.
   never leak machine-specific locations.
 - `doctor` re-checks the invariants: containment, unsafe symlinks, router
   consistency, metadata validity, link integrity, proposal hygiene, registry
-  schema version, access-policy contradictions, and wiki-shaped directories
-  that were never registered.
+  schema version, access-policy contradictions, gap-journal integrity, and
+  wiki-shaped directories that were never registered. It reports on both root
+  shapes: a root that carries a card and no registry is validated as a
+  canonical root (required directories, a named card, and the same gap
+  journal) instead of failing as an uninitialized registry.
 
 ## Determinism
 

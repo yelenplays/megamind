@@ -31,8 +31,10 @@ ladders and one rule:
   with strict context budgets. A query returns the few files worth opening and
   the reasons why, not a wall of content.
 - **Evolution ladder**: idea -> topic page -> micro-wiki folder -> top-level
-  wiki. Knowledge is promoted when it earns it. Creating a new top-level wiki
-  always requires explicit human approval.
+  wiki. Knowledge is promoted when it earns it, and a new wiki is never a side
+  effect: promoting a micro-wiki needs explicit human approval, and the
+  provisional creation path needs every qualification criterion stated up
+  front.
 - **Proposal-first rule**: automatic capture only ever writes a local proposal
   draft. Permanent wiki changes require review and an explicit approval token.
 
@@ -127,6 +129,42 @@ megamind-axi preflight "how do we price cleanup offers" --estate ~/Wikis --model
   consultation happened. It never reads page content, never writes anything,
   and never calls a model or the network; whether and when to run it is the
   host's policy.
+
+## Governed gardening: gaps, research waves, provisional wikis
+
+Megamind carries gardening work across sessions without becoming an agent
+runtime. It stores the facts and emits the plans; the host keeps dispatch,
+external research, model choice, quotas, scheduling, approvals, and cost:
+
+```sh
+megamind-axi gap create --wiki ProductWiki --topic "rate limits" --kind weak
+megamind-axi research-wave <gap-id> --capacity-known \
+  --applicable-quota 100 --reserve-quota 25    # a plan, never a dispatch
+megamind-axi research-result --nomination-json <json> --result-json <json>
+```
+
+- **Durable gaps** (`.megamind/gaps.jsonl`) record missing, weak, stale, and
+  contradictory coverage under a semantic identity, so the same gap reported
+  twice coalesces instead of piling up. Priority, attempts, cooldowns,
+  rejection, reopen, and supersession are kept, never overwritten.
+- **Research waves** are one hop: the direct gap plus bounded first-order
+  topics, deeper topics deferred as nominations. Unknown capacity, a full
+  three-worker fleet, a worker already on the target wiki, active captain
+  work, or less than a 25 percent quota reserve is a typed pause or refusal.
+  Megamind starts no worker and calls no quota tool.
+- **Host research results** return by correlation id and are replay-safe;
+  eligible sources become an immutable-source ingest proposal. Nothing is
+  fetched, and `raw/` stays human-curated.
+- **Provisional wikis** (`provision-wiki`) are the qualified local creation
+  path: accepted domain, repeat demand, multiple topics, overlap, scope and
+  exclusions, owner, source policy, privacy and model access, seed topics, and
+  maintenance must all pass. The wiki is registered restrictively as
+  `provisional` - surfaced and offered, never auto-loaded - until confidence
+  coverage and an evaluation pass clear it. No remote repository, account,
+  publication, or spend is ever involved.
+
+[docs/schemas.md](docs/schemas.md) owns the record formats and
+[docs/architecture.md](docs/architecture.md) the design.
 
 ## Concepts
 

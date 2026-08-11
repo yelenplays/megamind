@@ -25,7 +25,10 @@ contract), `docs/architecture.md` (design and scoring weights),
   still rejected. The access policy in `src/megamind/access.py` is the single
   authority for sensitivity/model-access derivation and clamping; unknown or
   contradictory classifications always resolve restrictively, and no other
-  layer may widen them. The fleet catalog (`catalog.py`) and `preflight` are
+  layer may widen them. The `provisional` governance marker follows the same
+  one-way rule: `catalog`, `route`, and `preflight` each surface it, and none
+  of them may turn a provisional wiki into an authorized load. The fleet
+  catalog (`catalog.py`) and `preflight` are
   read-only projections over per-wiki cards (registry entries or canonical
   `.megamind/wiki-card.json` roots); they never read page content, redaction
   happens only at the projection boundary, and projections stay byte-stable
