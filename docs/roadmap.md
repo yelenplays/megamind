@@ -123,6 +123,14 @@ model are non-negotiable at every stage.
   provisional governance
 - The frozen fixture is generated, not hand-written: `evals/gen_corpus.py` is
   the only source of its bytes and a test requires an exact match
+- Known limitations, all deliberate boundaries: the frozen corpus is
+  synthetic, so the release benchmark measures routing mechanism and safety
+  rather than general model quality; Megamind plans, validates, and scores,
+  while the host owns model execution and its blind grading controls; a
+  passing evaluation is evidence, not promotion, so a provisional wiki
+  stays untrusted until a deliberate card edit; and value on real wikis,
+  along with generalization beyond the frozen corpus, is left to the
+  governed Phase 5 pilot
 
 ## Later / undecided
 

@@ -224,13 +224,67 @@ possible.
 
 ## megamind-axi bench run|check
 
-`bench run --fixtures DIR --queries FILE --thresholds FILE [--out FILE]` invokes the real public `preflight` and `route` interfaces over the frozen synthetic release fixture. It emits `megamind/benchmark-result/v1` with separate exact, near, paraphrase, ambiguous, no-match, and privacy metrics, authorized context accounting, canary/access safety counts, determinism, and local grep/full-vault baselines. The query set must carry a registered `megamind/benchmark-query-set/v1` frozen header, and the threshold file must carry a `[binding]` section naming the corpus, query-set, and task-set digests it gates plus a complete, in-range `[release]` section; a missing, stale, tampered, or malformed identity or gate is refused before anything is written. A route candidate is only counted as loaded once `preflight` authorizes it for the declared model class, for every model class. Measured calls inherit the caller's `PYTHONHASHSEED`; `--repeat` reruns under a different explicit seed and requires byte-identical output. `bench check --results FILE --thresholds FILE` emits `megamind/benchmark-check/v1` and exits 1 when a frozen gate fails; a tier with no queries scores zero rather than passing. No model, network, or external service is used.
+`bench run --fixtures DIR --queries FILE --thresholds FILE [--out FILE]`
+invokes the real public `preflight` and `route` interfaces over the frozen
+synthetic release fixture. It emits `megamind/benchmark-result/v1` with
+separate exact, near, paraphrase, ambiguous, no-match, and privacy metrics,
+authorized context accounting, canary/access safety counts, determinism, and
+local grep/full-vault baselines. The query set must carry a registered
+`megamind/benchmark-query-set/v1` frozen header, and the threshold file must
+carry a `[binding]` section naming the corpus, query-set, and task-set
+digests it gates plus a complete, in-range `[release]` section; a missing,
+stale, tampered, or malformed identity or gate is refused before anything is
+written. A route candidate is only counted as loaded once `preflight`
+authorizes it for the declared model class, for every model class. Measured
+calls inherit the caller's `PYTHONHASHSEED`; `--repeat` reruns under a
+different explicit seed and requires byte-identical output. `bench check
+--results FILE --thresholds FILE` emits `megamind/benchmark-check/v1` and
+exits 1 when a frozen gate fails; a tier with no queries scores zero rather
+than passing. No model, network, or external service is used.
 
 ## megamind-axi experiment keygen|plan|validate|score|record
 
-`experiment keygen --out FILE` writes a new private 256-bit blinding key, creating the file mode 0600 from its first syscall, refusing to overwrite an existing key, and removing a partial file if the write fails. It emits `megamind/evaluation-key/v1` with the path and a `key_id` fingerprint, never the key. This is the only command that uses OS entropy; everything downstream stays deterministic once the frozen key exists.
+`experiment keygen --out FILE` writes a new private 256-bit blinding key,
+creating the file mode 0600 from its first syscall, refusing to overwrite an
+existing key, and removing a partial file if the write fails. It emits
+`megamind/evaluation-key/v1` with the path and a `key_id` fingerprint, never
+the key. This is the only command that uses OS entropy; everything
+downstream stays deterministic once the frozen key exists.
 
-`experiment plan` freezes a versioned task set, rubric, thresholds, model/provider identifier, tools, effort, execution seed, and distinct no-wiki/current-wiki/updated-wiki snapshot roots. It takes the host's private blinding key from `--blinding-key-file`: a machine-generated 256-bit key, exactly 64 lowercase hex characters, in its own file that is not group- or world-readable. Generate one with `megamind-axi experiment keygen --out blinding.key`; passphrases, wrong lengths, repetitive values, and loose file permissions are refused. The command creates opaque arm labels and isolated arm output roots, and writes three separate artifacts: the plan (`--out`), a grader packet with only blind identities, the rubric, and a keyed commitment (`--grader-out`), and the host-only unblinding map holding the key, the assignment, and the snapshot roots (`--map-out`, mode 0600). Neither public artifact carries enough to derive which label is which condition, and no artifact outside the map carries a raw snapshot digest, so the constant empty-tree hash cannot identify the no-wiki arm. The host executes identical tasks and supplies outputs; Megamind never invokes a worker or model. `validate --plan PLAN --outputs FILE...` needs no map or key and rejects missing tasks, duplicate arms, snapshot commitments that do not cover the planned set exactly once, malformed context accounting, prompt/canary leakage, model-access or privacy violations, and cross-arm contamination. `score --plan PLAN --outputs FILE... --unblinding-map FILE` seals the blind per-label scores before opening the map at all, accepts the map only if it opens the plan's commitments under the key the plan names, then applies only the frozen rubric and promotion gates, returning `promoted` or `rollback-required`. An incomplete arm set is sealed the same way and returns a typed `unsettled` document; the map is then opened only to derive the roots an `--out` destination must stay outside of, so without `--out` an unreadable map still yields `unsettled`, while with `--out` an unvalidated map is refused rather than written around. No assignment ever reaches the result. `record --score FILE --audit-root DIR` appends a bounded safe hash-chained event with a rollback reference and no prompt, answer, secret, or sensitive-content copy. Every output destination inside an evaluated root - fixture, arm snapshot, output tree, or audit root - or any vault is refused before anything is written.
+`experiment plan` freezes a versioned task set, rubric, thresholds,
+model/provider identifier, tools, effort, execution seed, and distinct
+no-wiki/current-wiki/updated-wiki snapshot roots. It takes the host's
+private blinding key from `--blinding-key-file`: a machine-generated 256-bit
+key, exactly 64 lowercase hex characters, in its own file that is not group-
+or world-readable. Generate one with `megamind-axi experiment keygen --out
+blinding.key`; passphrases, wrong lengths, repetitive values, and loose file
+permissions are refused. The command creates opaque arm labels and isolated
+arm output roots, and writes three separate artifacts: the plan (`--out`), a
+grader packet with only blind identities, the rubric, and a keyed commitment
+(`--grader-out`), and the host-only unblinding map holding the key, the
+assignment, and the snapshot roots (`--map-out`, mode 0600). Neither public
+artifact carries enough to derive which label is which condition, and no
+artifact outside the map carries a raw snapshot digest, so the constant
+empty-tree hash cannot identify the no-wiki arm. The host executes identical
+tasks and supplies outputs; Megamind never invokes a worker or model.
+`validate --plan PLAN --outputs FILE...` needs no map or key and rejects
+missing tasks, duplicate arms, snapshot commitments that do not cover the
+planned set exactly once, malformed context accounting, prompt/canary
+leakage, model-access or privacy violations, and cross-arm contamination.
+`score --plan PLAN --outputs FILE... --unblinding-map FILE` seals the blind
+per-label scores before opening the map at all, accepts the map only if it
+opens the plan's commitments under the key the plan names, then applies only
+the frozen rubric and promotion gates, returning `promoted` or
+`rollback-required`. An incomplete arm set is sealed the same way and
+returns a typed `unsettled` document; the map is then opened only to derive
+the roots an `--out` destination must stay outside of, so without `--out` an
+unreadable map still yields `unsettled`, while with `--out` an unvalidated
+map is refused rather than written around. No assignment ever reaches the
+result. `record --score FILE --audit-root DIR` appends a bounded safe
+hash-chained event with a rollback reference and no prompt, answer, secret,
+or sensitive-content copy. Every output destination inside an evaluated
+root - fixture, arm snapshot, output tree, or audit root - or any vault is
+refused before anything is written.
 
 ## megamind-axi setup skill [--dest DIR]
 
@@ -246,5 +300,5 @@ directory. Setup never makes network calls or edits shell/provider config.
 `plan_mismatch`, `approval_required`, `evolve_invalid`, `adopt_invalid`,
 `init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
 `garden_invalid`, `gap_not_found`, `gap_transition_invalid`,
-`provision_recovery_required`, `evaluation_invalid`), a sanitized `message`, and `help[]` with
-corrective commands.
+`provision_recovery_required`, `evaluation_invalid`), a sanitized `message`,
+and `help[]` with corrective commands.
