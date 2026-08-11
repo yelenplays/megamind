@@ -202,9 +202,12 @@ the full component rationale.
 `capture_invalid`, `proposal_not_found`, `plan_mismatch`, `approval_required`,
 `evolve_invalid`, `adopt_invalid`, `init_invalid`, `path_escape`,
 `frontmatter_invalid`, `io_error`, `garden_invalid`, `gap_not_found`,
-`gap_transition_invalid`. Malformed vault content and
-filesystem failures are reported as `frontmatter_invalid` and `io_error`
-documents with exit 1; no invocation ever ends in a traceback. Messages never
+`gap_transition_invalid`, `provision_recovery_required`. Malformed vault
+content and filesystem failures are reported as `frontmatter_invalid` and
+`io_error` documents with exit 1; no invocation ever ends in a traceback.
+`provision_recovery_required` is the one failure that deliberately leaves
+durable state: an apply that could not fully undo itself keeps its transaction
+record so the retry or the explicit rollback stays available. Messages never
 include machine-specific absolute paths from inside the vault model; registry
 paths are always root-relative.
 

@@ -14,6 +14,8 @@ from megamind.gardening import (
     InvalidTransition,
     PriorityInputs,
     ProvisionCriteria,
+    ProvisionPlan,
+    ProvisionRecoveryRequired,
     _short,
     apply_provision_plan,
     ingest_research_result,
@@ -409,10 +411,13 @@ def test_provision_apply_crash_recovers_without_an_orphan(
         apply_provision_plan(tmp_path, plan, plan.plan_id)
     assert not (tmp_path / "CrashWiki").exists()
     assert load_registry(tmp_path).wiki_by_name("CrashWiki") is None
-    # An in-process recovery undoes the transaction, so no record is left to
-    # resume and a fresh apply is not blocked by it.
+    # A verified complete undo leaves nothing behind: no record to resume, no
+    # undo audit claiming something survived, and no block on a fresh apply.
     manifest = tmp_path / f".megamind/audit/provisional-wiki-{plan.plan_id}.json"
     assert not manifest.exists()
+    assert "provisional-wiki-undo" not in (tmp_path / ".megamind/audit/log.jsonl").read_text(
+        encoding="utf-8"
+    )
     monkeypatch.setattr(gardening, "atomic_write", original)
     assert apply_provision_plan(tmp_path, plan, plan.plan_id)
 
@@ -433,7 +438,9 @@ def kill_after(monkeypatch: pytest.MonkeyPatch, writes: int) -> None:
         return original(root, target, content, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(gardening, "atomic_write", killed)
-    monkeypatch.setattr(gardening, "_undo", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        gardening, "_undo", lambda *args, **kwargs: gardening.UndoOutcome("undone", "", [], 0)
+    )
 
 
 def test_an_interrupted_apply_leaves_a_recoverable_transaction(
@@ -777,37 +784,161 @@ def test_rollback_refuses_a_directory_standing_where_a_target_belongs(tmp_path: 
         resume_provision(tmp_path, plan.plan_id, "SwapWiki", "SwapWiki")
 
 
-def test_an_in_process_undo_preserves_content_it_did_not_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The undo that runs when an apply raises follows the same rule: it removes
-    only what it wrote, so a page that appeared during the transaction stays."""
-    init_vault(tmp_path, starter=False)
-    plan = plan_provision_wiki(tmp_path, "UndoWiki", "UndoWiki", make_criteria())
+def interrupt_apply_with_a_concurrent_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, concurrent: Path
+) -> ProvisionPlan:
+    """Fail an apply part-way through, with foreign content appearing first."""
+    plan = plan_provision_wiki(tmp_path, name, name, make_criteria())
     import megamind.gardening as gardening
 
     original = gardening.atomic_write
     calls = 0
-    concurrent = tmp_path / "UndoWiki/wiki/topics/rate-limits.md"
 
     def crash(root: Path, target: str | Path, content: str, **kwargs: object) -> Path:
         nonlocal calls
         calls += 1
         if calls == 6:
-            concurrent.parent.mkdir(parents=True)
+            concurrent.parent.mkdir(parents=True, exist_ok=True)
             concurrent.write_text("written mid-transaction\n", encoding="utf-8")
             raise OSError("synthetic crash")
         return original(root, target, content, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(gardening, "atomic_write", crash)
-    with pytest.raises(OSError, match="synthetic crash"):
+    return plan
+
+
+def test_an_in_process_undo_preserves_content_it_did_not_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The undo that runs when an apply raises follows the same rule: it removes
+    only what it wrote, so a page that appeared during the transaction stays -
+    and it says so instead of leaving an unexplained directory behind."""
+    init_vault(tmp_path, starter=False)
+    concurrent = tmp_path / "UndoWiki/wiki/topics/rate-limits.md"
+    plan = interrupt_apply_with_a_concurrent_write(tmp_path, monkeypatch, "UndoWiki", concurrent)
+    with pytest.raises(ProvisionRecoveryRequired) as raised:
         apply_provision_plan(tmp_path, plan, plan.plan_id)
+
+    # The failure that caused the undo is retained, and the message identifies
+    # the transaction without naming paths the caller did not ask about.
+    assert isinstance(raised.value.__cause__, OSError)
+    assert str(raised.value.__cause__) == "synthetic crash"
+    assert plan.plan_id in str(raised.value)
+    assert "rate-limits.md" not in str(raised.value)
+    outcome = raised.value.outcome
+    assert outcome.status == "recovery_required"
+    assert outcome.preserved == ["UndoWiki/wiki/topics"]
+    assert outcome.preserved_total == 1
 
     assert concurrent.read_text(encoding="utf-8") == "written mid-transaction\n"
     assert load_registry(tmp_path).wiki_by_name("UndoWiki") is None
     assert not (tmp_path / "UndoWiki/CARD.md").exists()
     assert not (tmp_path / "UndoWiki/.megamind").exists()
-    assert not (tmp_path / f".megamind/audit/provisional-wiki-{plan.plan_id}.json").exists()
+    # The record survives, marked partial, with a bounded audit entry beside it.
+    manifest_path = tmp_path / f".megamind/audit/provisional-wiki-{plan.plan_id}.json"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["state"] == "partial"
+    undo = [
+        json.loads(line)
+        for line in (tmp_path / ".megamind/audit/log.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and json.loads(line)["action"] == "provisional-wiki-undo"
+    ]
+    assert len(undo) == 1
+    assert undo[0]["preserved"] == ["UndoWiki/wiki/topics"]
+    assert undo[0]["preserved_total"] == 1
+    assert undo[0]["state"] == "partial"
+
+
+def test_a_partial_undo_can_be_retried_to_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The surviving record is what makes recovery possible: the retry resumes
+    through the manifest instead of re-planning into `wiki path already exists`."""
+    init_vault(tmp_path, starter=False)
+    concurrent = tmp_path / "RetryWiki/wiki/topics/rate-limits.md"
+    plan = interrupt_apply_with_a_concurrent_write(tmp_path, monkeypatch, "RetryWiki", concurrent)
+    with pytest.raises(ProvisionRecoveryRequired):
+        apply_provision_plan(tmp_path, plan, plan.plan_id)
+    monkeypatch.undo()
+    # Re-planning is genuinely blocked by the preserved directory, which is
+    # exactly why the record has to outlive the undo.
+    with pytest.raises(GardenError, match="wiki path already exists"):
+        plan_provision_wiki(tmp_path, "RetryWiki", "RetryWiki", make_criteria())
+
+    status, files = resume_provision(tmp_path, plan.plan_id, "RetryWiki", "RetryWiki")  # type: ignore[misc]
+    assert status == "applied"
+    assert files
+    assert load_registry(tmp_path).wiki_by_name("RetryWiki") is not None
+    assert concurrent.read_text(encoding="utf-8") == "written mid-transaction\n"
+    manifest_path = tmp_path / f".megamind/audit/provisional-wiki-{plan.plan_id}.json"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["state"] == "applied"
+    assert resume_provision(tmp_path, plan.plan_id, "RetryWiki", "RetryWiki") == ("noop", [])
+
+
+def test_a_partial_undo_can_be_rolled_back_instead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_vault(tmp_path, starter=False)
+    before = (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8")
+    concurrent = tmp_path / "ShutWiki/wiki/topics/rate-limits.md"
+    plan = interrupt_apply_with_a_concurrent_write(tmp_path, monkeypatch, "ShutWiki", concurrent)
+    with pytest.raises(ProvisionRecoveryRequired):
+        apply_provision_plan(tmp_path, plan, plan.plan_id)
+    monkeypatch.undo()
+
+    outcome = rollback_provision(tmp_path, plan.plan_id)
+    assert outcome.status == "partial"
+    assert outcome.preserved == ["ShutWiki/wiki/topics"]
+    assert outcome.preserved_total == 1
+    assert concurrent.read_text(encoding="utf-8") == "written mid-transaction\n"
+    assert (tmp_path / ".megamind/registry.json").read_text(encoding="utf-8") == before
+    manifest_path = tmp_path / f".megamind/audit/provisional-wiki-{plan.plan_id}.json"
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["state"] == "rolled_back"
+
+
+def test_preserved_entries_are_bounded_with_the_total_in_the_audit(tmp_path: Path) -> None:
+    """A bounded sample must never read as the whole truth: the total travels
+    with it into the append-only audit, not only into the response."""
+    init_vault(tmp_path, starter=False)
+    plan = plan_provision_wiki(tmp_path, "ManyWiki", "ManyWiki", make_criteria())
+    apply_provision_plan(tmp_path, plan, plan.plan_id)
+    for index in range(25):
+        (tmp_path / f"ManyWiki/note-{index:02d}.md").write_text("kept\n", encoding="utf-8")
+
+    outcome = rollback_provision(tmp_path, plan.plan_id)
+    assert outcome.status == "partial"
+    assert outcome.preserved_total == 25
+    assert len(outcome.preserved) == 20
+    assert outcome.preserved == sorted(outcome.preserved)
+    assert outcome.notes == ["preserved entries truncated to 20 of 25"]
+    record = [
+        json.loads(line)
+        for line in (tmp_path / ".megamind/audit/log.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and json.loads(line)["action"] == "provisional-wiki-rollback"
+    ][-1]
+    assert record["preserved_total"] == 25
+    assert len(record["preserved"]) == 20
+    assert all((tmp_path / f"ManyWiki/note-{index:02d}.md").is_file() for index in range(25))
+
+
+def test_a_manifest_without_created_dirs_still_recovers(tmp_path: Path) -> None:
+    """Records written before `created_dirs` existed must keep rolling back."""
+    init_vault(tmp_path, starter=False)
+    plan = plan_provision_wiki(tmp_path, "OldWiki", "OldWiki", make_criteria())
+    apply_provision_plan(tmp_path, plan, plan.plan_id)
+    manifest_path = tmp_path / f".megamind/audit/provisional-wiki-{plan.plan_id}.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["created_dirs"]
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+
+    outcome = rollback_provision(tmp_path, plan.plan_id)
+    assert (outcome.status, outcome.preserved, outcome.preserved_total) == ("rolled_back", [], 0)
+    assert not (tmp_path / "OldWiki").exists()
 
 
 def test_provisioning_stays_usable_without_a_directory_flush_primitive(

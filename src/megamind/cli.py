@@ -992,6 +992,7 @@ def cmd_provision_wiki(args: argparse.Namespace, root: Path, today: str) -> tupl
             "status": outcome.status,
             "removed": outcome.removed,
             "preserved": outcome.preserved,
+            "preserved_total": outcome.preserved_total,
             "notes": outcome.notes,
             "help": _help(*entries),
         }, 0
@@ -1672,6 +1673,10 @@ _ERROR_HELP: dict[str, list[str]] = {
     "gap_not_found": [f"Run `{EXECUTABLE} gap list` to inspect durable gap ids"],
     "gap_transition_invalid": [
         f"Run `{EXECUTABLE} gap list` and use an allowed lifecycle transition"
+    ],
+    "provision_recovery_required": [
+        "Review the preserved paths named in the transaction record before deciding",
+        f"Run `{EXECUTABLE} provision-wiki <name> <path> --rollback --plan-id <id>` to undo it",
     ],
 }
 

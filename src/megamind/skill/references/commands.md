@@ -203,7 +203,11 @@ not all reach disk), and `--rollback --plan-id <id>` undoes it completely; a
 plan id from other arguments, stale targets, or edited generated content all
 refuse. Rollback removes only manifest-tracked files and empties only
 directories the transaction created: a page written into the wiki after the
-apply is preserved, listed in `preserved`, and returns `status: partial`. It registers the card immediately with
+apply is preserved, listed in a bounded `preserved` sample beside the full
+`preserved_total`, and returns `status: partial`. When an apply fails and its
+own undo has to keep such content, the transaction record survives as
+`partial` and the command exits `provision_recovery_required`, so the retry or
+the explicit `--rollback` is a deliberate choice rather than a lost record. It registers the card immediately with
 `provisional: true`; provisional knowledge is not trusted, so route, catalog,
 and preflight surface it and only ever offer it, never load it. No remote
 repository, collaborators, account action, publication, merge, or spend is
@@ -222,5 +226,6 @@ directory. Setup never makes network calls or edits shell/provider config.
 `registry_invalid`, `card_invalid`, `capture_invalid`, `proposal_not_found`,
 `plan_mismatch`, `approval_required`, `evolve_invalid`, `adopt_invalid`,
 `init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
-`garden_invalid`, `gap_not_found`, `gap_transition_invalid`), a sanitized
-`message`, and `help[]` with corrective commands.
+`garden_invalid`, `gap_not_found`, `gap_transition_invalid`,
+`provision_recovery_required`), a sanitized `message`, and `help[]` with
+corrective commands.

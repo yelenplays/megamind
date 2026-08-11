@@ -272,7 +272,7 @@ takes that id back as the approval token. The apply is a write-ahead
 transaction recorded in `.megamind/audit/provisional-wiki-<plan_id>.json`
 (`megamind/provisional-wiki-rollback/v1`), which carries the whole plan, the
 prior content of every file it will replace, and a `state` of `pending`,
-`applied`, or `rolled_back`. The manifest and every required backup are
+`applied`, `partial`, or `rolled_back`. The manifest and every required backup are
 persisted and flushed to disk before the first target mutation, every target is
 written atomically and flushed with its parent directory, and the record only
 switches to `applied` after every target has been verified to hold its planned
@@ -301,8 +301,20 @@ loss interrupts is therefore always recoverable from the record alone:
   (`created_dirs`, written before the first mutation). Nothing is ever removed
   recursively. A page authored inside the provisional wiki after the apply is
   not the transaction's to delete: it is preserved, named in `preserved`, and
-  the result comes back as `status: partial` instead of `rolled_back`. The
-  in-process undo that runs when an apply raises follows the same rule.
+  the result comes back as `status: partial` instead of `rolled_back`.
+  `preserved` is a bounded sample of at most 20 entries; `preserved_total`
+  carries the real count in the result and in the audit record alike, and a
+  note states the truncation explicitly whenever the total exceeds the sample;
+- the in-process undo that runs when an apply raises follows the same rule, and
+  it owns the record too. It removes the manifest only after a verified
+  complete undo. When it had to keep foreign content, or could not restore
+  every target it wrote, it marks the record `partial`, appends a
+  `provisional-wiki-undo` audit record carrying the same bounded `preserved`
+  sample and `preserved_total`, and raises `provision_recovery_required` with
+  the original failure as its cause. The surviving record is what makes the
+  retry work: `--apply --plan-id <id>` resumes the `partial` transaction
+  through the manifest before planning can refuse the directory the preserved
+  content keeps alive, and `--rollback --plan-id <id>` closes it instead.
 
 Provisional knowledge is not trusted until confidence coverage and a later
 evaluation clear it, and every consumer acts on that: catalog rows carry

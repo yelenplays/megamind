@@ -938,8 +938,16 @@ def plan_provision_wiki(
 
 
 PROVISION_MANIFEST_SCHEMA = "megamind/provisional-wiki-rollback/v1"
-PROVISION_STATES = ("pending", "applied", "rolled_back")
+# `partial` is the state an in-process undo leaves behind when it found content
+# it was not allowed to delete: the transaction is undone but its record must
+# survive, because the wiki directory did too and only that record explains why.
+PROVISION_STATES = ("pending", "applied", "partial", "rolled_back")
 MAX_PRESERVED = 20
+
+
+def _bounded_preserved(entries: list[str]) -> tuple[list[str], int]:
+    """A bounded sample plus the real total, so no reader mistakes one for the other."""
+    return entries[:MAX_PRESERVED], len(entries)
 
 
 @dataclass(frozen=True)
@@ -949,7 +957,32 @@ class RollbackOutcome:
     status: str  # "rolled_back" | "partial"
     removed: list[str]
     preserved: list[str]
+    preserved_total: int = 0
     notes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class UndoOutcome:
+    """What the in-process undo did, so its caller can say recovery is still owed."""
+
+    status: str  # "undone" | "recovery_required"
+    plan_id: str
+    preserved: list[str]
+    preserved_total: int = 0
+
+
+class ProvisionRecoveryRequired(GardenError):
+    """An apply failed and its undo kept content it did not write.
+
+    The write-ahead record survives so the transaction can be finished or rolled
+    back explicitly; the failure that caused it stays as the exception cause.
+    """
+
+    code = "provision_recovery_required"
+
+    def __init__(self, message: str, outcome: UndoOutcome) -> None:
+        super().__init__(message)
+        self.outcome = outcome
 
 
 def _manifest_rel(plan_id: str) -> Path:
@@ -1149,7 +1182,29 @@ def _prune_transaction_dirs(root: Path, manifest: Mapping[str, Any]) -> list[str
     return sorted(preserved)
 
 
-def _undo(root: Path, manifest: Mapping[str, Any], written: list[str]) -> None:
+def _is_reverted(root: Path, manifest: Mapping[str, Any], written: Iterable[str]) -> bool:
+    """Whether every target the undo touched carries its recorded prior value again."""
+    backups = manifest["backups"]
+    for rel in written:
+        expected = backups.get(rel)
+        try:
+            current = _read_text(root, rel)
+        except (GardenError, PathEscapeError, OSError, UnicodeDecodeError):
+            return False
+        if current != (expected if isinstance(expected, str) else None):
+            return False
+    return True
+
+
+def _undo(root: Path, manifest: dict[str, Any], written: list[str]) -> UndoOutcome:
+    """Undo a failed apply, keeping the record whenever the undo was not complete.
+
+    The manifest is the only durable explanation for anything the undo had to
+    leave behind, so it is removed only after a verified complete undo. When
+    foreign content survived, the record is marked ``partial``, the preserved
+    sample and its total are audited, and the caller is told recovery is owed.
+    """
+    plan_id = str(manifest["plan"]["plan_id"])
     backups = manifest["backups"]
     for rel in reversed(written):
         restore = backups.get(rel)
@@ -1157,8 +1212,24 @@ def _undo(root: Path, manifest: Mapping[str, Any], written: list[str]) -> None:
             atomic_write(root, rel, restore, durable=True)
         else:
             _remove_target(root, rel)
-    _prune_transaction_dirs(root, manifest)
-    remove_contained(root, _manifest_rel(str(manifest["plan"]["plan_id"])), durable=True)
+    found = _prune_transaction_dirs(root, manifest)
+    preserved, total = _bounded_preserved(found)
+    if not found and _is_reverted(root, manifest, written):
+        remove_contained(root, _manifest_rel(plan_id), durable=True)
+        return UndoOutcome("undone", plan_id, [], 0)
+    manifest["state"] = "partial"
+    _write_manifest(root, manifest)
+    append_audit(
+        root,
+        "provisional-wiki-undo",
+        {
+            "plan_id": plan_id,
+            "state": "partial",
+            "preserved": preserved,
+            "preserved_total": total,
+        },
+    )
+    return UndoOutcome("recovery_required", plan_id, preserved, total)
 
 
 def _commit(root: Path, manifest: dict[str, Any], created: list[str]) -> list[str]:
@@ -1335,8 +1406,18 @@ def apply_provision_plan(root: Path, plan: ProvisionPlan, approved_plan_id: str)
             atomic_write(root, rel, new, durable=True)
             written.append(rel)
         return _commit(root, manifest, written)
-    except BaseException:
-        _undo(root, manifest, written)
+    except BaseException as error:
+        outcome = _undo(root, manifest, written)
+        # A signal is not an operational failure to retype: it keeps propagating
+        # as itself, and the record the undo kept is what recovery reads.
+        if outcome.status == "recovery_required" and isinstance(error, Exception):
+            raise ProvisionRecoveryRequired(
+                f"provisional wiki apply failed and its undo kept {outcome.preserved_total} "
+                f"path(s) under {plan.path} that it did not write; the transaction record "
+                f"survives, so re-run `--apply --plan-id {outcome.plan_id}` to finish it or "
+                f"`--rollback --plan-id {outcome.plan_id}` to undo it",
+                outcome,
+            ) from error
         raise
 
 
@@ -1370,20 +1451,33 @@ def rollback_provision(root: Path, plan_id: str) -> RollbackOutcome:
         elif not _remove_target(root, rel):
             continue
         removed.append(rel)
-    preserved = _prune_transaction_dirs(root, manifest)
+    found = _prune_transaction_dirs(root, manifest)
+    preserved, preserved_total = _bounded_preserved(found)
     notes: list[str] = []
-    if len(preserved) > MAX_PRESERVED:
-        notes.append(f"preserved entries truncated to {MAX_PRESERVED} of {len(preserved)}")
-        preserved = preserved[:MAX_PRESERVED]
+    if preserved_total > len(preserved):
+        notes.append(f"preserved entries truncated to {len(preserved)} of {preserved_total}")
     manifest["state"] = "rolled_back"
     manifest["created"] = []
     _write_manifest(root, manifest)
+    # The audit record is the only durable account of what survived, so the
+    # total travels with the bounded sample rather than only in the response.
     append_audit(
         root,
         "provisional-wiki-rollback",
-        {"plan_id": plan_id, "removed": removed, "preserved": preserved},
+        {
+            "plan_id": plan_id,
+            "removed": removed,
+            "preserved": preserved,
+            "preserved_total": preserved_total,
+        },
     )
-    return RollbackOutcome("partial" if preserved else "rolled_back", removed, preserved, notes)
+    return RollbackOutcome(
+        "partial" if found else "rolled_back",
+        removed,
+        preserved,
+        preserved_total,
+        notes,
+    )
 
 
 def provision_local_wiki(

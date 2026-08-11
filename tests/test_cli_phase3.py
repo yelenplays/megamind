@@ -828,6 +828,7 @@ def test_provision_rollback_leaves_the_vault_replannable(
     assert code == 0
     assert rolled["status"] == "rolled_back"
     assert rolled["preserved"] == []
+    assert rolled["preserved_total"] == 0
     assert not (vault / "ReleaseWiki").exists()
     assert (vault / ".megamind/registry.json").read_text(encoding="utf-8") == before
     # The rolled-back record does not block re-planning or a fresh apply.
@@ -855,11 +856,32 @@ def test_provision_rollback_reports_content_it_preserved(
     assert err == ""
     assert rolled["status"] == "partial"
     assert rolled["preserved"] == ["ReleaseWiki/wiki/topics"]
+    assert rolled["preserved_total"] == 1
     assert rolled["notes"] == []
     assert any("preserved" in entry for entry in rolled["help"])
     assert page.read_text(encoding="utf-8") == "# rate limits\n"
     assert not (vault / "ReleaseWiki/CARD.md").exists()
     assert load_registry(vault).wiki_by_name("ReleaseWiki") is None
+
+
+def test_provision_rollback_states_the_total_behind_a_bounded_sample(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The document says how much it did not list, so 20 names never read as
+    the whole set of what survived."""
+    _, plan, _ = run_json(capsys, *provision_argv(vault))
+    plan_id = str(plan["plan_id"])
+    run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+    for index in range(25):
+        (vault / f"ReleaseWiki/note-{index:02d}.md").write_text("kept\n", encoding="utf-8")
+
+    code, rolled, _ = run_json(capsys, *provision_argv(vault, "--rollback", "--plan-id", plan_id))
+    assert code == 0
+    assert rolled["status"] == "partial"
+    assert len(rolled["preserved"]) == 20
+    assert rolled["preserved_total"] == 25
+    assert rolled["notes"] == ["preserved entries truncated to 20 of 25"]
+    assert all((vault / f"ReleaseWiki/note-{index:02d}.md").is_file() for index in range(25))
 
 
 def test_provision_rollback_renders_identically_in_toon_and_json(
@@ -883,7 +905,49 @@ def test_provision_rollback_renders_identically_in_toon_and_json(
     assert err == ""
     assert doc["status"] == "partial"
     assert doc["preserved"] == ["ReleaseWiki/NOTES.md"]
+    assert doc["preserved_total"] == 1
     assert toon.encode(doc) == toon_out
+
+
+def test_a_failed_apply_that_preserved_content_is_a_typed_recoverable_error(
+    vault: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The host gets a typed code and a plan id it can act on, never a bare
+    traceback and never a vanished transaction record."""
+    import megamind.gardening as gardening
+
+    _, plan, _ = run_json(capsys, *provision_argv(vault))
+    plan_id = str(plan["plan_id"])
+    original = gardening.atomic_write
+    calls = 0
+    concurrent = vault / "ReleaseWiki/wiki/topics/rate-limits.md"
+
+    def crash(root: Path, target: Path | str, content: str, **kwargs: Any) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 6:
+            concurrent.parent.mkdir(parents=True, exist_ok=True)
+            concurrent.write_text("written mid-transaction\n", encoding="utf-8")
+            raise OSError("synthetic crash")
+        return original(root, target, content, **kwargs)
+
+    monkeypatch.setattr(gardening, "atomic_write", crash)
+    code, doc, err = run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+    monkeypatch.undo()
+
+    assert code == 1
+    assert err == ""
+    assert doc["schema_version"] == "megamind/error/v1"
+    assert doc["code"] == "provision_recovery_required"
+    assert plan_id in doc["message"]
+    assert "rate-limits.md" not in doc["message"]
+    assert doc["help"]
+    assert concurrent.is_file()
+    # The record survived, so the retry recovers instead of refusing to re-plan.
+    code, applied, _ = run_json(capsys, *provision_argv(vault, "--apply", "--plan-id", plan_id))
+    assert code == 0
+    assert applied["status"] == "applied"
+    assert load_registry(vault).wiki_by_name("ReleaseWiki") is not None
 
 
 def test_provision_wiki_refuses_a_canonical_root_without_writing(
