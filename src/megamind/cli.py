@@ -471,20 +471,20 @@ def cmd_route(
         )
     elif result.decision == "offer":
         entries = ["Offer the listed candidates as choices; load nothing until one is picked"]
-        if provisional_offered:
+        if result.governance_downgrade:
             entries.append(
-                "Provisional wikis stay offers until confidence coverage and a later "
-                "evaluation pass; see `governance` for which candidates those are"
+                "Every candidate that cleared the reliance floor is provisional: provisional "
+                "wikis stay offers until confidence coverage and a later evaluation pass"
             )
-        if (
-            not provisional_offered
-            or result.confidence is None
-            or result.confidence < RELIANCE_FLOOR
-        ):
+        else:
             entries.append(
                 f"Route confidence stays below the {RELIANCE_FLOOR} reliance floor or "
                 "inside the ambiguity band"
             )
+            if provisional_offered:
+                entries.append(
+                    "Some offered candidates are also provisional; see `governance` for which"
+                )
         doc["help"] = _help(*entries)
     else:
         doc["help"] = _help(

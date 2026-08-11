@@ -61,6 +61,8 @@ semantic:
   reason: semantic reranking not enabled
 candidates[1]{path,kind,score,reason}:
   ProductWiki/topics/pricing-v2.md,page,7,"keyword match: pricing"
+governance[1]{path,provisional,trusted}:
+  ProductWiki/topics/pricing-v2.md,false,true
 context_chars: 446
 max_context_chars: 8000
 max_candidates: 5

@@ -79,7 +79,12 @@ help[2]:
 
 Route output carries a `decision`: `load` at or above the 0.75 reliance
 floor, `offer` below it or inside the ambiguity band (choices, nothing
-auto-loads), `no-match` under the 0.25 floor. `--semantic` opts into local
+auto-loads), `no-match` under the 0.25 floor. Confidence is necessary but not
+sufficient: a wiki still marked `provisional` is never an authorized load, so
+it is dropped from a `load` packet and degrades the whole result to `offer`
+when every candidate that cleared the floor is provisional, however confident
+the match is. The `governance[]` sidecar states `provisional` and `trusted`
+for each candidate on every route. `--semantic` opts into local
 char-ngram reranking of the authorized candidates; `--today` makes freshness
 (`updated`/`age_days`/`stale`) reproducible. `megamind-axi assess claim` and
 `assess answer` score evidence against the same reliance floor.

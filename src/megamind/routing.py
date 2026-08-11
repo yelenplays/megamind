@@ -215,6 +215,10 @@ class RouteResult:
     # default candidate field set stays exactly what route-result/v2 promised,
     # while the trust posture is always available without opting in.
     governance: list[dict[str, object]] = field(default_factory=list)
+    # True only when the governance gate, not a threshold, produced the offer:
+    # every candidate that cleared the reliance floor was provisional. It names
+    # the cause so no consumer has to re-derive it from confidence and trust.
+    governance_downgrade: bool = False
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
@@ -640,6 +644,7 @@ def route(
         confidence=top_confidence if selected else None,
         semantic=outcome.to_dict(),
         governance=governance,
+        governance_downgrade=governance_downgrade and bool(selected),
         notes=notes,
     )
 

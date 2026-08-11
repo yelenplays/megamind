@@ -701,13 +701,44 @@ def test_route_notes_separate_governance_from_confidence_downgrades(
     # No confidence-derived wording may claim this offer.
     assert not any("ambiguity band" in note for note in gated["notes"])
     assert not any("is below the reliance floor" in note for note in gated["notes"])
-    assert any("Provisional wikis stay offers" in entry for entry in gated["help"])
-    assert not any("reliance floor" in entry for entry in gated["help"])
+    assert any("provisional wikis stay offers" in entry for entry in gated["help"])
+    # help[] must not attribute a governance downgrade to confidence.
+    assert not any("Route confidence stays below" in entry for entry in gated["help"])
 
     _, banded, _ = run_json(capsys, "--root", str(vault), "route", "brand", "voice", "palette")
     assert banded["decision"] == "offer"
     assert not any("governance" in note for note in banded["notes"])
-    assert any("reliance floor" in entry for entry in banded["help"])
+    assert any("Route confidence stays below" in entry for entry in banded["help"])
+    assert not any("provisional" in entry for entry in banded["help"])
+
+
+def test_ambiguity_band_offer_is_not_credited_to_the_governance_gate(
+    vault: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A band tie that merely contains a provisional candidate is still a
+    confidence offer, and help must say so rather than blaming the gate."""
+    provisioned_vault(capsys, vault)
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.keywords = [*product.keywords, "operations"]
+    save_registry(vault, registry)
+
+    code, doc, _ = run_json(capsys, "--root", str(vault), "route", "operations")
+    assert code == 0
+    assert doc["decision"] == "offer"
+    assert doc["confidence"] >= doc["thresholds"]["reliance_floor"]
+    trust = {str(row["path"]): bool(row["provisional"]) for row in doc["governance"]}
+    assert sorted(trust.values()) == [False, True]
+    # The band produced the offer, so the confidence reason leads and the
+    # governance downgrade wording must be absent everywhere.
+    assert any("ambiguity band" in note for note in doc["notes"])
+    assert not any("governance downgrade" in note for note in doc["notes"])
+    assert any("Route confidence stays below" in entry for entry in doc["help"])
+    assert not any("cleared the reliance floor is provisional" in entry for entry in doc["help"])
+    # The provisional candidate is still stated, as a fact rather than a cause.
+    assert any("also provisional" in entry for entry in doc["help"])
+    assert any(note.startswith("governance gate") for note in doc["notes"])
 
 
 def test_below_floor_offers_still_report_a_provisional_candidate(
@@ -725,6 +756,8 @@ def test_below_floor_offers_still_report_a_provisional_candidate(
     assert rows["ReleaseWiki/INDEX.md"]["provisional"] is True
     assert any(note.startswith("governance gate") for note in doc["notes"])
     assert any("is below the reliance floor" in note for note in doc["notes"])
+    assert any("Route confidence stays below" in entry for entry in doc["help"])
+    assert any("also provisional" in entry for entry in doc["help"])
 
 
 def test_preflight_names_the_governance_downgrade_distinctly(
