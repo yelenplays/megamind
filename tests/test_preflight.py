@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import build_vault
 from megamind.catalog import discover_roots
 from megamind.preflight import run_preflight
 from megamind.registry import WikiEntry, load_registry, save_registry
@@ -59,6 +60,20 @@ def test_follow_up_command_shell_quotes_the_request(vault: Path) -> None:
     assert tokens[-1] == request  # the whole request is a single argument
     assert ";" not in tokens
     assert "rm" not in tokens
+
+
+def test_follow_up_command_shell_quotes_the_root(tmp_path: Path) -> None:
+    """A root path with a space stays one `--root` argument, so the command runs."""
+    estate = tmp_path / "My Wikis"
+    estate.mkdir()
+    root = build_vault(estate)
+    result = run_preflight([_ref(root)], "pricing", "local")
+    assert result.status == "matched"
+    command = str(result.matches[0]["follow_up"]).split("`")[1]
+    tokens = shlex.split(command)
+    assert tokens[:2] == ["megamind-axi", "--root"]
+    assert tokens[2] == str(root)  # the whole root path is a single argument
+    assert tokens[3] == "route"
 
 
 def test_cloud_none_wiki_is_privacy_filtered(vault: Path) -> None:
@@ -246,6 +261,7 @@ def test_preflight_covers_canonical_card_roots(tmp_path: Path) -> None:
     assert match["name"] == "SoloWiki"
     assert match["allows"] == ["wiki/index.md"]
     assert "wiki/index.md" in str(match["follow_up"])
+    assert "context_budget" not in match
 
     cloud = run_preflight(discover_roots(estate), "cider press care", "cloud")
     assert cloud.status == "privacy-filtered"  # unclassified: cloud none

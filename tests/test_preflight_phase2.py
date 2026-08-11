@@ -6,9 +6,11 @@ import json
 from datetime import date
 from pathlib import Path
 
-from megamind.catalog import RootRef
+from megamind.card import load_wiki_card, save_wiki_card
+from megamind.catalog import RootRef, discover_roots
 from megamind.preflight import run_preflight
-from megamind.registry import WikiEntry, load_registry, save_registry
+from megamind.registry import ContextBudget, WikiEntry, load_registry, save_registry
+from megamind.scaffold import init_wiki_root
 from megamind.semantic import NgramBackend
 
 TODAY = date(2026, 8, 10)
@@ -129,10 +131,259 @@ def test_matches_carry_confidence_freshness_and_evidence(vault: Path) -> None:
     assert set(freshness) == {"half_life_days", "last_confirmed", "stale"}
     evidence = match["evidence"]
     assert isinstance(evidence, dict)
-    assert any("trigger match: pricing" in r for r in evidence["lexical"])  # type: ignore[operator]
+    assert set(evidence) == {
+        "routing_class",
+        "coverage",
+        "signal_counts",
+        "provenance",
+        "lexical_classes",
+        "semantic",
+    }
+    assert evidence["routing_class"] == "lexical-card"
+    assert evidence["lexical_classes"] == ["trigger", "scope"]
+    assert set(evidence["lexical_classes"]) <= {"trigger", "name", "scope"}
+    assert "lexical" not in evidence
+    # exactly one class list: the fired subset of the counts, in fixed order
+    assert "signal_classes" not in evidence
+    counts = evidence["signal_counts"]
+    assert counts == {"trigger": 1, "name": 0, "scope": 1}
+    assert isinstance(counts, dict)
+    assert evidence["lexical_classes"] == [name for name in counts if counts[name]]
+    assert evidence["coverage"] == {"matched_terms": 1, "request_terms": 2, "ratio": 0.5}
+    assert evidence["provenance"] == {
+        "source": "registry-card",
+        "scope": "declared card metadata only",
+        "page_content": False,
+    }
+    evidence_json = json.dumps(evidence)
+    assert all(token not in evidence_json for token in ("how", "does", "pricing", "work"))
+    assert str(vault) not in evidence_json
+    assert "topics/" not in evidence_json
     assert evidence["semantic"] is None  # semantic disabled: no fabricated score
+    # `reasons` keeps its v2 semantics: literal lexical reason strings
+    assert match["reasons"] == ["trigger match: pricing", "scope match: pricing"]
     # the packet stays card-level: no page content path is ever handed out
     assert "topics/" not in json.dumps(match)
+
+
+def test_offers_carry_the_same_renamed_evidence_without_a_load_path(vault: Path) -> None:
+    """An offer gets the identical evidence shape, never the old `lexical` field."""
+    result = run_preflight([_ref(vault)], "knowledge base", "local")
+    assert result.status == "ambiguous"
+    assert result.offers
+    for offer in result.offers:
+        evidence = offer["evidence"]
+        assert isinstance(evidence, dict)
+        assert set(evidence) == {
+            "routing_class",
+            "coverage",
+            "signal_counts",
+            "provenance",
+            "lexical_classes",
+            "semantic",
+        }
+        assert "lexical" not in evidence
+        classes = evidence["lexical_classes"]
+        assert isinstance(classes, list)
+        assert classes and set(classes) <= {"trigger", "name", "scope"}
+        evidence_json = json.dumps(evidence)
+        assert all(token not in evidence_json for token in ("knowledge", "base"))
+        assert str(vault) not in evidence_json
+        # an offer is unauthorized to load, so it carries no path and no budget
+        assert "allows" not in offer and "follow_up" not in offer
+        assert "context_budget" not in offer
+
+
+def test_signal_counts_are_tallied_with_the_reasons_they_describe(vault: Path) -> None:
+    """The counts come from the scorer itself, not from parsing reason wording."""
+    registry = load_registry(vault)
+    (vault / "LedgerWiki").mkdir()
+    registry.wikis.append(
+        WikiEntry(
+            name="LedgerWiki",
+            path="LedgerWiki",
+            privacy="public-reference",
+            purpose="Synthetic ledger reconciliation notes.",
+            keywords=["invoice"],
+            sensitivity="public-reference",
+        )
+    )
+    save_registry(vault, registry)
+
+    result = run_preflight([_ref(vault)], "ledgerwiki invoice ledger", "local")
+    assert result.status == "matched"
+    match = result.matches[0]
+    assert match["name"] == "LedgerWiki"
+    reasons = match["reasons"]
+    assert isinstance(reasons, list)
+    assert len(reasons) < 5  # untruncated, so the tally below is exact
+    evidence = match["evidence"]
+    assert isinstance(evidence, dict)
+    tallied = {
+        signal_class: sum(1 for reason in reasons if reason.startswith(f"{signal_class} "))
+        for signal_class in ("trigger", "name", "scope")
+    }
+    assert tallied == {"trigger": 1, "name": 1, "scope": 1}
+    assert evidence["signal_counts"] == tallied
+    assert evidence["lexical_classes"] == ["trigger", "name", "scope"]
+
+
+def test_authorized_matches_preserve_card_context_budgets(vault: Path) -> None:
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    research = registry.wiki_by_name("ResearchDigest")
+    assert product is not None and research is not None
+    product.context_budget = ContextBudget(max_candidates=2, max_context_chars=2345)
+    research.context_budget = ContextBudget(max_candidates=1, max_context_chars=987)
+    save_registry(vault, registry)
+
+    for model_class in ("local", "cloud"):
+        full = run_preflight([_ref(vault)], "pricing", model_class)
+        assert full.status == "matched"
+        assert full.matches[0]["access"] == "full"
+        assert full.matches[0]["context_budget"] == {
+            "max_candidates": 2,
+            "max_context_chars": 2345,
+        }
+
+    for model_class in ("local", "cloud"):
+        digest = run_preflight([_ref(vault)], "research interview", model_class)
+        assert digest.status == "matched"
+        assert digest.matches[0]["access"] == "digest-only"
+        assert digest.matches[0]["context_budget"] == {
+            "max_candidates": 1,
+            "max_context_chars": 987,
+        }
+
+    offer = run_preflight([_ref(vault)], "knowledge base", "local")
+    assert offer.status == "ambiguous"
+    assert all("context_budget" not in item for item in offer.offers)
+
+    filtered = run_preflight([_ref(vault)], "brand color palette", "cloud")
+    assert filtered.status == "privacy-filtered"
+    assert all(
+        "context_budget" not in item and "evidence" not in item for item in filtered.filtered
+    )
+
+    no_match = run_preflight([_ref(vault)], "quantum llama", "local")
+    assert no_match.status == "no-match"
+    assert no_match.matches == [] and no_match.offers == []
+
+    broken = run_preflight([RootRef(label="missing", path=vault / "missing")], "pricing", "local")
+    assert broken.status == "unavailable"
+    assert broken.matches == [] and broken.offers == []
+    assert all("context_budget" not in item for item in broken.root_issues)
+
+
+def test_executable_ladder_follow_up_states_its_budget(vault: Path) -> None:
+    """A registry match with no declared artifacts still gets the route ladder.
+
+    `allows` is empty because the card declares no card, digest, or index, but
+    the follow-up is a real bounded load path, so the budget that bounds it is
+    stated rather than silently dropped.
+    """
+    registry = load_registry(vault)
+    (vault / "LedgerWiki").mkdir()
+    registry.wikis.append(
+        WikiEntry(
+            name="LedgerWiki",
+            path="LedgerWiki",
+            privacy="public-reference",
+            purpose="Synthetic ledger reconciliation notes.",
+            keywords=["invoice"],
+            sensitivity="public-reference",
+            context_budget=ContextBudget(max_candidates=3, max_context_chars=1234),
+        )
+    )
+    save_registry(vault, registry)
+
+    first = run_preflight([_ref(vault)], "invoice", "local")
+    assert first.status == "matched"
+    match = first.matches[0]
+    assert match["name"] == "LedgerWiki"
+    assert match["access"] == "full"
+    assert match["allows"] == []  # nothing declared, yet the ladder still loads
+    assert "route" in str(match["follow_up"])
+    assert match["context_budget"] == {"max_candidates": 3, "max_context_chars": 1234}
+
+    second = run_preflight([_ref(vault)], "invoice", "local")
+    assert json.dumps(first.matches, sort_keys=True) == json.dumps(second.matches, sort_keys=True)
+    assert first.preflight_id == second.preflight_id
+
+
+def test_matches_without_a_load_path_never_carry_a_budget(vault: Path) -> None:
+    """A budget bounds a load path, so an entry told to load nothing has none."""
+    registry = load_registry(vault)
+    archive = registry.wiki_by_name("ArchiveBox")
+    research = registry.wiki_by_name("ResearchDigest")
+    assert archive is not None and research is not None
+    archive.context_budget = ContextBudget(max_candidates=4, max_context_chars=4321)
+    research.context_budget = ContextBudget(max_candidates=3, max_context_chars=3210)
+    research.digest = ""  # digest-only access with no approved digest to load
+    save_registry(vault, registry)
+
+    pointer = run_preflight([_ref(vault)], "archive history", "local")
+    assert pointer.status == "matched"
+    assert pointer.matches[0]["name"] == "ArchiveBox"
+    assert pointer.matches[0]["access"] == "none"
+    assert pointer.matches[0]["allows"] == []
+    assert "context_budget" not in pointer.matches[0]
+
+    digest = run_preflight([_ref(vault)], "research interview", "local")
+    assert digest.status == "matched"
+    assert digest.matches[0]["name"] == "ResearchDigest"
+    assert digest.matches[0]["allows"] == []
+    assert "context_budget" not in digest.matches[0]
+
+
+def test_canonical_card_roots_report_card_provenance_and_budget(tmp_path: Path) -> None:
+    """A wiki-card root is named as such, and its own budget is the one surfaced."""
+    estate = tmp_path / "estate"
+    estate.mkdir()
+    init_wiki_root(estate / "SoloWiki", "SoloWiki")
+    card = load_wiki_card(estate / "SoloWiki")
+    card.purpose = "Answers synthetic cider press questions."
+    card.triggers = ["cider"]
+    card.sensitivity = "public-reference"
+    card.context_budget = ContextBudget(max_candidates=5, max_context_chars=5555)
+    save_wiki_card(estate / "SoloWiki", card)
+
+    result = run_preflight(discover_roots(estate), "cider press care", "local")
+    assert result.status == "matched"
+    match = result.matches[0]
+    assert match["access"] == "full"
+    evidence = match["evidence"]
+    assert isinstance(evidence, dict)
+    assert evidence["provenance"] == {
+        "source": "canonical-card",  # not the registry projection
+        "scope": "declared card metadata only",
+        "page_content": False,
+    }
+    assert match["context_budget"] == {"max_candidates": 5, "max_context_chars": 5555}
+    assert "cider" not in json.dumps(evidence)
+
+
+def test_budget_and_evidence_repeat_byte_stable(vault: Path) -> None:
+    """The additive packet is a deterministic function of the pinned proof inputs."""
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.context_budget = ContextBudget(max_candidates=2, max_context_chars=2345)
+    save_registry(vault, registry)
+
+    for model_class in ("local", "cloud"):
+        first = run_preflight([_ref(vault)], "how does pricing work", model_class)
+        second = run_preflight([_ref(vault)], "how does pricing work", model_class)
+        assert json.dumps(first.matches, sort_keys=True) == json.dumps(
+            second.matches, sort_keys=True
+        )
+        assert json.dumps(first.offers, sort_keys=True) == json.dumps(second.offers, sort_keys=True)
+        assert first.preflight_id == second.preflight_id
+        assert first.matches[0]["evidence"] == second.matches[0]["evidence"]
+        assert first.matches[0]["context_budget"] == {
+            "max_candidates": 2,
+            "max_context_chars": 2345,
+        }
 
 
 def test_freshness_stays_unknown_without_a_reference_date(vault: Path) -> None:
