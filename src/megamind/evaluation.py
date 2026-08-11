@@ -15,9 +15,11 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -46,11 +48,21 @@ _CONDITIONS = ("current-wiki", "no-wiki", "updated-wiki")
 _SECRET_RE = re.compile(r"(?:canary|secret|password|token|credential)[-_=:]", re.I)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
-# A blinding key shorter than this is guessable, and the assignment space is
-# only 3! = 6 permutations: a weak key would let anyone holding the plan
-# brute-force the commitment and unblind the arms.
-MIN_BLINDING_KEY_CHARS = 16
+# The assignment space is only 3! = 6 permutations and the plan publishes a
+# commitment, so an offline guess-and-check costs one HMAC per candidate key.
+# Length alone does not protect against that: a long passphrase is enumerable
+# and a padded project name is not a secret. Only a machine-generated 256-bit
+# key is accepted, written as 64 lowercase hex characters.
+BLINDING_KEY_HEX_CHARS = 64
 BLINDING_SCHEME = "hmac-sha256"
+_HEX_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
+_MIN_DISTINCT_KEY_CHARS = 8
+_MAX_REPEATED_KEY_BLOCK = 32
+KEYGEN_COMMAND = (
+    "python3 -c \"import pathlib, secrets; p = pathlib.Path('blinding.key'); "
+    'p.write_text(secrets.token_hex(32)); p.chmod(0o600)"'
+)
+_KEY_ID_DOMAIN = "megamind/blinding-key-id/v1"
 
 # The public inputs the assignment is derived from. Publishing all of them is
 # safe precisely because the derivation is keyed by a secret the plan omits.
@@ -150,10 +162,15 @@ def guard_output_path(path: Path, forbidden_roots: Iterable[Path] = ()) -> Path:
     return resolved
 
 
-def write_document(path: Path, document: Doc, *, forbidden_roots: Iterable[Path] = ()) -> None:
+def write_document(
+    path: Path, document: Doc, *, forbidden_roots: Iterable[Path] = (), mode: int | None = None
+) -> Path:
     """Write one canonical typed document to an external destination, atomically."""
     resolved = guard_output_path(path, forbidden_roots)
     atomic_write_path(resolved, _canonical(document) + "\n", durable=True)
+    if mode is not None and os.name != "nt":
+        os.chmod(resolved, mode)
+    return resolved
 
 
 def read_json(path: Path, label: str) -> Any:
@@ -745,20 +762,58 @@ def check_benchmark(results_path: Path, thresholds_path: Path) -> Doc:
 # ---------------------------------------------------------------------------
 
 
+def require_blinding_key(raw: str) -> str:
+    """Accept only a machine-generated 256-bit key, never a passphrase.
+
+    Megamind cannot measure entropy, so it enforces the shape a CSPRNG produces
+    and refuses the shapes a human types: anything that is not exactly 64
+    lowercase hex characters, and anything so repetitive that it cannot have
+    come from ``secrets.token_hex(32)``.
+    """
+    key = raw.strip()
+    if not _HEX_KEY_RE.match(key):
+        raise EvaluationError(
+            f"blinding key must be {BLINDING_KEY_HEX_CHARS} lowercase hex characters "
+            f"(256 machine-generated bits); generate one with: {KEYGEN_COMMAND}"
+        )
+    repetitive = len(set(key)) < _MIN_DISTINCT_KEY_CHARS or any(
+        len(key) % block == 0 and key == key[:block] * (len(key) // block)
+        for block in range(1, _MAX_REPEATED_KEY_BLOCK + 1)
+    )
+    if repetitive:
+        raise EvaluationError(
+            "blinding key is too repetitive to be machine-generated; "
+            f"generate one with: {KEYGEN_COMMAND}"
+        )
+    return key
+
+
 def read_blinding_key(path: Path) -> str:
-    """Load the host's private blinding key from a file it alone controls."""
+    """Load the host's private blinding key from a file it alone can read."""
+    try:
+        info = path.stat()
+    except OSError as error:
+        raise EvaluationError("cannot read the blinding key file") from error
+    if not stat.S_ISREG(info.st_mode):
+        raise EvaluationError("the blinding key must live in its own regular file")
+    if os.name != "nt" and info.st_mode & 0o077:
+        raise EvaluationError(
+            "the blinding key file must not be readable by group or others; run chmod 600 on it"
+        )
     try:
         raw = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise EvaluationError("cannot read the blinding key file") from error
-    key = raw.strip()
-    if len(key) < MIN_BLINDING_KEY_CHARS:
-        raise EvaluationError(f"blinding key must be at least {MIN_BLINDING_KEY_CHARS} characters")
-    return key
+    return require_blinding_key(raw)
 
 
 def _keyed_digest(key: str, message: str) -> str:
     return hmac.new(key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _blinding_key_id(key: str) -> str:
+    """A non-reversible fingerprint, so reuse of one key across plans is visible."""
+    return _keyed_digest(key, _KEY_ID_DOMAIN)[:16]
 
 
 def _blind_assignment(key: str, frozen: Doc) -> dict[str, str]:
@@ -786,6 +841,37 @@ def _blinding_commitment(key: str, assignment: dict[str, str]) -> str:
     return _keyed_digest(key, _canonical(assignment))
 
 
+def _snapshot_commitment(
+    key: str,
+    identity_id: str,
+    label: str,
+    condition: str,
+    wiki_sha256: str,
+    assignment: dict[str, str],
+) -> str:
+    """An opaque keyed commitment standing in for a raw snapshot digest.
+
+    A raw digest cannot be published beside a blind label: ``digest_tree`` of an
+    empty directory is a key-free public constant, so the no-wiki arm would name
+    itself in every artifact that carries it - including the arm outputs a
+    grader reads. Binding the digest to the plan identity, the label, the
+    condition, and the whole assignment under the private key makes all three
+    commitments indistinguishable to anyone without the map.
+    """
+    return _keyed_digest(
+        key,
+        _canonical(
+            {
+                "identity_id": identity_id,
+                "blind_label": label,
+                "condition": condition,
+                "wiki_sha256": wiki_sha256,
+                "assignment": assignment,
+            }
+        ),
+    )
+
+
 def _require_assignment_shape(assignment: Doc, labels: Iterable[str]) -> dict[str, str]:
     supplied = {str(key): str(value) for key, value in assignment.items()}
     if sorted(supplied) != sorted(labels):
@@ -795,7 +881,20 @@ def _require_assignment_shape(assignment: Doc, labels: Iterable[str]) -> dict[st
     return supplied
 
 
-def _load_plan(path: Path) -> Doc:
+_DERIVED_PLAN_FIELDS = ("plan_id", "help", "identity_id", "snapshot_commitments", "blinding")
+
+
+def _plan_identity(plan: Doc) -> Doc:
+    """The plan fields the keyed commitments are bound to.
+
+    Commitments cannot be covered by the value they are bound to, so identity is
+    two levels: ``identity_id`` hashes everything the commitments commit to, and
+    ``plan_id`` then hashes the whole body including them.
+    """
+    return {key: value for key, value in plan.items() if key not in _DERIVED_PLAN_FIELDS}
+
+
+def load_plan(path: Path) -> Doc:
     plan = read_json(path, "evaluation plan")
     if not isinstance(plan, dict) or plan.get("schema_version") != PLAN_SCHEMA:
         raise EvaluationError("evaluation plan schema is invalid")
@@ -815,12 +914,15 @@ def _load_plan(path: Path) -> Doc:
     for input_path, expected in expected_digests.items():
         if not isinstance(expected, str) or digest_file(input_path) != expected:
             raise EvaluationError("frozen evaluation input was changed after planning")
-    identity = dict(plan)
-    identity.pop("plan_id", None)
-    identity.pop("help", None)
-    if content_hash(_canonical(identity)) != plan["plan_id"]:
+    if content_hash(_canonical(_plan_identity(plan))) != plan.get("identity_id"):
+        raise EvaluationError("evaluation plan identity has been tampered with")
+    body = {key: value for key, value in plan.items() if key not in {"plan_id", "help"}}
+    if content_hash(_canonical(body)) != plan["plan_id"]:
         raise EvaluationError("evaluation plan identity has been tampered with")
     return plan
+
+
+_load_plan = load_plan
 
 
 def _plan_labels(plan: Doc) -> list[str]:
@@ -889,9 +991,7 @@ def plan_experiment(
     _require_binding(binding, "task_set_version", task_version, "task set version")
     _require_binding(binding, "task_set_sha256", task_sha256, "task set")
     _validated_gates(thresholds, "promotion", _PROMOTION_GATE_SPEC)
-    key = blinding_key.strip()
-    if len(key) < MIN_BLINDING_KEY_CHARS:
-        raise EvaluationError(f"blinding key must be at least {MIN_BLINDING_KEY_CHARS} characters")
+    key = require_blinding_key(blinding_key)
     frozen = {
         "task_set_version": task_version,
         "task_set_sha256": task_sha256,
@@ -905,18 +1005,11 @@ def plan_experiment(
         "inputs_frozen": True,
     }
     assignment = _blind_assignment(key, frozen)
-    snapshots = {
-        label: {"root": roots[condition], "wiki_sha256": digest_tree(Path(roots[condition]))}
-        for label, condition in sorted(assignment.items())
-    }
-    # The plan carries the three snapshot digests as an unordered set, never
-    # beside a label. An empty no-wiki snapshot has a constant digest, so a
-    # per-arm digest would identify that condition on its own.
     arms = [
         {"blind_label": label, "output_root": str(output_path / label)}
         for label in sorted(assignment)
     ]
-    body: Doc = {
+    identity: Doc = {
         "schema_version": PLAN_SCHEMA,
         "task_set": task_version,
         "task_set_path": str(task_path.resolve()),
@@ -924,13 +1017,32 @@ def plan_experiment(
         "thresholds_path": str(thresholds_path.resolve()),
         "frozen": frozen,
         "arms": arms,
-        "snapshot_digests": sorted(str(entry["wiki_sha256"]) for entry in snapshots.values()),
-        "blinding": {
-            "scheme": BLINDING_SCHEME,
-            "commitment": _blinding_commitment(key, assignment),
-        },
         "output_root": output,
         "status": "planned",
+    }
+    identity_id = content_hash(_canonical(identity))
+    snapshots = {
+        label: {
+            "root": roots[condition],
+            "wiki_sha256": digest_tree(Path(roots[condition])),
+            "commitment": _snapshot_commitment(
+                key,
+                identity_id,
+                label,
+                condition,
+                digest_tree(Path(roots[condition])),
+                assignment,
+            ),
+        }
+        for label, condition in sorted(assignment.items())
+    }
+    body: Doc = dict(identity)
+    body["identity_id"] = identity_id
+    body["snapshot_commitments"] = sorted(str(entry["commitment"]) for entry in snapshots.values())
+    body["blinding"] = {
+        "scheme": BLINDING_SCHEME,
+        "commitment": _blinding_commitment(key, assignment),
+        "key_id": _blinding_key_id(key),
     }
     plan_id = content_hash(_canonical(body))
     body["plan_id"] = plan_id
@@ -952,7 +1064,9 @@ def plan_experiment(
     unblinding = {
         "schema_version": MAP_SCHEMA,
         "plan_id": plan_id,
+        "identity_id": identity_id,
         "blinding_key": key,
+        "key_id": body["blinding"]["key_id"],
         "assignments": assignment,
         "snapshots": snapshots,
         "help": [
@@ -963,24 +1077,28 @@ def plan_experiment(
     return body, grader, unblinding
 
 
-def _load_unblinding_map(plan: Doc, path: Path) -> Doc:
-    """Verify the host's unblinding artifact against the plan's commitment."""
+def load_unblinding_map(plan: Doc, path: Path) -> Doc:
+    """Verify the host's unblinding artifact against the plan's commitments."""
     raw = read_json(path, "unblinding map")
     if not isinstance(raw, dict) or raw.get("schema_version") != MAP_SCHEMA:
         raise EvaluationError("unblinding map schema is invalid")
-    if raw.get("plan_id") != plan.get("plan_id"):
+    if raw.get("plan_id") != plan.get("plan_id") or raw.get("identity_id") != plan.get(
+        "identity_id"
+    ):
         raise EvaluationError("unblinding map belongs to a different plan")
-    key = raw.get("blinding_key")
-    if not isinstance(key, str) or len(key.strip()) < MIN_BLINDING_KEY_CHARS:
+    key_value = raw.get("blinding_key")
+    if not isinstance(key_value, str):
         raise EvaluationError("unblinding map carries no usable blinding key")
-    key = key.strip()
+    key = require_blinding_key(key_value)
+    blinding = plan.get("blinding")
+    if not isinstance(blinding, dict) or not isinstance(blinding.get("commitment"), str):
+        raise EvaluationError("evaluation plan carries no blinding commitment")
+    if not hmac.compare_digest(_blinding_key_id(key), str(blinding.get("key_id", ""))):
+        raise EvaluationError("unblinding map key is not the key this plan was blinded with")
     assignments = raw.get("assignments")
     if not isinstance(assignments, dict):
         raise EvaluationError("unblinding map has no assignments")
     supplied = _require_assignment_shape(assignments, _plan_labels(plan))
-    blinding = plan.get("blinding")
-    if not isinstance(blinding, dict) or not isinstance(blinding.get("commitment"), str):
-        raise EvaluationError("evaluation plan carries no blinding commitment")
     if not hmac.compare_digest(_blinding_commitment(key, supplied), str(blinding["commitment"])):
         raise EvaluationError("unblinding map does not open the plan's blinding commitment")
     frozen = plan.get("frozen")
@@ -989,40 +1107,52 @@ def _load_unblinding_map(plan: Doc, path: Path) -> Doc:
     snapshots = raw.get("snapshots")
     if not isinstance(snapshots, dict) or sorted(snapshots) != sorted(supplied):
         raise EvaluationError("unblinding map does not record one snapshot per arm")
+    identity_id = str(plan.get("identity_id", ""))
     recorded: Doc = {}
     for label, entry in sorted(snapshots.items()):
         if not isinstance(entry, dict):
             raise EvaluationError("unblinding map snapshot entry is malformed")
         root = entry.get("root")
         digest = entry.get("wiki_sha256")
-        if not isinstance(root, str) or not root or not isinstance(digest, str) or not digest:
+        commitment = entry.get("commitment")
+        if (
+            not isinstance(root, str)
+            or not root
+            or not isinstance(digest, str)
+            or not digest
+            or not isinstance(commitment, str)
+            or not commitment
+        ):
             raise EvaluationError("unblinding map snapshot entry is malformed")
-        recorded[str(label)] = {"root": root, "wiki_sha256": digest}
-    planned = plan.get("snapshot_digests")
+        expected = _snapshot_commitment(
+            key, identity_id, str(label), supplied[str(label)], digest, supplied
+        )
+        if not hmac.compare_digest(expected, commitment):
+            raise EvaluationError("unblinding map snapshot does not open its own commitment")
+        recorded[str(label)] = {"root": root, "wiki_sha256": digest, "commitment": commitment}
+    planned = plan.get("snapshot_commitments")
     if not isinstance(planned, list) or sorted(
-        str(entry["wiki_sha256"]) for entry in recorded.values()
+        str(entry["commitment"]) for entry in recorded.values()
     ) != sorted(str(item) for item in planned):
-        raise EvaluationError("unblinding map snapshots do not match the planned digests")
-    return {"assignments": supplied, "snapshots": recorded}
+        raise EvaluationError("unblinding map snapshots do not match the planned commitments")
+    return {"assignments": supplied, "snapshots": recorded, "key_id": _blinding_key_id(key)}
 
 
-def evaluation_write_guard_roots(plan_path: Path, map_path: Path | None = None) -> list[Path]:
+def evaluation_roots(plan: Doc, unblinding: Doc | None = None) -> list[Path]:
     """Every evaluated root an ``--out`` destination must stay outside of.
 
-    Derived from the validated plan (and, when scoring, the validated unblinding
-    map, which is the only artifact naming the arm snapshot roots). An empty
-    no-wiki snapshot is not a vault, so the ancestor scan alone would not catch
-    evidence written into it.
+    Derived from the already-validated plan (and, once scoring has unblinded,
+    the validated map, which is the only artifact naming the arm snapshot
+    roots). An empty no-wiki snapshot is not a vault, so the ancestor scan alone
+    would not catch evidence written into it.
     """
-    plan = _load_plan(plan_path)
     roots = [Path(str(plan.get("output_root", "")))]
     roots += [
         Path(str(arm.get("output_root", "")))
         for arm in plan.get("arms", [])
         if isinstance(arm, dict)
     ]
-    if map_path is not None:
-        unblinding = _load_unblinding_map(plan, map_path)
+    if unblinding is not None:
         roots += [Path(str(entry["root"])) for entry in unblinding["snapshots"].values()]
     return [root for root in roots if str(root) not in {"", "."}]
 
@@ -1044,12 +1174,14 @@ def _validate_output(plan: Doc, path: Path) -> tuple[str, list[Doc], str]:
         resolve_contained(Path(str(arm["output_root"])), path)
     except (OSError, ValueError) as error:
         raise EvaluationError("arm output is outside its isolated output root") from error
-    snapshot = raw.get("wiki_sha256")
-    planned_digests = plan.get("snapshot_digests")
-    if not isinstance(planned_digests, list):
-        raise EvaluationError("evaluation plan records no snapshot digests")
-    if not isinstance(snapshot, str) or snapshot not in {str(item) for item in planned_digests}:
-        raise EvaluationError("arm output wiki snapshot does not match the plan")
+    snapshot = raw.get("snapshot_commitment")
+    planned = plan.get("snapshot_commitments")
+    if not isinstance(planned, list):
+        raise EvaluationError("evaluation plan records no snapshot commitments")
+    if not isinstance(snapshot, str) or snapshot not in {str(item) for item in planned}:
+        raise EvaluationError("arm output snapshot commitment does not match the plan")
+    if isinstance(raw.get("wiki_sha256"), str):
+        raise EvaluationError("arm output must carry an opaque commitment, not a raw snapshot")
     results = raw.get("results")
     if not isinstance(results, list):
         raise EvaluationError("arm output results must be a list")
@@ -1109,9 +1241,9 @@ def _collect_outputs(
         snapshots[label] = snapshot
     missing = sorted(expected - set(collected))
     # A complete submission must account for every planned snapshot exactly
-    # once: the plan deliberately no longer says which label owns which digest,
-    # so this is where a swapped or repeated snapshot is caught without a map.
-    planned = sorted(str(item) for item in plan.get("snapshot_digests", []))
+    # once: the plan deliberately never says which label owns which commitment,
+    # so this is where a swapped or repeated snapshot is caught without a key.
+    planned = sorted(str(item) for item in plan.get("snapshot_commitments", []))
     if not missing and sorted(snapshots.values()) != planned:
         raise EvaluationError("arm outputs do not cover each planned snapshot exactly once")
     return collected, snapshots, missing
@@ -1131,8 +1263,7 @@ def _unsettled(schema: str, plan: Doc, submitted: Iterable[str], missing: list[s
     }
 
 
-def validate_experiment(plan_path: Path, output_paths: list[Path]) -> Doc:
-    plan = _load_plan(plan_path)
+def validate_outputs(plan: Doc, output_paths: list[Path]) -> Doc:
     collected, _snapshots, missing = _collect_outputs(plan, output_paths)
     if missing:
         return _unsettled(VALIDATE_SCHEMA, plan, collected, missing)
@@ -1148,11 +1279,35 @@ def validate_experiment(plan_path: Path, output_paths: list[Path]) -> Doc:
     }
 
 
-def score_experiment(plan_path: Path, output_paths: list[Path], map_path: Path) -> Doc:
-    plan = _load_plan(plan_path)
+def validate_experiment(plan_path: Path, output_paths: list[Path]) -> Doc:
+    return validate_outputs(load_plan(plan_path), output_paths)
+
+
+@dataclass
+class SealedScores:
+    """Blind per-label grades, complete and sealed before anything is unblinded."""
+
+    plan: Doc
+    collected: dict[str, list[Doc]] = field(default_factory=dict)
+    commitments: dict[str, str] = field(default_factory=dict)
+    arm_scores: dict[str, Doc] = field(default_factory=dict)
+    seal: str = ""
+    unsettled: Doc | None = None
+
+
+def seal_experiment(plan_path: Path, output_paths: list[Path]) -> SealedScores:
+    """Grade every arm by its opaque label and seal the packet.
+
+    Nothing here reads, parses, or validates the unblinding artifact: the grades
+    are a pure function of the arm outputs and the frozen task set, so the seal
+    is fixed before any caller can learn which label is which condition. An
+    incomplete submission returns the typed unsettled document and never
+    proceeds to unblinding at all.
+    """
+    plan = load_plan(plan_path)
     collected, snapshots, missing = _collect_outputs(plan, output_paths)
     if missing:
-        return _unsettled(SCORE_SCHEMA, plan, collected, missing)
+        return SealedScores(plan=plan, unsettled=_unsettled(SCORE_SCHEMA, plan, collected, missing))
     tasks_raw = (
         read_json(Path(str(plan.get("task_set_path", ""))), "task set")
         if plan.get("task_set_path")
@@ -1163,8 +1318,6 @@ def score_experiment(plan_path: Path, output_paths: list[Path], map_path: Path) 
     _, tasks = _validate_tasks(tasks_raw)
     task_by_id = {str(task["id"]): task for task in tasks}
 
-    # Blind scoring first: every arm is scored by its opaque label only, and the
-    # result is sealed with a digest before the unblinding map is even read.
     arm_scores: dict[str, Doc] = {}
     for label, rows in sorted(collected.items()):
         target = 0
@@ -1187,12 +1340,26 @@ def score_experiment(plan_path: Path, output_paths: list[Path], map_path: Path) 
             "provenance_rate": provenance / count if count else 0.0,
             "context_chars_total": sum(int(row["authorized_context_chars"]) for row in rows),
         }
-    blind_scores_sha256 = content_hash(_canonical(arm_scores))
+    return SealedScores(
+        plan=plan,
+        collected=collected,
+        commitments=snapshots,
+        arm_scores=arm_scores,
+        seal=content_hash(_canonical(arm_scores)),
+    )
 
-    unblinding = _load_unblinding_map(plan, map_path)
+
+def score_sealed(sealed: SealedScores, unblinding: Doc) -> Doc:
+    """Unblind an already-sealed packet and apply the frozen promotion gates."""
+    if sealed.unsettled is not None:
+        return sealed.unsettled
+    plan = sealed.plan
+    collected = sealed.collected
+    arm_scores = sealed.arm_scores
+    blind_scores_sha256 = sealed.seal
     assignment = unblinding["assignments"]
     for label, entry in unblinding["snapshots"].items():
-        if snapshots.get(label) != entry["wiki_sha256"]:
+        if not hmac.compare_digest(sealed.commitments.get(label, ""), str(entry["commitment"])):
             raise EvaluationError("arm output snapshot does not match the unblinding map")
     label_by_condition = {condition: label for label, condition in assignment.items()}
     current = arm_scores.get(label_by_condition.get("current-wiki", ""))
@@ -1232,6 +1399,14 @@ def score_experiment(plan_path: Path, output_paths: list[Path], map_path: Path) 
         },
         "help": _SCORE_HELP,
     }
+
+
+def score_experiment(plan_path: Path, output_paths: list[Path], map_path: Path) -> Doc:
+    """Seal the blind grades, then unblind. The map is untouched until sealing ends."""
+    sealed = seal_experiment(plan_path, output_paths)
+    if sealed.unsettled is not None:
+        return sealed.unsettled
+    return score_sealed(sealed, load_unblinding_map(sealed.plan, map_path))
 
 
 def record_evaluation(audit_root: Path, score: Doc) -> Doc:

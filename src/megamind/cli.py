@@ -48,15 +48,18 @@ from .doctor import run_doctor
 from .evaluation import (
     EvaluationError,
     check_benchmark,
-    evaluation_write_guard_roots,
+    evaluation_roots,
     guard_output_path,
+    load_plan,
+    load_unblinding_map,
     plan_experiment,
     read_blinding_key,
     read_json,
     record_evaluation,
     run_benchmark,
-    score_experiment,
-    validate_experiment,
+    score_sealed,
+    seal_experiment,
+    validate_outputs,
     write_document,
 )
 from .evolve import EvolveError, apply_plan, plan
@@ -1182,7 +1185,8 @@ def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
     action = args.experiment_command
     if action == "plan":
         arm_roots = [Path(args.no_wiki), Path(args.current_wiki), Path(args.updated_wiki)]
-        _guard_evaluation_outs([args.out, args.grader_out, args.map_out], arm_roots)
+        evaluated = [*arm_roots, Path(args.output_root)]
+        _guard_evaluation_outs([args.out, args.grader_out, args.map_out], evaluated)
         blinding_key = read_blinding_key(Path(args.blinding_key_file))
         result, grader, unblinding = plan_experiment(
             Path(args.tasks),
@@ -1200,9 +1204,9 @@ def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
         )
         # The grader packet and the unblinding map are separate artifacts on
         # purpose: whoever grades the arms must never hold the map.
-        write_document(Path(args.grader_out), grader, forbidden_roots=arm_roots)
-        write_document(Path(args.map_out), unblinding, forbidden_roots=arm_roots)
-        return _evaluation_out(result, args.out, arm_roots), 0
+        write_document(Path(args.grader_out), grader, forbidden_roots=evaluated)
+        write_document(Path(args.map_out), unblinding, forbidden_roots=evaluated, mode=0o600)
+        return _evaluation_out(result, args.out, evaluated), 0
     if action == "record":
         audit_root = Path(args.audit_root)
         _guard_evaluation_outs([args.out], [audit_root])
@@ -1211,17 +1215,27 @@ def cmd_experiment(args: argparse.Namespace) -> tuple[Doc, int]:
             raise EvaluationError("evaluation score must be an object")
         result = record_evaluation(audit_root, score)
         return _evaluation_out(result, args.out, [audit_root]), 0
-    plan = Path(args.plan)
+    plan_path = Path(args.plan)
+    outputs = [Path(path) for path in args.outputs]
     if action == "validate":
-        forbidden = evaluation_write_guard_roots(plan)
+        plan = load_plan(plan_path)
+        forbidden = evaluation_roots(plan)
         _guard_evaluation_outs([args.out], forbidden)
-        result = validate_experiment(plan, [Path(path) for path in args.outputs])
+        result = validate_outputs(plan, outputs)
         return _evaluation_out(result, args.out, forbidden), 0 if result["status"] == "valid" else 1
     if action == "score":
-        unblinding_map = Path(args.unblinding_map)
-        forbidden = evaluation_write_guard_roots(plan, unblinding_map)
+        # Sealing runs first and touches no unblinding artifact. Only once the
+        # blind grades are fixed is the map opened, the protected roots derived
+        # from it, the destination checked, and the result unblinded and written.
+        sealed = seal_experiment(plan_path, outputs)
+        if sealed.unsettled is not None:
+            forbidden = evaluation_roots(sealed.plan)
+            _guard_evaluation_outs([args.out], forbidden)
+            return _evaluation_out(sealed.unsettled, args.out, forbidden), 1
+        unblinding = load_unblinding_map(sealed.plan, Path(args.unblinding_map))
+        forbidden = evaluation_roots(sealed.plan, unblinding)
         _guard_evaluation_outs([args.out], forbidden)
-        result = score_experiment(plan, [Path(path) for path in args.outputs], unblinding_map)
+        result = score_sealed(sealed, unblinding)
         return (
             _evaluation_out(result, args.out, forbidden),
             0 if result["status"] == "promoted" else 1,

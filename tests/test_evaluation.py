@@ -16,21 +16,26 @@ from typing import Any
 
 import pytest
 
+from megamind import evaluation as evaluation_module
 from megamind import toon
 from megamind.cli import main
 from megamind.evaluation import (
     EvaluationError,
     _blinding_commitment,
-    _load_plan,
     _PublicRunner,
     check_benchmark,
     digest_file,
     digest_tree,
+    load_plan,
     plan_experiment,
+    read_blinding_key,
     run_benchmark,
     score_experiment,
+    seal_experiment,
     validate_experiment,
 )
+
+_load_plan = load_plan
 
 ROOT = Path(__file__).parents[1]
 FIXTURES = ROOT / "evals/fixtures/release-mini"
@@ -73,7 +78,9 @@ _RELEASE_DEFAULTS: dict[str, float | int] = {
     "model_access_violations_max": 0,
     "contract_violations_max": 0,
 }
-BLINDING_KEY = "synthetic-blinding-key-0001"
+# A frozen stand-in for `secrets.token_hex(32)`: 64 lowercase hex characters.
+BLINDING_KEY = "3f7a1c9e02b45d68af13c7e5904b2d81ef6a3c50d92b7481ae35f0c62d9b1748"
+OTHER_KEY = "b21e4f80c7a35d196e0b8f42c53da97014e6b3852fd1c0a94b7e236f8d05a1c3"
 
 
 def run_json(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, dict[str, Any], str]:
@@ -88,9 +95,10 @@ def _release_section(**overrides: float | int) -> str:
     return f"[release]\n{body}\n"
 
 
-def _key_file(tmp_path: Path, key: str = BLINDING_KEY) -> Path:
+def _key_file(tmp_path: Path, key: str = BLINDING_KEY, mode: int = 0o600) -> Path:
     path = tmp_path / "blinding.key"
     path.write_text(key + "\n", encoding="utf-8")
+    path.chmod(mode)
     return path
 
 
@@ -498,7 +506,7 @@ def _write_arms(
                     "plan_id": plan["plan_id"],
                     "task_set": plan["task_set"],
                     "arm_label": label,
-                    "wiki_sha256": snapshots[label]["wiki_sha256"],
+                    "snapshot_commitment": snapshots[label]["commitment"],
                     "session_id": f"session-{index}",
                     "results": [
                         {
@@ -524,7 +532,7 @@ def test_plan_blinds_conditions_with_a_key_dependent_permutation(tmp_path: Path)
     for index in range(8):
         workspace = tmp_path / f"key{index}"
         workspace.mkdir()
-        _, docs = _plan(workspace, key=f"synthetic-blinding-key-{index:04d}")
+        _, docs = _plan(workspace, key=f"{index:02x}" + BLINDING_KEY[2:])
         assignments = docs["map"]["assignments"]
         assert sorted(assignments) == ["arm-0", "arm-1", "arm-2"]
         assert sorted(assignments.values()) == ["current-wiki", "no-wiki", "updated-wiki"]
@@ -540,13 +548,56 @@ def test_plan_is_reproducible_for_the_same_public_inputs_and_key(tmp_path: Path)
     assert first["plan"]["blinding"] == second["plan"]["blinding"]
 
 
-def test_plan_rejects_a_guessable_blinding_key(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "weak",
+    [
+        "1",
+        "synthetic-blinding-key-0001",
+        "0" * 64,
+        "deadbeef" * 8,
+        "ab" * 32,
+        BLINDING_KEY.upper(),
+        BLINDING_KEY[:63],
+        BLINDING_KEY + "0",
+    ],
+)
+def test_plan_accepts_only_a_machine_generated_256_bit_key(tmp_path: Path, weak: str) -> None:
+    workspace = tmp_path / "weak"
     with pytest.raises(EvaluationError, match="blinding key"):
-        _plan(tmp_path / "weak", key="1")
+        _plan(workspace, key=weak)
 
 
-def test_plan_and_grader_packet_cannot_recompute_the_assignment(tmp_path: Path) -> None:
-    """The public artifacts must not carry inputs sufficient to unblind."""
+def test_key_file_must_not_be_readable_by_group_or_others(tmp_path: Path) -> None:
+    loose = _key_file(tmp_path, mode=0o644)
+    with pytest.raises(EvaluationError, match="chmod 600"):
+        read_blinding_key(loose)
+    loose.chmod(0o600)
+    assert read_blinding_key(loose) == BLINDING_KEY
+    with pytest.raises(EvaluationError, match="regular file"):
+        read_blinding_key(tmp_path)
+
+
+def test_key_error_names_a_safe_generation_command(tmp_path: Path) -> None:
+    weak = tmp_path / "weak.key"
+    weak.write_text("not-a-key\n", encoding="utf-8")
+    weak.chmod(0o600)
+    with pytest.raises(EvaluationError, match=r"secrets\.token_hex"):
+        read_blinding_key(weak)
+
+
+def test_reused_keys_share_a_key_id_and_distinct_keys_do_not(tmp_path: Path) -> None:
+    _, first = _plan(tmp_path / "a", seed=5)
+    _, second = _plan(tmp_path / "b", seed=9)
+    _, other = _plan(tmp_path / "c", seed=5, key=OTHER_KEY)
+    assert first["plan"]["blinding"]["key_id"] == second["plan"]["blinding"]["key_id"]
+    assert first["plan"]["blinding"]["key_id"] != other["plan"]["blinding"]["key_id"]
+    assert BLINDING_KEY not in json.dumps(first["plan"])
+
+
+def test_public_artifacts_cannot_recompute_the_assignment_or_spot_the_empty_tree(
+    tmp_path: Path,
+) -> None:
+    """No public artifact may distinguish the constant empty no-wiki snapshot."""
     _, docs = _plan(tmp_path)
     real = docs["map"]["assignments"]
     plan, grader = docs["plan"], docs["grader"]
@@ -554,27 +605,137 @@ def test_plan_and_grader_packet_cannot_recompute_the_assignment(tmp_path: Path) 
         body = json.dumps({k: v for k, v in artifact.items() if k != "help"})
         for leak in ("no-wiki", "current-wiki", "updated-wiki", "blinding_key", BLINDING_KEY):
             assert leak not in body, leak
-    # Every candidate key an attacker could read out of the plan fails to open
-    # the commitment, and the empty no-wiki snapshot is no longer tied to a label.
     commitment = plan["blinding"]["commitment"]
     frozen = plan["frozen"]
     for guess in (str(frozen["seed"]), frozen["task_set_sha256"], plan["plan_id"], "1", ""):
         assert _blinding_commitment(guess, real) != commitment
-    assert "wiki_sha256" not in json.dumps(plan["arms"])
+    # The empty-tree digest is a key-free public constant, so it must appear in
+    # no public artifact and in no arm output.
     empty_digest = digest_tree(tmp_path / "none")
-    assert empty_digest in plan["snapshot_digests"]
-    assert sorted(plan["snapshot_digests"]) == plan["snapshot_digests"]
+    assert empty_digest == "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    assert empty_digest not in json.dumps(plan)
+    assert empty_digest not in json.dumps(grader)
+    assert "wiki_sha256" not in json.dumps(plan)
+    assert sorted(plan["snapshot_commitments"]) == plan["snapshot_commitments"]
+
+
+def test_arm_outputs_never_expose_a_raw_snapshot_digest(tmp_path: Path) -> None:
+    paths, docs = _plan(tmp_path)
+    outputs = _write_arms(paths, docs)
+    empty_digest = digest_tree(tmp_path / "none")
+    for path in outputs:
+        body = path.read_text(encoding="utf-8")
+        assert empty_digest not in body
+        assert "wiki_sha256" not in body
+    # Every arm's commitment is a distinct opaque value.
+    commitments = {
+        json.loads(p.read_text(encoding="utf-8"))["snapshot_commitment"] for p in outputs
+    }
+    assert len(commitments) == 3
+    assert commitments == set(docs["plan"]["snapshot_commitments"])
+
+
+def test_validate_refuses_an_arm_output_that_states_a_raw_digest(tmp_path: Path) -> None:
+    paths, docs = _plan(tmp_path)
+    outputs = _write_arms(paths, docs)
+    payload = json.loads(outputs[0].read_text(encoding="utf-8"))
+    payload["wiki_sha256"] = digest_tree(tmp_path / "none")
+    outputs[0].write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(EvaluationError, match="opaque commitment"):
+        validate_experiment(paths["artifacts"] / "plan.json", outputs)
 
 
 def test_score_refuses_a_map_carrying_the_wrong_key(tmp_path: Path) -> None:
     paths, docs = _plan(tmp_path)
     outputs = _write_arms(paths, docs)
     forged = dict(docs["map"])
-    forged["blinding_key"] = "synthetic-blinding-key-9999"
+    forged["blinding_key"] = OTHER_KEY
     forged_path = paths["artifacts"] / "forged-map.json"
+    forged_path.write_text(json.dumps(forged), encoding="utf-8")
+    with pytest.raises(EvaluationError, match="not the key this plan was blinded with"):
+        score_experiment(paths["artifacts"] / "plan.json", outputs, forged_path)
+
+
+def test_score_refuses_a_map_with_a_replayed_snapshot_commitment(tmp_path: Path) -> None:
+    paths, docs = _plan(tmp_path)
+    outputs = _write_arms(paths, docs)
+    forged = json.loads(json.dumps(docs["map"]))
+    labels = sorted(forged["snapshots"])
+    forged["snapshots"][labels[0]]["commitment"] = forged["snapshots"][labels[1]]["commitment"]
+    forged_path = paths["artifacts"] / "replayed-map.json"
     forged_path.write_text(json.dumps(forged), encoding="utf-8")
     with pytest.raises(EvaluationError, match="commitment"):
         score_experiment(paths["artifacts"] / "plan.json", outputs, forged_path)
+
+
+def test_sealing_completes_without_any_unblinding_artifact(tmp_path: Path) -> None:
+    """The seal must be reachable when no map exists on disk at all."""
+    paths, docs = _plan(tmp_path)
+    outputs = _write_arms(paths, docs)
+    (paths["artifacts"] / "map.json").unlink()
+    sealed = seal_experiment(paths["artifacts"] / "plan.json", outputs)
+    assert sealed.unsettled is None
+    assert set(sealed.arm_scores) == {"arm-0", "arm-1", "arm-2"}
+    assert sealed.seal
+
+
+def test_score_reads_the_map_only_after_every_arm_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths, docs = _plan(tmp_path)
+    outputs = _write_arms(paths, docs)
+    opened: list[str] = []
+    real_read_json = evaluation_module.read_json
+
+    def probe(path: Path, label: str) -> Any:
+        opened.append(label)
+        return real_read_json(path, label)
+
+    evaluation_module.read_json = probe  # type: ignore[assignment]
+    try:
+        code, doc, _ = run_json(
+            capsys,
+            "experiment",
+            "score",
+            "--plan",
+            str(paths["artifacts"] / "plan.json"),
+            "--outputs",
+            *[str(path) for path in outputs],
+            "--unblinding-map",
+            str(paths["artifacts"] / "map.json"),
+        )
+    finally:
+        evaluation_module.read_json = real_read_json  # type: ignore[assignment]
+    assert code == 0
+    assert doc["status"] == "promoted"
+    assert "unblinding map" in opened
+    first_map = opened.index("unblinding map")
+    assert opened.count("unblinding map") == 1
+    assert opened[:first_map].count("arm output") == len(outputs)
+
+
+def test_incomplete_arms_never_open_the_unblinding_map(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths, docs = _plan(tmp_path)
+    labels = [arm["blind_label"] for arm in docs["plan"]["arms"]]
+    outputs = _write_arms(paths, docs, labels=labels[:2])
+    corrupt = paths["artifacts"] / "map.json"
+    corrupt.write_text("not json at all", encoding="utf-8")
+    code, doc, _ = run_json(
+        capsys,
+        "experiment",
+        "score",
+        "--plan",
+        str(paths["artifacts"] / "plan.json"),
+        "--outputs",
+        *[str(path) for path in outputs],
+        "--unblinding-map",
+        str(corrupt),
+    )
+    assert code == 1
+    assert doc["status"] == "unsettled"
+    assert doc["missing_arms"] == [labels[2]]
 
 
 def test_validation_needs_no_unblinding_map(tmp_path: Path) -> None:

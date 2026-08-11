@@ -383,26 +383,32 @@ queries scores zero so an absent tier fails closed.
 
 `megamind/evaluation-plan/v1` freezes the task-set, rubric, threshold, model,
 tools, effort, and execution seed. It assigns opaque arm labels and distinct
-output roots, lists `snapshot_digests` as a sorted set never tied to a label,
-and carries `blinding` with the scheme and a keyed commitment. It never names a
-condition beside a label and never carries the blinding key.
-`megamind/evaluation-grader-packet/v1` carries only the blind labels, the task
-prompts, the rubric, and the same commitment.
-`megamind/evaluation-unblinding-map/v1` is a separate host artifact holding the
-private `blinding_key`, the label-to-condition `assignments`, and per-arm
-`snapshots` (root and digest). It is accepted only when it belongs to the plan,
-opens the plan's commitment under its own key, re-derives the same assignment,
-and matches the planned digests, so a substituted, re-keyed, or edited map is
-refused. Host arm output is
+output roots, carries an `identity_id` over everything the commitments commit
+to, lists `snapshot_commitments` as a sorted set never tied to a label, and
+carries `blinding` with the scheme, a keyed assignment commitment, and a
+`key_id` fingerprint. It never names a condition beside a label, never carries
+the blinding key, and never carries a raw snapshot digest: the empty no-wiki
+tree hashes to a key-free public constant, so a raw digest would identify that
+condition on its own. `megamind/evaluation-grader-packet/v1` carries only the
+blind labels, the task prompts, the rubric, and the same commitment.
+`megamind/evaluation-unblinding-map/v1` is a separate host artifact, written
+mode 0600, holding the private `blinding_key`, the label-to-condition
+`assignments`, and per-arm `snapshots` (root, digest, and commitment). It is
+accepted only when it belongs to the plan by `plan_id` and `identity_id`,
+carries the key the plan's `key_id` names, opens the plan's assignment
+commitment, re-derives the same assignment, and opens every planned snapshot
+commitment, so a substituted, re-keyed, replayed, or edited map is refused.
+Host arm output is
 `megamind/evaluation-arm-output/v1`; it must carry the plan/task versions,
-opaque label, session id, a snapshot digest drawn from the planned set, every
-task exactly once, the actual non-negative `authorized_context_chars`,
-provenance, and zero privacy/model access violations. Validation rejects
-malformed output, stale or tampered inputs, missing tasks, duplicate arms,
-snapshots that do not cover the planned set exactly once, path escapes,
-leakage, or cross-arm contamination, and needs no map or key. Scoring returns
+opaque label, session id, a `snapshot_commitment` drawn from the planned set
+and no raw `wiki_sha256`, every task exactly once, the actual non-negative
+`authorized_context_chars`, provenance, and zero privacy/model access
+violations. Validation rejects malformed output, stale or tampered inputs,
+missing tasks, duplicate arms, commitments that do not cover the planned set
+exactly once, path escapes, leakage, or cross-arm contamination, and needs no
+map or key. Scoring returns
 `megamind/evaluation-score/v1`, sealing the per-label blind scores as
-`blind_scores_sha256` before the map is read: promotion requires improved
+`blind_scores_sha256` before the map is opened at all: promotion requires improved
 target outcomes, no material adjacent regression, provenance within the
 preregistered `provenance_regression_max` tolerance, and zero new safety
 violations. Failure is `rollback-required` with a non-empty `rollback_ref`;

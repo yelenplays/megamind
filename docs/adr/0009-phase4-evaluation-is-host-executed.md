@@ -14,14 +14,20 @@ All inputs are versioned and digested before scoring, and every threshold file
 is preregistered against the exact corpus, query-set, and task-set digests it
 gates, so a missing, stale, or tampered identity is refused rather than scored.
 Arm snapshots, sessions, caches, writable output roots, and labels are isolated.
-Blinding is a three-artifact split under a host-supplied private key: the plan
-and the grader packet carry blind labels and a keyed commitment but never the
-key, a condition beside a label, or a snapshot digest tied to one, and the
-unblinding map lives with the host execution record. Conditions are assigned by
-an HMAC of the frozen public identity under that key, so identical public
-inputs and the same key reproduce the assignment while the public artifacts
-hold nothing sufficient to derive it. Scoring seals the blind per-label scores
-before it reads the map, and accepts the map only if it opens the commitment.
+Blinding is a three-artifact split under a host-supplied private key - a
+machine-generated 256-bit value in its own mode-0600 file, because the
+published commitment over a six-permutation space makes a guessable key
+worthless. The plan and the grader packet carry blind labels and keyed
+commitments but never the key, a condition beside a label, or any raw snapshot
+digest; the unblinding map lives with the host execution record. Raw digests
+are replaced by opaque per-arm commitments precisely because the empty no-wiki
+tree hashes to a key-free constant that would otherwise name that condition in
+every artifact carrying it, including the arm outputs a grader reads.
+Conditions are assigned by an HMAC of the frozen public identity under that
+key, so identical public inputs and the same key reproduce the assignment while
+the public artifacts hold nothing sufficient to derive it. Scoring seals the
+blind per-label scores before it opens the map at all, and then accepts the map
+only if it opens every commitment under the key the plan names.
 
 Validation fails closed on tampering, missing provenance, malformed context
 accounting, leakage, privacy/access violations, or cross-arm contamination.
