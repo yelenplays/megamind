@@ -17,7 +17,7 @@ and renders it as TOON or JSON only at the output boundary (see
 | `megamind.registry` | `.megamind/registry.json` (schema v1/v2) load/save/validate/migrate; generated `ROUTER.md` projection |
 | `megamind.access` | Model-access policy: derives and clamps the binding local/cloud access, routing mode, and catalog visibility for every card |
 | `megamind.card` | The standalone `.megamind/wiki-card.json` of a canonical wiki root |
-| `megamind.links` | Markdown link and Obsidian wikilink extraction and resolution |
+| `megamind.links` | Markdown link and Obsidian wikilink extraction, target encoding/decoding, and resolution |
 | `megamind.routing` | The deterministic retrieval ladder |
 | `megamind.confidence` | Route/claim/answer confidence rubrics, the 0.75 reliance floor, and the route thresholds |
 | `megamind.semantic` | Optional local semantic reranking behind the lexical baseline, with typed fallbacks |
@@ -128,10 +128,10 @@ that page without changing card scope; when that wiki declares no index or the
 declared index is missing, the plan notes that the page will not be
 index-routable rather than inventing one. Apply first persists a durable
 transaction over the exact old and new page and index bytes.
-`evolve --rollback --plan-id` restores that pre-change compiled
-tree, keeps the proposal and transaction evidence, and refuses before writing
-when any target contains foreign content. Interrupted applies resume from the
-same transaction. Supersession marks the old page `superseded` with a
+`evolve --rollback --plan-id` restores that pre-change compiled tree, keeps
+the proposal and transaction evidence, and refuses before writing when any
+target contains foreign content. Interrupted applies resume from the same
+transaction. Supersession marks the old page `superseded` with a
 `superseded_by` pointer instead of deleting anything. An approved new
 top-level wiki is registered in the same apply: the registry entry, the card
 and index skeletons, and the regenerated router are plan changes covered by
@@ -286,13 +286,12 @@ host owns consumption of the proof and every external action. See
   `.megamind/audit/log.jsonl`. Containment, backup, and audit are vault
   policies layered on top of the bare atomic-write primitive, so `setup skill`,
   which refuses destinations resolving inside a vault and writes only to an
-  external destination, gets atomicity only. The
-  evaluation surfaces use the same primitive, but only after refusing any
-  destination that resolves inside an evaluated root or inside any vault. The
-  blinding key is the exception: `fsops.create_private_file` creates it
-  owner-only from its first syscall and refuses to replace an existing key,
-  because a secret must never exist under broader permissions, not even
-  between a write and a `chmod`.
+  external destination, gets atomicity only. The evaluation surfaces use the
+  same primitive, but only after refusing any destination that resolves inside
+  an evaluated root or inside any vault. The blinding key is the exception:
+  `fsops.create_private_file` creates it owner-only from its first syscall and
+  refuses to replace an existing key, because a secret must never exist under
+  broader permissions, not even between a write and a `chmod`.
 - The registry stores only root-relative paths, so vaults stay portable and
   never leak machine-specific locations.
 - Rollout state is external to every vault and estate. Proofs contain card and

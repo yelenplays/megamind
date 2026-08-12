@@ -557,7 +557,9 @@ gets read when no exact page matches, and the only routable content of
 `digest-only` wikis. Index: `megamind: index` plus one Markdown link per topic
 page with a short hint; the router scores these entries to find exact pages.
 Link targets are read percent-decoded, so a page name carrying a space, `(`,
-`)`, `#`, or `%` is linked in the encoded form Markdown can carry.
+`)`, `#`, or `%` is linked in the encoded form Markdown can carry, and a
+generated entry label carries `[` and `]` rewritten as `(` and `)` so the line
+stays a readable link.
 
 ## Topic page
 

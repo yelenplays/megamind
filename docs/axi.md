@@ -211,9 +211,9 @@ the full component rationale.
 `evolve --apply` is a durable transaction. When an evolved destination belongs
 to an existing wiki with a present declared index, the reviewed plan includes
 a missing relative Markdown index link without changing card routing scope.
-Its result additively carries
-`pre_change_tree_sha256`, `applied_tree_sha256`, and `restored_tree_sha256`
-over each controlled path but the proposal, plus `rolled_back` beside `applied`.
+Its result additively carries `pre_change_tree_sha256`, `applied_tree_sha256`,
+and `restored_tree_sha256` over each controlled path but the proposal, plus
+`rolled_back` beside `applied`.
 Replaying an interrupted apply resumes from the write-ahead record.
 `evolve --rollback --plan-id` verifies every target before writing, refuses
 foreign content or a stale/tampered token, restores the proposal and exact
