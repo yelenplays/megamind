@@ -12,6 +12,7 @@ from importlib import resources
 from pathlib import Path
 
 from . import fsops
+from .fsops import MEGAMIND_DIR, PathEscapeError
 
 SKILL_DIR_NAME = "megamind"
 SKILL_FILE_NAMES = ("SKILL.md", "references/commands.md", "references/concepts.md")
@@ -28,9 +29,12 @@ def skill_files() -> list[tuple[str, str]]:
 
 def write_skill(dest: Path) -> tuple[list[str], list[str]]:
     """Copy the skill into dest/megamind. Never overwrites; returns (created, skipped)."""
+    resolved = dest.expanduser().resolve()
+    if any((parent / MEGAMIND_DIR).is_dir() for parent in (resolved, *resolved.parents)):
+        raise PathEscapeError("skill destination must not resolve inside a Megamind vault")
     created: list[str] = []
     skipped: list[str] = []
-    target_root = dest / SKILL_DIR_NAME
+    target_root = resolved / SKILL_DIR_NAME
     for name, content in skill_files():
         target = target_root / name
         rel = f"{SKILL_DIR_NAME}/{name}"

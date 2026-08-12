@@ -362,6 +362,63 @@ def test_privacy_order_requires_a_complete_nondecreasing_prior_proof_chain(
     assert ready["privacy_rank"] == 3
 
 
+def test_rollout_uses_restrictively_reconciled_sensitivity(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path / "estate")
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.privacy = "personal-local"
+    product.sensitivity = "public-reference"
+    product.model_access.cloud = "full"
+    save_registry(vault, registry)
+    evidence = _evidence(tmp_path, capsys, vault)
+
+    plan = build_plan(_inputs(tmp_path, vault, evidence))
+
+    assert plan["sensitivity"] == "personal-local"
+    assert plan["effective_access"] == "digest-only"
+    assert plan["privacy_rank"] == 3
+    assert (
+        next(check for check in plan["checks"] if check["check"] == "wiki-health")["status"]
+        == "failed"
+    )
+
+
+@pytest.mark.parametrize("malformed_sequence", ["0", "abc", None, True])
+def test_malformed_prior_proof_sequence_is_a_typed_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    malformed_sequence: object,
+) -> None:
+    vault = build_vault(tmp_path / "estate")
+    evidence = _evidence(tmp_path, capsys, vault)
+    prior = _write_json(
+        tmp_path / "prior.json",
+        {
+            "schema_version": "megamind/host-wiki-promotion-proof/v1",
+            "status": "promoted",
+            "loadable": True,
+            "host_id": HOST_ID,
+            "model_class": "cloud",
+            "privacy_rank": 0,
+            "sequence": malformed_sequence,
+            "promotion_id": "synthetic-prior",
+        },
+    )
+    inputs = _inputs(tmp_path, vault, evidence, sequence=1, prior_proofs=(prior,))
+
+    code, document, err = run_json(capsys, *_promote_args(inputs))
+
+    assert code == 1
+    assert err == ""
+    assert document["schema_version"] == "megamind/error/v1"
+    assert document["code"] == "rollout_invalid"
+    assert "sequence must be an integer" in document["message"]
+    assert not inputs.state_root.exists()
+
+
 def test_health_fails_closed_on_card_or_access_drift_and_state_cannot_enter_a_vault(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

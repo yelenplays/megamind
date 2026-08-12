@@ -483,7 +483,7 @@ def test_evolve_rollback_restores_the_compiled_tree_and_retains_the_proposal(
     assert err == ""
     assert rolled_back["schema_version"] == "megamind/evolve-result/v1"
     assert rolled_back["status"] == "rolled_back"
-    assert rolled_back["rolled_back"] == ["wiki/synthetic-lighting.md"]
+    assert rolled_back["rolled_back"] == ["wiki/index.md", "wiki/synthetic-lighting.md"]
     assert applied["pre_change_tree_sha256"] == rolled_back["restored_tree_sha256"]
     assert applied["applied_tree_sha256"] != applied["pre_change_tree_sha256"]
     assert not (root / "wiki/synthetic-lighting.md").exists()
@@ -707,6 +707,83 @@ def test_evolve_plan_apply_and_noop(tmp_path: Path, capsys: pytest.CaptureFixtur
     code, replan, _ = run_json(capsys, "--root", str(vault), "evolve", pid)
     assert code == 0
     assert replan["status"] == "noop"
+
+
+def test_existing_wiki_evolution_updates_index_routes_and_rolls_back_exactly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    index = vault / "ProductWiki/INDEX.md"
+    card = vault / "ProductWiki/CARD.md"
+    registry = vault / ".megamind/registry.json"
+    index_before = index.read_bytes()
+    card_before = card.read_bytes()
+    registry_before = registry.read_bytes()
+    proposal_id = _capture_id(capsys, vault, "# Pricing tiers\n\nThree synthetic tiers apply.")
+    destination = "ProductWiki/topics/pricing-tiers.md"
+
+    code, planned, err = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "evolve",
+        proposal_id,
+        "--dest",
+        destination,
+    )
+    assert code == 0 and err == ""
+    assert planned["files_changed"] == 2
+    assert any("ProductWiki/INDEX.md" in line for line in planned["diff"])
+
+    code, applied, err = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "evolve",
+        proposal_id,
+        "--dest",
+        destination,
+        "--apply",
+        "--plan-id",
+        planned["plan_id"],
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0 and err == ""
+    assert applied["applied"] == [destination, "ProductWiki/INDEX.md"]
+    assert card.read_bytes() == card_before
+    assert registry.read_bytes() == registry_before
+
+    code, preflight, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "preflight",
+        "pricing tiers",
+        "--model-class",
+        "local",
+    )
+    assert code == 0 and preflight["status"] == "matched"
+    code, routed, _ = run_json(capsys, "--root", str(vault), "route", "pricing tiers")
+    assert code == 0 and routed["decision"] == "load"
+    assert routed["candidates"][0]["path"] == destination
+
+    code, rolled_back, err = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "evolve",
+        proposal_id,
+        "--rollback",
+        "--plan-id",
+        planned["plan_id"],
+    )
+    assert code == 0 and err == ""
+    assert rolled_back["rolled_back"] == ["ProductWiki/INDEX.md", destination]
+    assert index.read_bytes() == index_before
+    assert not (vault / destination).exists()
+    assert card.read_bytes() == card_before
+    assert registry.read_bytes() == registry_before
 
 
 def test_evolve_apply_without_plan_id_is_usage_error(
@@ -1336,6 +1413,33 @@ def test_adopt_corrupt_rollback_record_is_a_typed_document(
     assert doc["schema_version"] == "megamind/error/v1"
     assert doc["code"] == "adopt_invalid"
     assert (target / ".megamind/wiki-card.json").is_file()
+
+
+@pytest.mark.parametrize("through_symlink", [False, True])
+def test_setup_skill_refuses_vault_destinations_before_writing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    through_symlink: bool,
+) -> None:
+    vault = build_vault(tmp_path)
+    audit = vault / ".megamind/audit/log.jsonl"
+    audit_before = audit.read_bytes()
+    if through_symlink:
+        link = tmp_path / "vault-link"
+        link.symlink_to(vault, target_is_directory=True)
+        destination = link / "skills"
+    else:
+        destination = vault / "skills"
+
+    code, document, err = run_json(capsys, "setup", "skill", "--dest", str(destination))
+
+    assert code == 1
+    assert err == ""
+    assert document["schema_version"] == "megamind/error/v1"
+    assert document["code"] == "path_escape"
+    assert "must not resolve inside a Megamind vault" in document["message"]
+    assert not (vault / "skills/megamind").exists()
+    assert audit.read_bytes() == audit_before
 
 
 def test_new_commands_emit_schema_version_and_help(

@@ -308,7 +308,9 @@ def _prior_checks(
     checks: list[Doc] = []
     promotion_ids: list[str] = []
     proofs = [_read_json(path, "prior promotion proof") for path in paths]
-    ordered = sorted(proofs, key=lambda proof: int(proof.get("sequence", -1)))
+    if any(type(proof.get("sequence")) is not int for proof in proofs):
+        raise RolloutError("prior promotion proof sequence must be an integer")
+    ordered = sorted(proofs, key=lambda proof: proof["sequence"])
     shape = len(ordered) == sequence and [proof.get("sequence") for proof in ordered] == list(
         range(sequence)
     )

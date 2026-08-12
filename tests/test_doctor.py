@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from conftest import write
+from megamind.access import effective_policy
 from megamind.doctor import has_errors, run_doctor
 from megamind.registry import ModelAccess, load_registry, save_registry
 
@@ -140,6 +141,56 @@ def test_doctor_reports_access_policy_invariants(vault: Path) -> None:
     findings = run_doctor(vault)
     access_errors = [f for f in findings if f.check == "access" and f.severity == "error"]
     assert any("restrictive value wins" in f.message for f in access_errors)
+
+
+def test_privacy_and_sensitivity_reconcile_in_the_restrictive_direction(vault: Path) -> None:
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.privacy = "personal-local"
+    product.sensitivity = "public-reference"
+    product.model_access = ModelAccess(local="full", cloud="full")
+    save_registry(vault, registry)
+
+    policy = effective_policy(product)
+    assert policy.sensitivity == "personal-local"
+    assert policy.cloud == "digest-only"
+    assert policy.catalog_visibility == "redacted"
+    messages = [finding.message for finding in run_doctor(vault) if finding.check == "access"]
+    assert any("declares sensitivity 'public-reference'" in message for message in messages)
+    assert any("declares cloud access 'full'" in message for message in messages)
+
+
+def test_company_private_explicit_cloud_policy_remains_legal(vault: Path) -> None:
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.privacy = "company-private"
+    product.sensitivity = "company-private"
+    product.model_access = ModelAccess(local="full", cloud="full")
+    save_registry(vault, registry)
+
+    policy = effective_policy(product)
+    assert policy.sensitivity == "company-private"
+    assert policy.cloud == "full"
+    assert not [finding for finding in run_doctor(vault) if finding.check == "access"]
+
+
+def test_wider_sensitivity_cannot_reclassify_company_private_as_public(vault: Path) -> None:
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.privacy = "company-private"
+    product.sensitivity = "public-reference"
+    product.model_access = ModelAccess(local="full", cloud="full")
+    save_registry(vault, registry)
+
+    policy = effective_policy(product)
+    assert policy.sensitivity == "company-private"
+    assert policy.cloud == "full"
+    findings = [finding for finding in run_doctor(vault) if finding.check == "access"]
+    assert len(findings) == 1
+    assert "declares sensitivity 'public-reference'" in findings[0].message
 
 
 def test_doctor_warns_when_company_wiki_lacks_explicit_cloud_policy(vault: Path) -> None:

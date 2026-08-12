@@ -122,8 +122,11 @@ explicit human approval (`--approve-new-wiki`).
 the reviewed diff; if the vault changed in between, the id no longer matches
 and the apply is refused. Merges embed an idempotency marker
 (`<!-- megamind:proposal:<id> -->`), so re-planning an already-merged proposal
-yields a no-op. Apply first persists a durable transaction over the exact old
-and new bytes. `evolve --rollback --plan-id` restores that pre-change compiled
+yields a no-op. When the destination belongs to an existing wiki with a
+present declared index, the plan also adds a missing relative Markdown link to
+that page without changing card scope. Apply first persists a durable
+transaction over the exact old and new page and index bytes.
+`evolve --rollback --plan-id` restores that pre-change compiled
 tree, keeps the proposal and transaction evidence, and refuses before writing
 when any target contains foreign content. Interrupted applies resume from the
 same transaction. Supersession marks the old page `superseded` with a
@@ -165,11 +168,15 @@ Every card resolves to an effective posture in `megamind.access`: sensitivity
 may receive: `full`, `digest-only`, or `none`), routing mode, and catalog
 visibility. Unset axes derive from the privacy class; unknown, unclassified,
 broken, or unmigrated classifications derive restrictively (cloud `none`).
-Explicit values that contradict a sensitivity or privacy ceiling are clamped
-down and reported as doctor `access` errors; the restrictive value always
-wins, and no host or later routing layer can widen the decision. Ceilings key
-on the derived sensitivity, never the raw field, so leaving `sensitivity`
-unset is never a way to escape a clamp.
+An explicit sensitivity is reconciled with the classification implied by
+privacy, and the more restrictive classification wins. Explicit values that
+contradict a sensitivity or privacy ceiling are clamped down and reported as
+doctor `access` errors; the restrictive value always wins, and no host or later
+routing layer can widen the decision. Personal-local privacy independently caps
+cloud access at digest-only. A consistently classified company-private card may
+still set an explicit cloud policy, including full access. Ceilings key on the
+effective sensitivity, so leaving `sensitivity` unset or spelling a wider one
+is never a way to escape a clamp.
 
 ## The fleet catalog and preflight
 
@@ -181,7 +188,9 @@ against the cards. Cards stay authoritative; the catalog is always a
 projection and redaction happens at the projection boundary. Rows sort by
 root and name, except wikis their card withholds entirely: those sort last,
 ordered by a hash of their identity, so a withheld row's position leaks no
-ranking. Page content is never read.
+ranking. Page content is never read; page doctor and staleness maintenance
+remain on the explicit `doctor` and `review` surfaces rather than the catalog
+or preflight hot path.
 
 `preflight` routes a substantive request at the catalog level under the host's
 declared model class. Lexical card evidence only by default (triggers/keywords,
@@ -274,7 +283,8 @@ host owns consumption of the proof and every external action. See
 - Every mutating action inside a vault appends a JSON line to
   `.megamind/audit/log.jsonl`. Containment, backup, and audit are vault
   policies layered on top of the bare atomic-write primitive, so `setup skill`,
-  which writes into a destination outside any vault, gets atomicity only. The
+  which refuses destinations resolving inside a vault and writes only to an
+  external destination, gets atomicity only. The
   evaluation surfaces use the same primitive, but only after refusing any
   destination that resolves inside an evaluated root or inside any vault. The
   blinding key is the exception: `fsops.create_private_file` creates it

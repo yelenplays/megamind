@@ -194,9 +194,10 @@ the full component rationale.
    (including doctor errors), 2 usage/config validation; no interactive
    prompts; unknown flags are rejected before any mutation.
 7. **Explicit, local, zero-network integration**: `setup skill --dest DIR`
-   installs the Agent Skill only where you point it; uninstall by deleting
-   that directory. No hooks are installed implicitly; nothing touches shell
-   or provider config; no command ever makes a network call.
+   installs the Agent Skill only where you point it and refuses a destination
+   that resolves inside a vault before writing; uninstall by deleting that
+   directory. No hooks are installed implicitly; nothing touches shell or
+   provider config; no command ever makes a network call.
 8. **Content first**: no arguments returns the live local home: executable
    identity, one-sentence purpose, root, wikis, proposal/review/doctor
    aggregates, next actions. Never an argparse dump, never a mutation.
@@ -207,7 +208,10 @@ the full component rationale.
 10. **Consistent help**: `--help` on every command is short and
     example-driven.
 
-`evolve --apply` is a durable transaction. Its result additively carries
+`evolve --apply` is a durable transaction. When an evolved destination belongs
+to an existing wiki with a present declared index, the reviewed plan includes
+a missing relative Markdown index link without changing card routing scope.
+Its result additively carries
 `pre_change_tree_sha256`, `applied_tree_sha256`, and `restored_tree_sha256`
 over each controlled path but the proposal, plus `rolled_back` beside `applied`.
 Replaying an interrupted apply resumes from the write-ahead record.

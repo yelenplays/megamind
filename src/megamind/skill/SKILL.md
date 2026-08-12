@@ -88,13 +88,13 @@ Wikis can live in separate roots; each root's card is authoritative and the
 fleet catalog is a generated projection of those cards.
 
 - `megamind-axi catalog --estate <dir>` lists every wiki with scope, owners,
-  sensitivity, effective model access, and maintenance state. Broken or
+  sensitivity, effective model access, and content-free maintenance state. Broken or
   redacted entries are stated explicitly, never silently omitted.
 - `megamind-axi preflight "<request>" --estate <dir> --model-class local|cloud`
   routes a substantive request at the catalog level. It returns card-level
   matches and exact follow-up commands only when route confidence reaches the
   reliance floor; below it you get `ambiguous` offers (no loadable paths) or
-  a quiet `no-match`. It never returns page content, never writes anything,
+  a quiet `no-match`. It never reads or returns compiled page content, never writes anything,
   and honors each card's access policy. A `none` wiki appears under
   `filtered`, a pointer wiki yields location metadata only, and
   `preflight_id` is the proof the consultation ran. Treat `no-match` as

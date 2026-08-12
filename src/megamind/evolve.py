@@ -12,6 +12,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -28,6 +29,7 @@ from .fsops import (
     remove_contained,
     resolve_contained,
 )
+from .links import extract_links
 from .models import Document, parse_document
 from .registry import (
     REGISTRY_PATH,
@@ -167,11 +169,40 @@ def _require_canonical_page(
     return page_path
 
 
-def _is_inside_registered_wiki(registry: Registry, page: str) -> bool:
-    return any(
-        wiki.path == "." or page == wiki.path or page.startswith(wiki.path.rstrip("/") + "/")
+def _registered_wiki_for_page(registry: Registry, page: str) -> WikiEntry | None:
+    matches = [
+        wiki
         for wiki in registry.wikis
-    )
+        if wiki.path == "." or page == wiki.path or page.startswith(wiki.path.rstrip("/") + "/")
+    ]
+    return max(matches, key=lambda wiki: len(wiki.path), default=None)
+
+
+def _is_inside_registered_wiki(registry: Registry, page: str) -> bool:
+    return _registered_wiki_for_page(registry, page) is not None
+
+
+def _index_change_for_page(
+    root: Path, wiki: WikiEntry, page_rel: str, page_label: str
+) -> FileChange | None:
+    """Append one routable Markdown link when a declared index omits a page."""
+    if not wiki.index or page_rel == wiki.index:
+        return None
+    index_path = resolve_contained(root, wiki.index)
+    if not index_path.is_file():
+        return None
+    page_path = resolve_contained(root, page_rel)
+    old_text = index_path.read_text(encoding="utf-8")
+    document = parse_document(old_text)
+    for link in extract_links(document.body):
+        if link.style != "markdown":
+            continue
+        target = link.target.split("#", 1)[0]
+        if target and (index_path.parent / target).resolve() == page_path:
+            return None
+    target = Path(os.path.relpath(page_path, index_path.parent)).as_posix()
+    new_text = old_text.rstrip("\n") + f"\n\n- [{page_label}]({target})\n"
+    return FileChange(path=wiki.index, old=old_text, new=new_text)
 
 
 def _new_wiki_identity(page_rel: str, destination_hint: str) -> tuple[str, str]:
@@ -418,6 +449,14 @@ def plan(
         # reviewed diff and the plan id covers them, so an approved apply wires
         # the new wiki into routing in the same step.
         changes.extend(_registration_changes(root, registry, page_rel, hint, notes))
+    else:
+        wiki = _registered_wiki_for_page(registry, page_rel)
+        assert wiki is not None
+        page_label = _first_heading(document.body)
+        index_change = _index_change_for_page(root, wiki, page_rel, page_label)
+        if index_change is not None:
+            changes.append(index_change)
+            notes.append(f"adds {page_rel} to the declared index {wiki.index}")
 
     payload = json.dumps(
         {
