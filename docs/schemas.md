@@ -526,9 +526,9 @@ Canonical roots treat `raw/` as outside the evolution surface.
 ## Audit records (`.megamind/audit/log.jsonl`)
 
 One JSON object per line: `ts` (UTC ISO), `action` (`init`, `migrate`,
-`capture`, `evolve-apply`, `evolve-apply-proposal-status`, `evolve-rollback`, `router-refresh`,
-`adopt-apply`, `adopt-rollback`, `gap-transition`, `research-ingest-proposal`,
-`provisional-wiki-create`, `provisional-wiki-undo`,
+`capture`, `evolve-apply`, `evolve-apply-proposal-status`, `evolve-rollback`,
+`router-refresh`, `adopt-apply`, `adopt-rollback`, `gap-transition`,
+`research-ingest-proposal`, `provisional-wiki-create`, `provisional-wiki-undo`,
 `provisional-wiki-rollback`), and action-specific fields such as `path`,
 `proposal_id`, `plan_id`, `gap_id`, `correlation_id`, `preserved`,
 `preserved_total`, and `backup`. Backups of every mutated file live in

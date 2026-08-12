@@ -60,8 +60,8 @@ megamind-axi                    # home: wikis, proposal/review/doctor aggregates
 megamind-axi route "how does the release process work"
 megamind-axi capture --text "Pricing moves to two tiers next quarter." --type decision
 megamind-axi review             # proposals, duplicates, stale pages, dead links
-megamind-axi evolve <proposal-id>                          # dry-run diff + plan id
-megamind-axi evolve <proposal-id> --apply --plan-id <id>   # apply exactly that diff
+megamind-axi evolve <proposal-id>                           # dry-run diff + plan id
+megamind-axi evolve <proposal-id> --apply --plan-id <id>    # apply exactly that diff
 megamind-axi evolve <proposal-id> --rollback --plan-id <id> # content-verified rollback
 megamind-axi doctor             # integrity validation; exit 1 on errors
 ```

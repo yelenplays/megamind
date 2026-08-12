@@ -204,7 +204,7 @@ the full component rationale.
 
 `evolve --apply` is a durable transaction. Its result additively carries
 `pre_change_tree_sha256`, `applied_tree_sha256`, and `restored_tree_sha256`
-over the controlled compiled paths, plus `rolled_back` beside `applied`.
+over each controlled path but the proposal, plus `rolled_back` beside `applied`.
 Replaying an interrupted apply resumes from the write-ahead record.
 `evolve --rollback --plan-id` verifies every target before writing, refuses
 foreign content or a stale/tampered token, restores the proposal and exact

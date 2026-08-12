@@ -129,8 +129,8 @@ model are non-negotiable at every stage.
   while the host owns model execution and its blind grading controls; a
   passing evaluation is evidence, not promotion, so a provisional wiki
   stays untrusted until a deliberate card edit; and value on real wikis,
-  along with generalization beyond the frozen corpus, is left to the
-  governed Phase 5 pilot
+  along with generalization beyond the frozen corpus, was left to the
+  governed Phase 5 pilot, which ran and did not establish it (below)
 
 ## Phase 5 governed pilot verification
 

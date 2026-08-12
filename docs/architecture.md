@@ -153,8 +153,9 @@ adopted around a legacy hub page. `card.compiled_page_dir` derives that the
 same way routing resolves index entries, so `review` and `evolve` reach exactly
 the pages `route` can offer. Evolution in this shape defaults to and accepts
 only compiled destinations, rejecting every `raw/` destination or supersession
-target, and `review` reports only compiled pages; `raw/`, `AGENTS.md`, and
-`.megamind/` state are never pages in either shape.
+target, and `review` reports only compiled pages; `raw/`, `AGENTS.md`, and any
+hidden entry at any depth (`.megamind/` state included) are never pages under a
+canonical root, whatever its card declares.
 
 ## Access policy
 
