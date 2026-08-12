@@ -215,8 +215,8 @@ rollback are three states of one transaction and render one stable
 definitive empty value rather than disappearing. At a canonical wiki root,
 `route`, `capture`, `review`, and `evolve` use the authoritative card directly;
 `route` honors its card context budget, `evolve` defaults to and accepts only
-compiled `wiki/` destinations and rejects `raw/`, and `review` reports only
-compiled pages.
+destinations inside the card's compiled page tree (the directory of its
+declared index) and rejects `raw/`, and `review` reports only compiled pages.
 
 ## Error codes
 

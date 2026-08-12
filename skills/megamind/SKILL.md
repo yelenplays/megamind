@@ -71,7 +71,7 @@ content dedupes (`status: duplicate` is a success, not an error).
 
 Never edit `.megamind/registry.json` or apply plans without an explicit human
 go-ahead. At a canonical wiki root, these commands use the authoritative card
-directly and evolve may write only compiled `wiki/` content, never `raw/`.
+directly and evolve may write only compiled content, never `raw/`.
 
 ## Maintain the vault
 

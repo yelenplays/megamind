@@ -147,12 +147,14 @@ compiled `wiki/` layer with its content-oriented `index.md` and append-only
 without touching their content. The local `route`, `capture`, `review`, and
 `evolve` surfaces adapt that one card into the same internal routing interface;
 for `route`, its declared context budget replaces the registry defaults. The
-card is rooted at `.`, but its compiled page tree is `wiki/`, so every surface
-that walks a wiki as pages resolves that directory through
-`card.compiled_page_dir`: evolution in this shape defaults to and accepts only
-compiled destinations, rejecting every `raw/` destination or supersession
-target, and `review` reports only compiled pages, never `raw/`, `AGENTS.md`, or
-`.megamind/` state.
+card is rooted at `.`, but its compiled page tree is the directory of its
+declared index: `wiki/` for a scaffolded root, the root itself for a wiki
+adopted around a legacy hub page. `card.compiled_page_dir` derives that the
+same way routing resolves index entries, so `review` and `evolve` reach exactly
+the pages `route` can offer. Evolution in this shape defaults to and accepts
+only compiled destinations, rejecting every `raw/` destination or supersession
+target, and `review` reports only compiled pages; `raw/`, `AGENTS.md`, and
+`.megamind/` state are never pages in either shape.
 
 ## Access policy
 

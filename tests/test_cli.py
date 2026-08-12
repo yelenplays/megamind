@@ -1199,6 +1199,81 @@ def test_adopt_dry_run_apply_and_rollback(
     assert (target / "README.md").is_file()
 
 
+def _adopted_legacy_root(capsys: pytest.CaptureFixture[str], target: Path) -> Path:
+    """A wiki adopted around a legacy README hub: pages live at the root."""
+    (target / "topics").mkdir(parents=True)
+    (target / "README.md").write_text(
+        "# Legacy wiki\n\n- [Pricing](topics/pricing.md)\n- [Old pricing](topics/old-pricing.md)\n",
+        encoding="utf-8",
+    )
+    (target / "topics/pricing.md").write_text(
+        "---\ntitle: Pricing\nupdated: 2019-01-01\n---\n\n# Pricing\n\n[gone](nowhere.md)\n",
+        encoding="utf-8",
+    )
+    (target / "topics/old-pricing.md").write_text(
+        "---\ntitle: Pricing\nstatus: shaky\n---\n\n# Pricing\n", encoding="utf-8"
+    )
+    _, planned, _ = run_json(capsys, "adopt", str(target))
+    run_json(capsys, "adopt", str(target), "--apply", "--plan-id", planned["plan_id"])
+    return target
+
+
+def test_review_walks_the_declared_page_tree_of_an_adopted_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _adopted_legacy_root(capsys, tmp_path / "LegacyWiki")
+    (target / "raw/source.md").write_text(
+        "---\ntitle: Pricing\nupdated: 2019-01-01\n---\n\n# Pricing\n\n[gone](nowhere.md)\n",
+        encoding="utf-8",
+    )
+
+    code, doc, err = run_json(capsys, "--root", str(target), "review", "--today", "2026-03-01")
+
+    assert code == 0
+    assert err == ""
+    assert doc["status"] == "attention"
+    assert doc["duplicate_titles"] == [
+        {"title": "pricing", "pages": "topics/old-pricing.md; topics/pricing.md"}
+    ]
+    assert doc["dead_links"] == [{"page": "topics/pricing.md", "target": "nowhere.md"}]
+    assert {item["page"] for item in doc["stale_pages"]} == {
+        "topics/pricing.md",
+        "topics/old-pricing.md",
+    }
+    assert "raw/" not in json.dumps(doc)
+    assert "AGENTS.md" not in json.dumps(doc)
+
+
+def test_evolve_targets_the_declared_page_tree_of_an_adopted_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _adopted_legacy_root(capsys, tmp_path / "LegacyWiki")
+    proposal_id = _capture_id(capsys, target, "Pricing gains an annual tier.")
+
+    code, planned, err = run_json(
+        capsys, "--root", str(target), "evolve", proposal_id, "--dest", "topics/pricing.md"
+    )
+
+    assert code == 0
+    assert err == ""
+    assert planned["status"] == "planned"
+    assert planned["action"] == "merge"
+    assert planned["creates_new_wiki"] is False
+
+    code, defaulted, _ = run_json(
+        capsys, "--root", str(target), "evolve", proposal_id, "--dest", "LegacyWiki"
+    )
+    assert code == 0
+    assert defaulted["destination"].startswith("topics/")
+
+    for refused in ("raw/source.md", ".megamind/proposals/x.md", "AGENTS.md"):
+        code, doc, _ = run_json(
+            capsys, "--root", str(target), "evolve", proposal_id, "--dest", refused
+        )
+        assert code == 1, refused
+        assert doc["code"] == "evolve_invalid", refused
+
+
 def test_adopt_apply_and_rollback_are_mutually_exclusive(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

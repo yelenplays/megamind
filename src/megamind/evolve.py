@@ -18,7 +18,7 @@ from datetime import date
 from pathlib import Path
 
 from .capture import PROPOSALS_DIR
-from .card import CANONICAL_COMPILED_DIR, CANONICAL_RAW_DIR, compiled_page_dir
+from .card import CANONICAL_RAW_DIR, compiled_page_dir, is_canonical_page
 from .fsops import (
     MEGAMIND_DIR,
     append_audit,
@@ -133,10 +133,35 @@ def _destination_page(registry: Registry, destination: str, proposal_body: str) 
     wiki = registry.wiki_by_name(hint) or next((w for w in registry.wikis if w.path == hint), None)
     slug = _slugify(_first_heading(proposal_body))
     if wiki is not None:
-        return f"{compiled_page_dir(wiki)}/topics/{slug}.md"
+        directory = compiled_page_dir(wiki)
+        prefix = "" if directory == "." else f"{directory}/"
+        return f"{prefix}topics/{slug}.md"
     if not hint or hint == "uncategorized":
         raise EvolveError("proposal has no destination; pass --dest <page.md> or --dest <WikiName>")
     return f"{hint}/topics/{slug}.md"
+
+
+def _require_canonical_page(root: Path, card: WikiEntry, page_rel: str, verb: str) -> Path:
+    """Refuse any canonical target outside the card's compiled page tree.
+
+    The compiled directory comes from the card, so an adopted root that keeps
+    its pages beside a legacy hub stays writable, while the immutable raw layer
+    and the control state stay out of reach in either shape.
+    """
+    page_path = resolve_contained(root, page_rel)
+    raw_root = resolve_contained(root, CANONICAL_RAW_DIR)
+    if page_path == raw_root or raw_root in page_path.parents:
+        raise EvolveError(f"raw/ is immutable and cannot be {verb}")
+    directory = compiled_page_dir(card)
+    compiled_root = resolve_contained(root, directory)
+    rel = page_path.relative_to(root.resolve()).as_posix()
+    if compiled_root not in page_path.parents or not is_canonical_page(rel):
+        target = "<page>.md" if directory == "." else f"{directory}/<page>.md"
+        raise EvolveError(
+            f"canonical evolution may {verb} only compiled pages under "
+            f"{directory}/; pass --dest {target}"
+        )
+    return page_path
 
 
 def _is_inside_registered_wiki(registry: Registry, page: str) -> bool:
@@ -330,16 +355,11 @@ def plan(
 
     hint = destination or str(document.frontmatter.get("suggested_destination", ""))
     page_rel = _destination_page(registry, hint, document.body)
-    canonical_root = any(wiki.path == "." for wiki in registry.wikis)
-    page_path = resolve_contained(root, page_rel)
-    raw_root = resolve_contained(root, CANONICAL_RAW_DIR)
-    compiled_root = resolve_contained(root, CANONICAL_COMPILED_DIR)
-    if canonical_root and (page_path == raw_root or raw_root in page_path.parents):
-        raise EvolveError("raw/ is immutable; evolve may write only compiled wiki/ pages")
-    if canonical_root and compiled_root not in page_path.parents:
-        raise EvolveError(
-            "canonical evolution may write only compiled wiki/ pages; pass --dest wiki/<page>.md"
-        )
+    card = next((wiki for wiki in registry.wikis if wiki.path == "."), None)
+    if card is not None:
+        page_path = _require_canonical_page(root, card, page_rel, "written to")
+    else:
+        page_path = resolve_contained(root, page_rel)
     creates_new_wiki = not _is_inside_registered_wiki(registry, page_rel)
     if creates_new_wiki:
         notes.append(
@@ -373,11 +393,10 @@ def plan(
 
     if supersedes:
         old_rel = supersedes
-        old_path = resolve_contained(root, old_rel)
-        if canonical_root and (old_path == raw_root or raw_root in old_path.parents):
-            raise EvolveError("raw/ is immutable and cannot be superseded")
-        if canonical_root and compiled_root not in old_path.parents:
-            raise EvolveError("canonical evolution may supersede only compiled wiki/ pages")
+        if card is not None:
+            old_path = _require_canonical_page(root, card, old_rel, "superseded")
+        else:
+            old_path = resolve_contained(root, old_rel)
         if not old_path.is_file():
             raise EvolveError(f"page to supersede not found: {old_rel}")
         if old_path == page_path:

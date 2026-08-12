@@ -139,8 +139,8 @@ Re-applying an applied proposal is `status: noop`, exit 0. Apply, recovery, and
 rollback render one stable key set; a field a state does not describe is empty.
 At a canonical wiki root, route/capture/review/evolve use the authoritative card
 directly, route honors its context budget, evolve resolves a wiki-name
-destination to `wiki/topics/<slug>.md` and rejects every `raw/` target, and
-review reports only compiled pages.
+destination to `topics/<slug>.md` inside the compiled page tree the card's index
+declares and rejects every `raw/` target, and review reports only compiled pages.
 
 ## megamind-axi review [--today D] [--full]
 

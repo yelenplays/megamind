@@ -10,7 +10,7 @@ Catalog and preflight read cards read-only; nothing in this module mutates.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .fsops import MEGAMIND_DIR, atomic_write, resolve_contained
 from .registry import (
@@ -26,17 +26,37 @@ CARD_PATH = Path(MEGAMIND_DIR) / "wiki-card.json"
 CARD_SCHEMA = "megamind/wiki-card/v2"
 CANONICAL_RAW_DIR = "raw"
 CANONICAL_COMPILED_DIR = "wiki"
+# Never compiled pages under a canonical root, whatever its card declares: the
+# immutable source layer, the control directory, and the agent instructions.
+NON_PAGE_ENTRIES = (CANONICAL_RAW_DIR, MEGAMIND_DIR, "AGENTS.md")
 
 
 def compiled_page_dir(entry: WikiEntry) -> str:
     """The directory that holds a wiki entry's compiled pages.
 
-    A canonical card is rooted at ".", but only ``wiki/`` holds compiled pages
-    there: the immutable ``raw/`` layer, ``AGENTS.md``, and ``.megamind/`` state
-    are not wiki pages. Every surface that walks a wiki as a page tree resolves
-    the directory through here, so the compiled boundary has one definition.
+    A canonical card is rooted at "." and declares where its pages live through
+    its index: a scaffolded root keeps them under ``wiki/``, while a root
+    adopted around a legacy ``README.md`` hub keeps them at the root itself.
+    Deriving the directory from the index is the rule ``routing`` already
+    applies to index entries, so a surface that walks a wiki as a page tree
+    reaches exactly the pages ``route`` can offer.
     """
-    return CANONICAL_COMPILED_DIR if entry.path == "." else entry.path
+    if entry.path != ".":
+        return entry.path
+    if entry.index:
+        return PurePosixPath(entry.index).parent.as_posix()
+    return CANONICAL_COMPILED_DIR
+
+
+def is_canonical_page(page_rel: str) -> bool:
+    """Whether a root-relative path under a canonical root is a compiled page.
+
+    Only a card whose compiled directory is the root itself can reach the raw
+    layer or the control state, so this exclusion belongs beside the directory
+    derivation rather than in each caller.
+    """
+    parts = PurePosixPath(page_rel).parts
+    return bool(parts) and parts[0] not in NON_PAGE_ENTRIES
 
 
 class CardError(ValueError):
