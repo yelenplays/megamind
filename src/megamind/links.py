@@ -5,10 +5,34 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 _MARKDOWN_LINK = re.compile(r"(?<!!)\[(?P<label>[^\]]*)\]\((?P<target>[^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _WIKILINK = re.compile(r"\[\[(?P<target>[^\]|#]+)(?:#[^\]|]*)?(?:\|(?P<label>[^\]]*))?\]\]")
 _EXTERNAL = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
+_TARGET_UNSAFE = "()#%"
+
+
+def encode_link_target(path: str) -> str:
+    """Percent-encode only what a Markdown link target cannot carry literally.
+
+    Whitespace and ``)`` end the target in the subset above, ``#`` would be read
+    as a fragment, and ``%`` needs escaping for ``link_target_path`` to decode
+    back to the same path. Everything else, non-ASCII included, stays literal so
+    a generated index line still reads as the page it points at.
+    """
+    return "".join(
+        quote(char, safe="") if char in _TARGET_UNSAFE or char.isspace() else char for char in path
+    )
+
+
+def link_target_path(target: str) -> str:
+    """The path a Markdown link points at: fragment dropped, percent-decoding applied.
+
+    Every consumer that turns a link into a filesystem path goes through this,
+    so a target Megamind wrote and a target Obsidian wrote resolve alike.
+    """
+    return unquote(target.split("#", 1)[0])
 
 
 @dataclass
@@ -46,7 +70,7 @@ def resolve_link(root: Path, source_file: Path, link: Link, page_names: dict[str
     if link.style == "wikilink":
         name = link.target.strip().removesuffix(".md")
         return name in page_names
-    target = link.target.split("#", 1)[0]
+    target = link_target_path(link.target)
     if not target:
         return True
     candidate = (source_file.parent / target).resolve()

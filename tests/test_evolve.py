@@ -8,7 +8,7 @@ import pytest
 from megamind.capture import capture
 from megamind.doctor import has_errors, run_doctor
 from megamind.evolve import EvolveError, apply_plan, plan
-from megamind.links import extract_links
+from megamind.links import extract_links, link_target_path
 from megamind.models import parse_document
 from megamind.registry import load_registry
 from megamind.review import review
@@ -212,6 +212,31 @@ def test_bracketed_heading_still_yields_an_extractable_index_link(vault: Path) -
     second = _capture(vault, "# Pricing tiers [Q3]\n\nA later synthetic revision.")
     replan = plan(vault, load_registry(vault), second, destination=destination)
     assert [change.path for change in replan.changes] == [destination]
+
+
+def test_evolved_page_with_spaces_and_parentheses_routes_and_dedupes(vault: Path) -> None:
+    """A filename Markdown cannot carry literally must still route back from the index."""
+    registry = load_registry(vault)
+    destination = "ProductWiki/topics/pricing (2026).md"
+    proposal_id = _capture(vault, "# Pricing tiers\n\nThree synthetic tiers apply.")
+    computed = plan(vault, registry, proposal_id, destination=destination)
+    apply_plan(vault, registry, computed, approved_plan_id=computed.plan_id, today=TODAY)
+
+    index = parse_document((vault / "ProductWiki/INDEX.md").read_text(encoding="utf-8"))
+    assert "(topics/pricing%20%282026%29.md)" in index.body
+    assert "topics/pricing (2026).md" in [
+        link_target_path(link.target) for link in extract_links(index.body)
+    ]
+
+    routed = route(vault, load_registry(vault), "pricing tiers")
+    assert any(candidate.path == destination for candidate in routed.candidates)
+
+    second = _capture(vault, "# Pricing tiers\n\nA later synthetic revision.")
+    replan = plan(vault, load_registry(vault), second, destination=destination)
+    assert [change.path for change in replan.changes] == [destination]
+
+    findings = run_doctor(vault)
+    assert not has_errors(findings), [f.message for f in findings if f.severity == "error"]
 
 
 def test_wiki_without_a_usable_index_says_the_page_is_not_index_routable(vault: Path) -> None:

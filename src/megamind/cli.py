@@ -2225,8 +2225,10 @@ _ERROR_HELP: dict[str, list[str]] = {
         "Fix the frontmatter block by hand; Megamind parses a small YAML subset",
     ],
     "path_escape": [
-        "Pass a path that resolves inside the vault root; `..` and outward symlinks are refused",
-        f"Run `{EXECUTABLE} setup skill --dest $HOME/.claude/skills` to install outside a vault",
+        "A path a command writes into a vault must resolve inside that vault root: "
+        "`..` and outward symlinks are refused",
+        f"A `{EXECUTABLE} setup skill --dest DIR` destination is the reverse and must "
+        "resolve outside every vault, for example `$HOME/.claude/skills`",
     ],
     "garden_invalid": [
         f"Run `{EXECUTABLE} doctor` to validate governed records",

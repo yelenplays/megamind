@@ -29,7 +29,7 @@ from .fsops import (
     remove_contained,
     resolve_contained,
 )
-from .links import extract_links
+from .links import encode_link_target, extract_links, link_target_path
 from .models import Document, parse_document
 from .registry import (
     REGISTRY_PATH,
@@ -223,10 +223,10 @@ def _index_change_for_page(
     for link in extract_links(document.body):
         if link.style != "markdown":
             continue
-        target = link.target.split("#", 1)[0]
+        target = link_target_path(link.target)
         if target and (index_path.parent / target).resolve() == page_path:
             return None
-    target = Path(os.path.relpath(page_path, index_path.parent)).as_posix()
+    target = encode_link_target(Path(os.path.relpath(page_path, index_path.parent)).as_posix())
     new_text = old_text.rstrip("\n") + f"\n\n- [{_link_label(page_label)}]({target})\n"
     return FileChange(path=wiki.index, old=old_text, new=new_text)
 
@@ -281,7 +281,7 @@ def _new_index(name: str, page_link: str, page_label: str) -> str:
         "\n"
         f"# {name} index\n"
         "\n"
-        f"- [{page_label}]({page_link})\n"
+        f"- [{page_label}]({encode_link_target(page_link)})\n"
     )
 
 
