@@ -823,22 +823,41 @@ def rollout_status(state_root: Path, full: bool = False, limit: int = 20) -> Doc
                     "sequence": row.get("sequence", 0),
                 }
             )
+    rolled_back_rows: list[Doc] = []
+    receipts_dir = _state_path(state, "receipts")
+    if receipts_dir.is_dir():
+        for path in sorted(receipts_dir.glob("*.json")):
+            row = _read_json(path, "rollback receipt")
+            rolled_back_rows.append(
+                {
+                    "receipt_id": row.get("receipt_id", ""),
+                    "promotion_id": row.get("promotion_id", ""),
+                    "host_id": row.get("host_id", ""),
+                    "wiki": row.get("wiki", ""),
+                    "status": row.get("status", ""),
+                    "rolled_back_on": row.get("rolled_back_on", ""),
+                    "proof_retained": row.get("proof_retained") is True,
+                }
+            )
     blocked_rows: list[Doc] = []
     outcomes_dir = _state_path(state, "outcomes")
     if outcomes_dir.is_dir():
         for path in sorted(outcomes_dir.glob("*.json")):
             blocked_rows.append(_read_json(path, "blocked rollout outcome"))
-    total = len(active_rows) + len(blocked_rows)
+    total = len(active_rows) + len(rolled_back_rows) + len(blocked_rows)
     counts = {
         "promoted": sum(row.get("status") == "promoted" for row in active_rows),
-        "rolled_back": sum(row.get("status") == "rolled-back" for row in active_rows),
+        "rolled_back": len(rolled_back_rows),
         "blocked": len(blocked_rows),
     }
     notes: list[str] = []
     if not full and total > limit:
-        remaining = max(0, limit - len(active_rows[:limit]))
-        active_rows = active_rows[:limit]
-        blocked_rows = blocked_rows[:remaining]
+        budget = max(0, limit)
+        active_rows = active_rows[:budget]
+        budget -= len(active_rows)
+        rolled_back_rows = rolled_back_rows[:budget]
+        budget -= len(rolled_back_rows)
+        blocked_rows = blocked_rows[:budget]
         notes.append(f"rollout rows truncated to {limit} of {total}; re-run with --full")
     return {
         "schema_version": STATUS_SCHEMA,
@@ -846,7 +865,11 @@ def rollout_status(state_root: Path, full: bool = False, limit: int = 20) -> Doc
         "counts": counts,
         "total": total,
         "active": active_rows,
+        "rolled_back": rolled_back_rows,
         "blocked": blocked_rows,
         "notes": notes,
-        "help": ["Promote only in nondecreasing privacy_rank order, one host/wiki proof at a time"],
+        "help": [
+            "Promote only in nondecreasing privacy_rank order, one host/wiki proof at a time",
+            "`active` is the live projection; `rolled_back` is the retained receipt ledger",
+        ],
     }

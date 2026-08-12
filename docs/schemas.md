@@ -481,7 +481,10 @@ is `status: rollback-required` and `loadable: false`.
 `megamind/rollout-rollback-receipt/v1` disarms the active projection, hashes the
 safe reason, and retains the proof and transaction. Rollback is itself pending
 before mutation and replay-safe. `megamind/rollout-status/v1` reports bounded
-active and blocked rows with full counts.
+`active`, `rolled_back`, and `blocked` rows with full counts. `active` projects
+the live binding files, while `rolled_back` projects the append-only receipt
+ledger; `counts.rolled_back` is the receipt count, so re-arming a binding
+supersedes its live row without erasing the rollback from the audit view.
 
 These records authorize no provider or external action. The host remains the
 only owner of proof consumption, model execution, scheduling, workers, grading,

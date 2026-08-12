@@ -259,6 +259,9 @@ def test_public_rollout_interface_plans_promotes_checks_health_and_rolls_back(
     code, status, _ = run_json(capsys, "rollout", "status", "--state-root", str(inputs.state_root))
     assert code == 0
     assert status["counts"] == {"promoted": 0, "rolled_back": 1, "blocked": 0}
+    assert [row["promotion_id"] for row in status["rolled_back"]] == [promotion_id]
+    assert status["rolled_back"][0]["receipt_id"] == receipt["receipt_id"]
+    assert status["rolled_back"][0]["proof_retained"] is True
 
 
 def test_failed_evaluation_is_a_durable_non_loadable_blocked_outcome(
@@ -512,6 +515,14 @@ def test_a_rolled_back_binding_is_re_promotable_only_by_a_fresh_approved_plan(
     # The superseded proof and its receipt are retained, not deleted.
     assert (first.state_root / "proofs" / f"{promotion_id}.json").is_file()
     assert (first.state_root / "receipts" / f"{receipt['receipt_id']}.json").is_file()
+
+    # Re-arming the binding supersedes its live row without erasing the rollback.
+    code, status, _ = run_json(capsys, "rollout", "status", "--state-root", str(first.state_root))
+    assert code == 0
+    assert status["counts"] == {"promoted": 1, "rolled_back": 1, "blocked": 0}
+    assert [row["promotion_id"] for row in status["active"]] == [replacement["promotion_id"]]
+    assert [row["promotion_id"] for row in status["rolled_back"]] == [promotion_id]
+    assert status["total"] == 2
 
     code, health, _ = run_json(
         capsys,

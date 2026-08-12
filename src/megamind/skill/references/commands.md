@@ -328,10 +328,12 @@ apply durably disarms the binding and emits a retained
 active binding is the only mutable projection. A rolled-back binding can be
 armed again, but only by a fresh plan with its own evidence and approvals;
 replaying the rolled-back plan refuses instead of re-arming, and an armed
-binding must be rolled back first. `rollout status` reports active,
-rolled-back, and blocked rows. None of these commands changes a wiki, host,
-provider, account, collaborator, repository, publication, merge, or billing
-state.
+binding must be rolled back first. `rollout status` reports bounded `active`,
+`rolled_back`, and `blocked` rows: `active` is the live projection, one row per
+binding, while `rolled_back` and `counts.rolled_back` come from the retained
+receipt ledger, so a rollback stays visible after the binding is armed again.
+None of these commands changes a wiki, host, provider, account, collaborator,
+repository, publication, merge, or billing state.
 
 ## megamind-axi setup skill [--dest DIR]
 

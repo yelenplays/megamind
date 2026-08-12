@@ -124,8 +124,13 @@ megamind-axi rollout rollback --state-root <state> \
 Rollback durably disarms the active binding and writes a typed receipt. It
 retains the promotion proof and both transactions, copies only a hash of the
 reason, changes no wiki or host configuration, and is interruption-resumable.
+
 `rollout status` reports promoted, rolled-back, and blocked outcomes from this
-local state.
+local state. `active` is the live projection, one row per binding, so it answers
+only what is armed right now. `rolled_back` projects the retained receipt ledger
+and `counts.rolled_back` is taken from there, not from the live projection, so
+every rollback stays visible even after its binding is armed again by a later
+plan.
 
 A rolled-back binding is disarmed, not retired. Promoting the same host and wiki
 again requires a fresh plan with its own current evidence and its own separate
