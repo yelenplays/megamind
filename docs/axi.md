@@ -235,10 +235,11 @@ declared index) and rejects `raw/`, and `review` reports only compiled pages.
 `evolve_invalid`, `adopt_invalid`, `init_invalid`, `path_escape`,
 `frontmatter_invalid`, `io_error`, `garden_invalid`, `gap_not_found`,
 `gap_transition_invalid`, `provision_recovery_required`, `selection_invalid`,
-`evaluation_invalid`, `rollout_invalid`. Malformed vault content and filesystem failures are reported
-as `frontmatter_invalid` and `io_error` documents with exit 1; malformed frozen
-evaluation inputs are `evaluation_invalid`; malformed, unsafe, or stale rollout
-evidence is `rollout_invalid`; no invocation ever ends in a traceback.
+`evaluation_invalid`, `rollout_invalid`. Malformed vault content and filesystem
+failures are reported as `frontmatter_invalid` and `io_error` documents with
+exit 1; malformed frozen evaluation inputs are `evaluation_invalid`; malformed,
+unsafe, or stale rollout evidence is `rollout_invalid`; no invocation ever ends
+in a traceback.
 `provision_recovery_required` is the one failure that deliberately leaves
 durable state: an apply that could not fully undo itself keeps its transaction
 record so the retry or the explicit rollback stays available. Messages never
@@ -379,13 +380,19 @@ offer as threshold-matched.
 The command recomputes and validates the complete preflight packet, including
 all matches, offers, filtered/declined/root-issue entries and redaction count,
 then re-runs current access, provisional trust, visibility, routing mode, root,
-artifact, and symlink containment checks. Only one identity occurring exactly
-once in the original `offers[]` may succeed. Digest-only exposes exactly its
-present approved digest. Full access exposes only the existing bounded
-follow-up ladder and declared card/digest/index surface. A context budget is
-emitted only with that loadable follow-up. `catalog_visibility` is a projection
-control, so a `redacted` wiki stays selectable exactly as preflight already
-routes it, and only a `hidden` one is withheld. Changed requests, catalogs,
-model classes, malformed or truncated evidence, unknown/duplicate identities,
-filtered or hidden rows, broken or absent roots, pointers, provisional wikis,
-absent digests, and escaping paths fail as `selection_invalid`, exit 1.
+artifact, and symlink containment checks. It takes no `--semantic` flag: the
+packet's recorded `semantic` block selects the backend the recomputation
+replays, so a semantically reranked offer is selected without restating the
+flag. Only the two deterministic outcomes replay - `disabled`/`none` and
+`ok`/`char-ngram`; a recorded `unavailable` or `error` state, or an
+unrecognized backend, is refused rather than silently recomputed lexically.
+Only one identity occurring exactly once in the original `offers[]` may
+succeed. Digest-only exposes exactly its present approved digest. Full access
+exposes only the existing bounded follow-up ladder and declared
+card/digest/index surface. A context budget is emitted only with that loadable
+follow-up. `catalog_visibility` is a projection control, so a `redacted` wiki
+stays selectable exactly as preflight already routes it, and only a `hidden`
+one is withheld. Changed requests, catalogs, model classes, malformed or
+truncated evidence, unknown/duplicate identities, filtered or hidden rows,
+broken or absent roots, pointers, provisional wikis, absent digests, and
+escaping paths fail as `selection_invalid`, exit 1.

@@ -75,7 +75,9 @@ state keeps the lexical order.
 chooses exactly one wiki from a complete original `preflight-result/v2`
 `offers[]`. Record that packet as JSON with `preflight --full --format json`,
 then pass the exact original request, model class, and root/estate again. A
-rephrased request is not selection evidence.
+rephrased request is not selection evidence. There is no `--semantic` flag: the
+packet's recorded `semantic` block is replayed, and an outcome that cannot be
+replayed deterministically is refused.
 
 The result has `status: authorized`, a deterministic `selection_id`, explicit
 selection provenance, and one `selected` wiki. It preserves original
@@ -375,5 +377,6 @@ never makes network calls or edits shell/provider config.
 `plan_mismatch`, `approval_required`, `evolve_invalid`, `adopt_invalid`,
 `init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
 `garden_invalid`, `gap_not_found`, `gap_transition_invalid`,
-`provision_recovery_required`, `selection_invalid`, `evaluation_invalid`, `rollout_invalid`), a
-sanitized `message`, and `help[]` with corrective commands.
+`provision_recovery_required`, `selection_invalid`, `evaluation_invalid`,
+`rollout_invalid`), a sanitized `message`, and `help[]` with corrective
+commands.
