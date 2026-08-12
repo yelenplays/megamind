@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
+from megamind.fsops import PathEscapeError
 from megamind.skillpack import SKILL_FILE_NAMES, skill_files, write_skill
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -39,6 +42,26 @@ def test_write_skill_creates_and_never_overwrites(tmp_path: Path) -> None:
     assert "megamind/SKILL.md" in skipped_again
     assert marker.read_text(encoding="utf-8") == "user-edited\n"
     assert "megamind/SKILL.md" not in created_again
+
+
+@pytest.mark.parametrize("link_rel", ["megamind", "megamind/references"])
+def test_write_skill_refuses_a_symlinked_destination_component(
+    tmp_path: Path, link_rel: str
+) -> None:
+    """A symlink below dest must be refused too, before a single file is written."""
+    vault = tmp_path / "vault"
+    (vault / ".megamind").mkdir(parents=True)
+    (vault / "inside").mkdir()
+    dest = tmp_path / "dest"
+    link = dest / link_rel
+    link.parent.mkdir(parents=True)
+    link.symlink_to(vault / "inside", target_is_directory=True)
+
+    with pytest.raises(PathEscapeError, match="must not resolve inside a Megamind vault"):
+        write_skill(dest)
+
+    assert list((vault / "inside").iterdir()) == []
+    assert not (dest / "megamind" / "SKILL.md").exists()
 
 
 def test_command_reference_sections_are_unique_and_have_bodies() -> None:

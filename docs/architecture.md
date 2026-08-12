@@ -124,7 +124,9 @@ and the apply is refused. Merges embed an idempotency marker
 (`<!-- megamind:proposal:<id> -->`), so re-planning an already-merged proposal
 yields a no-op. When the destination belongs to an existing wiki with a
 present declared index, the plan also adds a missing relative Markdown link to
-that page without changing card scope. Apply first persists a durable
+that page without changing card scope; when that wiki declares no index or the
+declared index is missing, the plan notes that the page will not be
+index-routable rather than inventing one. Apply first persists a durable
 transaction over the exact old and new page and index bytes.
 `evolve --rollback --plan-id` restores that pre-change compiled
 tree, keeps the proposal and transaction evidence, and refuses before writing

@@ -915,6 +915,10 @@ def test_setup_skill_plan_and_install(tmp_path: Path, capsys: pytest.CaptureFixt
     assert code == 0
     assert plan_doc["schema_version"] == "megamind/setup-plan/v1"
     assert plan_doc["status"] == "plan"
+    # A vault root is a plausible working directory, so no suggestion may be a bare
+    # project-relative path that would resolve inside one and be refused.
+    assert not any("--dest .claude" in entry for entry in plan_doc["help"])
+    assert any("$HOME/.claude/skills" in entry for entry in plan_doc["help"])
     dest = tmp_path / "skills"
     code, doc, _ = run_json(capsys, "setup", "skill", "--dest", str(dest))
     assert code == 0
@@ -1438,6 +1442,7 @@ def test_setup_skill_refuses_vault_destinations_before_writing(
     assert document["schema_version"] == "megamind/error/v1"
     assert document["code"] == "path_escape"
     assert "must not resolve inside a Megamind vault" in document["message"]
+    assert any("--dest" in entry for entry in document["help"])
     assert not (vault / "skills/megamind").exists()
     assert audit.read_bytes() == audit_before
 

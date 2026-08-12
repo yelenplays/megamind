@@ -135,7 +135,8 @@ replay resumes from that record. Rollback verifies every target, refuses
 foreign content or stale/tampered ids, restores the proposal and exact
 pre-change controlled-tree hash, and retains append-only evidence. An evolved
 page in an existing wiki is linked from its present declared index in the same
-reviewed transaction, without widening card routing scope.
+reviewed transaction, without widening card routing scope; without a usable
+declared index the plan and result note that the page is not index-routable.
 Applying a new top-level wiki also registers it in the same apply: the
 registry entry, card and index skeletons, and regenerated router are part of
 the reviewed diff and covered by the `plan_id`.

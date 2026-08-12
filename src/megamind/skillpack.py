@@ -27,16 +27,27 @@ def skill_files() -> list[tuple[str, str]]:
     return result
 
 
+def _resolves_inside_vault(path: Path) -> bool:
+    return any((parent / MEGAMIND_DIR).is_dir() for parent in (path, *path.parents))
+
+
 def write_skill(dest: Path) -> tuple[list[str], list[str]]:
     """Copy the skill into dest/megamind. Never overwrites; returns (created, skipped)."""
     resolved = dest.expanduser().resolve()
-    if any((parent / MEGAMIND_DIR).is_dir() for parent in (resolved, *resolved.parents)):
+    # Every final destination is resolved and checked before the first write, so a
+    # symlink anywhere below dest cannot land unbacked-up, unaudited files inside a
+    # vault, and a refusal never leaves a partly installed skill behind.
+    targets = [
+        (name, content, (resolved / SKILL_DIR_NAME / name).resolve())
+        for name, content in skill_files()
+    ]
+    if _resolves_inside_vault(resolved) or any(
+        _resolves_inside_vault(target) for _name, _content, target in targets
+    ):
         raise PathEscapeError("skill destination must not resolve inside a Megamind vault")
     created: list[str] = []
     skipped: list[str] = []
-    target_root = resolved / SKILL_DIR_NAME
-    for name, content in skill_files():
-        target = target_root / name
+    for name, content, target in targets:
         rel = f"{SKILL_DIR_NAME}/{name}"
         if target.exists():
             skipped.append(rel)
