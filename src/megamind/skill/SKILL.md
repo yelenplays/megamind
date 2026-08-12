@@ -99,6 +99,13 @@ fleet catalog is a generated projection of those cards.
   under `filtered`, a pointer wiki yields location metadata only, and
   `preflight_id` is the proof the consultation ran. Treat `no-match` as
   definitive: stay quiet about wikis instead of guessing.
+- When the user explicitly chooses one current `offers[]` wiki, use the
+  complete original JSON packet and exact original request with
+  `megamind-axi select-offer <Wiki> --request "<request>" --preflight-result
+  <file> --model-class local|cloud` against the same root or estate. Follow the
+  returned selected load path only on `status: authorized`. Never substitute a
+  rephrased request, handcraft a path, or use selection to override filtered,
+  provisional, pointer, broken, stale, or model-incompatible knowledge.
 - `megamind-axi adopt <dir>` brings an existing wiki directory under Megamind
   without touching its pages: dry run first, apply with the `plan_id` only
   after human approval, and `--rollback` removes exactly what apply created.

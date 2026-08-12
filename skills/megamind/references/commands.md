@@ -69,6 +69,28 @@ request. `--semantic` reranks the authorized matches locally; the `semantic`
 block states `disabled`, `ok`, `unavailable`, or `error` and any non-`ok`
 state keeps the lexical order.
 
+## megamind-axi select-offer WIKI --request REQUEST --preflight-result FILE --model-class local|cloud [--estate DIR] [--today D]
+
+`megamind/preflight-selection-result/v1`. Use only after the user explicitly
+chooses exactly one wiki from a complete original `preflight-result/v2`
+`offers[]`. Record that packet as JSON with `preflight --full --format json`,
+then pass the exact original request, model class, and root/estate again. A
+rephrased request is not selection evidence. There is no `--semantic` flag: the
+packet's recorded `semantic` block is replayed, and an outcome that cannot be
+replayed deterministically is refused.
+
+The result has `status: authorized`, a deterministic `selection_id`, explicit
+selection provenance, and one `selected` wiki. It preserves original
+confidence, reasons, freshness, and evidence without marking the offer as a
+threshold match. Current access and governance are rechecked: digest-only
+exposes only the approved digest; full exposes only its existing bounded
+follow-up ladder; the exact card budget appears only with a loadable path.
+Changed or malformed evidence, an unknown or duplicate identity, filtered,
+hidden, broken, absent, provisional, pointer, model-incompatible or no-digest
+state, and path/symlink escape return `selection_invalid`, exit 1. A
+`redacted` wiki is redacted in the catalog projection only; it stays selectable
+on exactly the terms preflight already routes it on.
+
 ## megamind-axi adopt <target> [--name N] [--apply --plan-id ID] [--rollback] [--full]
 
 Non-destructive adoption of an existing wiki directory as a canonical root.
@@ -355,5 +377,6 @@ never makes network calls or edits shell/provider config.
 `plan_mismatch`, `approval_required`, `evolve_invalid`, `adopt_invalid`,
 `init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
 `garden_invalid`, `gap_not_found`, `gap_transition_invalid`,
-`provision_recovery_required`, `evaluation_invalid`, `rollout_invalid`), a
-sanitized `message`, and `help[]` with corrective commands.
+`provision_recovery_required`, `selection_invalid`, `evaluation_invalid`,
+`rollout_invalid`), a sanitized `message`, and `help[]` with corrective
+commands.

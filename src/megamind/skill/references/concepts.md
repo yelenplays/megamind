@@ -55,6 +55,15 @@ independent corroboration (one origin counts once), freshness, lifecycle, and
 contradictions. Answer confidence is the weakest relied-upon claim.
 `unknown` is first-class: no evidence, no number.
 
+## Explicit offer selection
+
+A user may choose exactly one currently offered wiki for the same original
+request, catalog, and model class. Selection is authority to choose among
+eligible offers, not evidence: confidence and reasons stay unchanged, while
+current card access, trust, artifact existence, and containment are rechecked.
+Only `select-offer` may create this authorization; never use a rephrased request
+or a host-constructed path as a substitute.
+
 ## Host rollout proofs
 
 A host/wiki binding is one host's local authorization to consume one wiki's
