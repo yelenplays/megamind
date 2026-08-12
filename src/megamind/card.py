@@ -29,6 +29,7 @@ CANONICAL_COMPILED_DIR = "wiki"
 # Never compiled pages under a canonical root, whatever its card declares: the
 # immutable source layer, the control directory, and the agent instructions.
 NON_PAGE_ENTRIES = (CANONICAL_RAW_DIR, MEGAMIND_DIR, "AGENTS.md")
+HIDDEN_PREFIX = "."
 
 
 def compiled_page_dir(entry: WikiEntry) -> str:
@@ -49,14 +50,19 @@ def compiled_page_dir(entry: WikiEntry) -> str:
 
 
 def is_canonical_page(page_rel: str) -> bool:
-    """Whether a root-relative path under a canonical root is a compiled page.
+    """Whether a root-relative entry under a canonical root is a compiled page.
 
     Only a card whose compiled directory is the root itself can reach the raw
-    layer or the control state, so this exclusion belongs beside the directory
-    derivation rather than in each caller.
+    layer, the control state, or a hidden tree, so this exclusion belongs beside
+    the directory derivation rather than in each caller. Hidden entries are
+    excluded at every depth, which keeps the page set a subset of what
+    ``links.page_name_table`` resolves: a page a walk admits but the link table
+    skips would report every wikilink out of it as dead.
     """
     parts = PurePosixPath(page_rel).parts
-    return bool(parts) and parts[0] not in NON_PAGE_ENTRIES
+    if not parts or parts[0] in NON_PAGE_ENTRIES:
+        return False
+    return not any(part.startswith(HIDDEN_PREFIX) for part in parts)
 
 
 class CardError(ValueError):

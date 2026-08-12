@@ -1266,12 +1266,38 @@ def test_evolve_targets_the_declared_page_tree_of_an_adopted_root(
     assert code == 0
     assert defaulted["destination"].startswith("topics/")
 
-    for refused in ("raw/source.md", ".megamind/proposals/x.md", "AGENTS.md"):
+    for refused in ("raw/source.md", ".megamind/proposals/x.md", "AGENTS.md", ".trash/sneak.md"):
         code, doc, _ = run_json(
             capsys, "--root", str(target), "evolve", proposal_id, "--dest", refused
         )
         assert code == 1, refused
         assert doc["code"] == "evolve_invalid", refused
+        assert "may write only compiled pages" in doc["message"], refused
+
+
+def test_review_skips_hidden_trees_of_an_adopted_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An adopted Obsidian vault keeps deleted notes in `.trash/`; they are not pages."""
+    target = _adopted_legacy_root(capsys, tmp_path / "LegacyWiki")
+    (target / ".trash").mkdir()
+    (target / ".trash/pricing.md").write_text(
+        "---\ntitle: Pricing\nupdated: 2019-01-01\n---\n\n# Pricing\n\n[[Deleted note]]\n",
+        encoding="utf-8",
+    )
+    (target / ".trash/deleted-note.md").write_text(
+        "---\ntitle: Deleted note\n---\n\n# Deleted note\n", encoding="utf-8"
+    )
+
+    code, doc, err = run_json(capsys, "--root", str(target), "review", "--today", "2026-03-01")
+
+    assert code == 0
+    assert err == ""
+    assert ".trash" not in json.dumps(doc)
+    assert doc["duplicate_titles"] == [
+        {"title": "pricing", "pages": "topics/old-pricing.md; topics/pricing.md"}
+    ]
+    assert doc["dead_links"] == [{"page": "topics/pricing.md", "target": "nowhere.md"}]
 
 
 def test_adopt_apply_and_rollback_are_mutually_exclusive(

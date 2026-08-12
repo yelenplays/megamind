@@ -141,7 +141,9 @@ def _destination_page(registry: Registry, destination: str, proposal_body: str) 
     return f"{hint}/topics/{slug}.md"
 
 
-def _require_canonical_page(root: Path, card: WikiEntry, page_rel: str, verb: str) -> Path:
+def _require_canonical_page(
+    root: Path, card: WikiEntry, page_rel: str, verb: str, flag: str
+) -> Path:
     """Refuse any canonical target outside the card's compiled page tree.
 
     The compiled directory comes from the card, so an adopted root that keeps
@@ -151,15 +153,16 @@ def _require_canonical_page(root: Path, card: WikiEntry, page_rel: str, verb: st
     page_path = resolve_contained(root, page_rel)
     raw_root = resolve_contained(root, CANONICAL_RAW_DIR)
     if page_path == raw_root or raw_root in page_path.parents:
-        raise EvolveError(f"raw/ is immutable and cannot be {verb}")
+        raise EvolveError(f"raw/ is immutable; canonical evolution may {verb} only compiled pages")
     directory = compiled_page_dir(card)
     compiled_root = resolve_contained(root, directory)
     rel = page_path.relative_to(root.resolve()).as_posix()
     if compiled_root not in page_path.parents or not is_canonical_page(rel):
+        location = "the wiki root" if directory == "." else f"{directory}/"
         target = "<page>.md" if directory == "." else f"{directory}/<page>.md"
         raise EvolveError(
             f"canonical evolution may {verb} only compiled pages under "
-            f"{directory}/; pass --dest {target}"
+            f"{location}; pass {flag} {target}"
         )
     return page_path
 
@@ -357,7 +360,7 @@ def plan(
     page_rel = _destination_page(registry, hint, document.body)
     card = next((wiki for wiki in registry.wikis if wiki.path == "."), None)
     if card is not None:
-        page_path = _require_canonical_page(root, card, page_rel, "written to")
+        page_path = _require_canonical_page(root, card, page_rel, "write", "--dest")
     else:
         page_path = resolve_contained(root, page_rel)
     creates_new_wiki = not _is_inside_registered_wiki(registry, page_rel)
@@ -394,7 +397,7 @@ def plan(
     if supersedes:
         old_rel = supersedes
         if card is not None:
-            old_path = _require_canonical_page(root, card, old_rel, "superseded")
+            old_path = _require_canonical_page(root, card, old_rel, "supersede", "--supersedes")
         else:
             old_path = resolve_contained(root, old_rel)
         if not old_path.is_file():
