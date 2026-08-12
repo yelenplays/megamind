@@ -1533,7 +1533,7 @@ def build_parser() -> AxiParser:
 
     p_evolve = sub.add_parser(
         "evolve",
-        help="plan (default, dry-run) or apply an approved knowledge change",
+        help="plan (default, dry-run), apply, or roll back an approved knowledge change",
         epilog=(
             f"examples:\n  {EXECUTABLE} evolve <proposal-id>\n"
             f"  {EXECUTABLE} evolve <proposal-id> --apply --plan-id <plan-id>\n"
