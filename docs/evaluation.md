@@ -219,4 +219,7 @@ mode 0600.
 
 Evaluation output is evidence, not authorization to dispatch a worker or
 publish a wiki. Provisional wikis remain untrusted until the complete
-evaluation pass and an explicit governed card change.
+evaluation pass and an explicit governed card change. Phase 6 host rollout may
+consume only a complete `status: promoted` score as one of several required
+proofs; evaluation never overrides card access, host capability evidence,
+health, privacy order, or separate governance and access approvals.

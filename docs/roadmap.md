@@ -152,6 +152,32 @@ model are non-negotiable at every stage.
   [phase5-pilot-verification.md](phase5-pilot-verification.md). Task-private
   prompts, outputs, keys, maps, roots, and content are not committed.
 
+## v0.6: governed fleet and host rollout
+
+- One provider-neutral `rollout` command family for plan/apply, health,
+  rollback, and status. Megamind emits and records local proofs; it never edits
+  host/provider configuration or performs an external action.
+- Typed per-host/per-wiki promotion proofs bound to the current card/catalog,
+  exact model class and effective access, matched and quiet no-match preflight
+  evidence, host enforcement capabilities, passing value evaluation, doctor
+  health, and separate governance/access approval references.
+- Incremental nondecreasing privacy ordering through sequence-complete prior
+  proof chains. Unknown, sensitive, provisional, pointer, and `none` postures
+  stay restrictive; no proof can widen the access module's result.
+- Durable external local state with write-ahead promotion and rollback,
+  interruption recovery, exact replay, foreign-content refusal, health drift,
+  non-loadable blocked outcomes, retained proofs, and typed rollback receipts.
+- Operator contract and honest rollout record in
+  [rollout.md](rollout.md). The preceding restricted pilot's value result was
+  `rollback-required`, so this release promotes no real host/wiki binding and
+  leaves its approved surfaces and isolated candidate knowledge unchanged.
+- Known limitations, all deliberate boundaries: hosts must invoke preflight,
+  produce capability evidence, consume healthy proofs, and stop on rollback;
+  Megamind cannot infer an omitted lower-risk nomination, so operators nominate
+  the complete authorized set before assigning sequence numbers; a local proof
+  is not remote deployment; each new host, wiki, model class, or access posture
+  needs its own approvals and evidence.
+
 ## Later / undecided
 
 - Larger bench-mid corpus and seeded scale curves
@@ -163,7 +189,7 @@ model are non-negotiable at every stage.
 - Multilingual stopword lists and configurable tokenization
 - Watch mode for continuous capture suggestions
 - Editor integrations beyond the Agent Skill
-- Host-side mandatory preflight enforcement and per-host promotion
+- Provider-specific host adapters beyond the local proof contract
 
 Contributions toward any of these are welcome; open an issue first for
 anything that changes the safety model. Anything that would make routing

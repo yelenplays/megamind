@@ -55,6 +55,21 @@ independent corroboration (one origin counts once), freshness, lifecycle, and
 contradictions. Answer confidence is the weakest relied-upon claim.
 `unknown` is first-class: no evidence, no number.
 
+## Host rollout proofs
+
+A host/wiki binding is one host's local authorization to consume one wiki's
+exact card-derived model-access surface. A promotion proof is typed evidence,
+not deployment or a provider credential. It requires matched and no-match
+preflight proofs, host enforcement checks, passing evaluation, health,
+separate approvals, and the privacy-order chain. Health drift or rollback makes
+the binding unloadable while retaining the proof. Megamind never edits host
+configuration or owns external actions.
+
+Privacy ordering is sequence-complete and nondecreasing by restrictive rank.
+Every host, wiki, model class, or access posture needs its own proof and
+approvals. Unknown or provisional governance never becomes trusted through
+rollout.
+
 ## Determinism
 
 `megamind-axi route` is lexical token overlap with fixed weights and stable tie-breaking.

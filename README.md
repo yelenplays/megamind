@@ -205,6 +205,36 @@ megamind-axi experiment plan --tasks evals/experiment-tasks-v1.json ...
 [docs/evaluation.md](docs/evaluation.md) owns the contract. The evidence is
 about routing, context, and safety; neither surface claims model quality.
 
+## Governed host rollout: evidence, not deployment
+
+`megamind-axi rollout` promotes one wiki surface to one host only after current
+card access, matching and quiet no-match preflights, host enforcement evidence,
+a passing value evaluation, doctor health, separate governance/access approval
+references, and the incremental privacy-order proof chain all pass. Dry run
+returns a content-bound plan; apply writes a typed local promotion proof.
+
+```sh
+megamind-axi rollout promote --state-root <local-state> --estate <estate> \
+  --wiki-root <root> --wiki <name> --host-id <opaque-id> \
+  --model-class cloud --host-evidence <host.json> \
+  --preflight-evidence <matched.json> --no-match-evidence <no-match.json> \
+  --evaluation-evidence <score.json> --governance-approval <ref> \
+  --access-approval <ref> --sequence 0 --today 2026-10-01
+```
+
+Promotion and rollback are write-ahead, idempotent, interruption-resumable, and
+foreign-content-safe. Health fails closed on card, access, trust, or doctor
+drift. Provisional, unapproved, pointer, `none`, or failed-evaluation wikis stay
+unloadable. State is outside every wiki and contains no raw request or root.
+Megamind never edits host configuration and has no provider, worker, model,
+network, publication, repository, account, collaborator, merge, or billing
+adapter. See [docs/rollout.md](docs/rollout.md).
+
+The reusable machinery is shipped, but no real host/wiki binding is promoted
+by this release: the restricted pilot's value evaluation required rollback, so
+its approved access surfaces remain unchanged and candidate knowledge remains
+untrusted.
+
 ## Concepts
 
 **Knowledge types**: `fact`, `decision`, `hypothesis`, `procedure`, `example`,
@@ -274,8 +304,9 @@ scope permanently. Confidence scores are calibrated rubric outputs, not truth
 guarantees: they never exceed what source quality, corroboration, freshness,
 and contradiction state justify, and `unknown` stays unknown. English
 stopwords only for now. Preflight routes at the catalog level and never loads
-page content from other roots; running it before every substantive request is
-a host-side policy that no host integration enforces yet.
+page content from other roots. The rollout proof can verify a host attestation,
+but running preflight and consuming or disarming the proof remain host-side
+policies that Megamind cannot enforce from inside its local process.
 
 ## Documentation
 
@@ -283,6 +314,7 @@ a host-side policy that no host integration enforces yet.
 - [Architecture](docs/architecture.md) - modules, ladders, scoring weights
 - [Schemas and templates](docs/schemas.md) - registry, cards, pages, proposals
 - [Evaluation contract](docs/evaluation.md) - release benchmark, three-arm runs
+- [Host rollout contract](docs/rollout.md) - proofs, privacy order, health, rollback
 - [Domain vocabulary](CONTEXT.md) - the settled domain terms
 - [Decision records](docs/adr/) - the hard-to-reverse tradeoffs
 - [Roadmap](docs/roadmap.md)

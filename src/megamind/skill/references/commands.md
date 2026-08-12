@@ -295,6 +295,38 @@ or sensitive-content copy. Every output destination inside an evaluated
 root - fixture, arm snapshot, output tree, or audit root - or any vault is
 refused before anything is written.
 
+## megamind-axi rollout promote|health|rollback|status
+
+`rollout promote` plans one host/wiki binding from an explicit external local
+state root, estate and wiki root, wiki and opaque host ids, model class, typed
+host capability evidence, matched and no-match preflight documents, promoted
+evaluation score, separate governance/access approval references, sequence,
+and prior proofs. It derives access from the card and requires zero doctor
+errors. Dry run emits `megamind/rollout-plan/v1`; only `status: ready` may be
+re-run with `--apply --plan-id <id>`. Apply emits
+`megamind/rollout-result/v1` and a nested
+`megamind/host-wiki-promotion-proof/v1`. A blocked apply records a durable
+non-loadable outcome and exits 1.
+
+The prior proof chain must cover exactly `0..sequence-1` for the same host and
+model class in nondecreasing restrictive privacy rank. Provisional, pointer,
+`none`, failed-evaluation, unhealthy, unapproved, or sequence-breaking targets
+stay unloadable. The proof binds the exact effective access and stores only
+safe evidence ids, card/catalog digests, and approval hashes, never roots or raw
+requests.
+
+State must be outside every estate and vault. Promotion writes a durable
+pending transaction before the proof and active projection; exact replay
+resumes or returns `noop`, while foreign content and stale ids refuse.
+`rollout health --state-root DIR --wiki-root ROOT --promotion-id ID` emits
+`megamind/rollout-health/v1` and exits 1 with `rollback-required` on active,
+card, access, provisional, or doctor drift. `rollout rollback` is plan-first;
+apply durably disarms the binding and emits a retained
+`megamind/rollout-rollback-receipt/v1`. `rollout status` reports active,
+rolled-back, and blocked rows. None of these commands changes a wiki, host,
+provider, account, collaborator, repository, publication, merge, or billing
+state.
+
 ## megamind-axi setup skill [--dest DIR]
 
 Without `--dest`: a `megamind/setup-plan/v1` document describing what would
@@ -309,5 +341,5 @@ directory. Setup never makes network calls or edits shell/provider config.
 `plan_mismatch`, `approval_required`, `evolve_invalid`, `adopt_invalid`,
 `init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
 `garden_invalid`, `gap_not_found`, `gap_transition_invalid`,
-`provision_recovery_required`, `evaluation_invalid`), a sanitized `message`,
+`provision_recovery_required`, `evaluation_invalid`, `rollout_invalid`), a sanitized `message`,
 and `help[]` with corrective commands.

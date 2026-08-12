@@ -41,6 +41,11 @@ with a stable `schema_version`:
 | `megamind/evaluation-validation/v1` | `experiment validate` |
 | `megamind/evaluation-score/v1` | `experiment score` |
 | `megamind/evaluation-record/v1` | `experiment record` |
+| `megamind/rollout-plan/v1`, `megamind/rollout-result/v1` | `rollout promote` |
+| `megamind/host-wiki-promotion-proof/v1` | successful `rollout promote --apply` proof |
+| `megamind/rollout-health/v1` | `rollout health` |
+| `megamind/rollout-rollback-plan/v1`, `megamind/rollout-rollback-receipt/v1` | `rollout rollback` |
+| `megamind/rollout-status/v1` | `rollout status` |
 | `megamind/error/v1` | any failure |
 
 The v2 retrieval documents are additive over their v1 shapes: every v1 field
@@ -224,11 +229,11 @@ declared index) and rejects `raw/`, and `review` reports only compiled pages.
 `capture_invalid`, `proposal_not_found`, `plan_mismatch`, `approval_required`,
 `evolve_invalid`, `adopt_invalid`, `init_invalid`, `path_escape`,
 `frontmatter_invalid`, `io_error`, `garden_invalid`, `gap_not_found`,
-`gap_transition_invalid`, `provision_recovery_required`, `evaluation_invalid`.
-Malformed vault content and filesystem failures are reported as
-`frontmatter_invalid` and `io_error` documents with exit 1; malformed frozen
-evaluation inputs are `evaluation_invalid`; no invocation ever ends in a
-traceback.
+`gap_transition_invalid`, `provision_recovery_required`, `evaluation_invalid`,
+`rollout_invalid`. Malformed vault content and filesystem failures are reported
+as `frontmatter_invalid` and `io_error` documents with exit 1; malformed frozen
+evaluation inputs are `evaluation_invalid`; malformed, unsafe, or stale rollout
+evidence is `rollout_invalid`; no invocation ever ends in a traceback.
 `provision_recovery_required` is the one failure that deliberately leaves
 durable state: an apply that could not fully undo itself keeps its transaction
 record so the retry or the explicit rollback stays available. Messages never
@@ -288,6 +293,31 @@ evaluated root - fixture, snapshot, arm output tree, or audit root - or
 inside any vault, and every check runs before anything is written so a
 refusal leaves nothing partially written. None of these commands invokes a
 model, worker, network, account, or external service.
+
+## Governed host rollout contract
+
+`rollout promote` consumes a current card, matched and no-match
+`preflight-result/v2` documents, typed host capability evidence, a promoted
+`evaluation-score/v1`, doctor health, separate governance/access approval
+references, and a complete nondecreasing prior-proof chain. Dry run emits
+`rollout-plan/v1`; apply requires its exact `plan_id`. Only a ready plan creates
+a loadable `host-wiki-promotion-proof/v1`. A blocked plan can be recorded but
+stays `loadable: false`.
+
+The proof binds one host, one wiki, one model class, the effective access from
+`megamind.access`, the current card and catalog digests, sequence, prior proofs,
+and privacy rank. It stores approval hashes, preflight ids, evaluation ids, and
+doctor aggregates, never raw requests or filesystem roots. Provisional,
+`none`, pointer, failed-evaluation, unhealthy, unapproved, or sequence-breaking
+targets fail closed.
+
+State is an explicit local directory outside every estate and vault. Promotion
+and rollback are durable write-ahead transactions with exact replay and
+foreign-content refusal. `rollout health` makes card/access/trust/doctor drift a
+typed `rollback-required`, and `rollout rollback` disarms the local binding
+while retaining the proof and a typed receipt. No command edits a card, wiki,
+host configuration, provider, account, collaborator, repository, publication,
+merge, or billing state. See [rollout.md](rollout.md).
 
 ## Testing the contract
 

@@ -139,3 +139,22 @@ outcomes with no material adjacent regression, preserved provenance, and zero
 new safety violations; otherwise `rollback-required`, or `unsettled` when the
 evidence is incomplete. Evidence, not authorization to publish or dispatch.
 _Avoid_: deployment, approval, release gate
+
+**Host/wiki binding**:
+One host's authorization to consume one wiki's exact card-derived access
+surface under one model class, represented by a local typed proof after host,
+preflight, evaluation, health, governance, access, and privacy-order checks.
+_Avoid_: provider integration, fleet-wide enablement
+
+**Promotion proof**:
+The content-bound, loadable local artifact for a host/wiki binding. It records
+safe evidence identities and cannot widen card access or change host
+configuration; health drift or rollback makes the binding unloadable while the
+proof remains retained.
+_Avoid_: deployment credential, remote feature flag
+
+**Privacy-order chain**:
+The sequence-complete prior promotion proofs for one host/model class, ordered
+by nondecreasing restrictive privacy rank so rollout proceeds one authorized
+binding at a time.
+_Avoid_: claim that every estate wiki was nominated, automatic governance
