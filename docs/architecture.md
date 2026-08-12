@@ -31,6 +31,7 @@ and renders it as TOON or JSON only at the output boundary (see
 | `megamind.preflight` | Catalog-level, model-access-aware routing for substantive requests |
 | `megamind.gardening` | Durable gaps, one-hop host plans, research bridge, safe event log, provisional local-wiki qualification |
 | `megamind.evaluation` | Frozen release benchmark over the public CLI, and the host-executed three-arm plan/validate/score/record contract. No model, worker, or network code |
+| `megamind.rollout` | Provider-neutral per-host/per-wiki promotion proofs, privacy-order chains, local write-ahead activation, health, and rollback receipts. No host or provider adapter |
 | `megamind.toon` | TOON encoder; the output boundary renders typed dicts |
 | `megamind.skillpack` | Packaged Agent Skill source for `setup skill` |
 | `megamind.cli` | The `megamind-axi` AXI boundary: typed documents, TOON/JSON, exits |
@@ -242,6 +243,27 @@ under the host's private blinding key, validates the returned outputs, seals
 the blind scores before it unblinds, and appends a bounded safe audit event.
 See `docs/evaluation.md` and ADR 0009.
 
+## Governed host rollout
+
+`megamind.rollout` consumes those existing contracts rather than creating a
+control plane. One plan binds one host, wiki, model class, current effective
+access, card/catalog identity, matched and no-match preflight proofs, host
+capabilities, passing value evaluation, doctor health, separate approval
+references, and a complete nondecreasing privacy-order proof chain. The access
+module remains authoritative: rollout can record its result but cannot widen
+it. Provisional, pointer, `none`, failed, unhealthy, unapproved, or stale
+bindings remain unloadable.
+
+Promotion writes only to an explicit local rollout state directory outside all
+estates and vaults. A durable transaction precedes the immutable proof and
+active projection; replay verifies exact bytes and resumes. Health checks card,
+access, trust, and doctor drift. Rollback disarms the projection and retains its
+proof, transaction, and typed receipt. There is no provider-specific adapter,
+remote operation, host configuration edit, worker, scheduler, model, grader,
+research client, account operation, merge, publication, or billing path. The
+host owns consumption of the proof and every external action. See
+`docs/rollout.md` and ADR 0010.
+
 ## Safety model
 
 - `fsops.resolve_contained` resolves symlinks first and rejects any path that
@@ -261,6 +283,10 @@ See `docs/evaluation.md` and ADR 0009.
   between a write and a `chmod`.
 - The registry stores only root-relative paths, so vaults stay portable and
   never leak machine-specific locations.
+- Rollout state is external to every vault and estate. Proofs contain card and
+  evidence identities but no roots or raw requests; approval references and
+  rollback reasons are hashed. Promotion and rollback use durable local
+  write-ahead transactions and never mutate a wiki or host configuration.
 - `doctor` re-checks the invariants: containment, unsafe symlinks, router
   consistency, metadata validity, link integrity, proposal hygiene, registry
   schema version, access-policy contradictions, gap-journal integrity, and
@@ -273,14 +299,16 @@ See `docs/evaluation.md` and ADR 0009.
 
 Commands avoid wall-clock dependence where it matters: proposal ids and plan
 ids are content hashes, and `capture`, `evolve`, `route`, `review`, `catalog`,
-`preflight`, `gap`, `research-wave`, `provision-wiki`, and the home view accept
-`--today` for reproducible date handling in tests and benchmarks. `route`,
-`catalog`, `preflight`, and the gardening surfaces go further and read no clock
-at all: without `--today` freshness is simply reported as unknown rather than
-computed, and a gap record, wave id, or provisioning plan keeps an empty date
-rather than inventing one. Semantic reranking is equally deterministic: the
-char-ngram backend is a pure function of its inputs and rerank ties keep the
-lexical order. The only non-deterministic outputs are audit timestamps and
-`experiment keygen`, the one command that draws on OS entropy: a blinding key
-must be unpredictable or the published commitment is enumerable. Planning,
-validation, and scoring stay fully deterministic once that frozen key exists.
+`preflight`, `gap`, `research-wave`, `provision-wiki`, `rollout promote`,
+`rollout rollback`, and the home view accept `--today` for reproducible date
+handling in tests and benchmarks. `route`, `catalog`, `preflight`, and the
+gardening and rollout surfaces go further and read no clock at all: without
+`--today` freshness is simply reported as unknown rather than computed, and a
+gap record, wave id, provisioning plan, promotion proof, or rollback receipt
+keeps an empty date rather than inventing one. Semantic reranking is equally
+deterministic: the char-ngram backend is a pure function of its inputs and
+rerank ties keep the lexical order. The only non-deterministic outputs are audit
+timestamps and `experiment keygen`, the one command that draws on OS entropy: a
+blinding key must be unpredictable or the published commitment is enumerable.
+Planning, validation, and scoring stay fully deterministic once that frozen key
+exists.

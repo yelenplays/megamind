@@ -85,7 +85,8 @@ def atomic_write_path(target: Path, content: str, *, durable: bool = False) -> P
     Low-level mechanism only: no containment check, backup, or audit. Callers that
     write into a vault must go through ``atomic_write`` (which resolves and contains
     the target first); this primitive exists for writes outside any vault root, such
-    as installing the packaged skill into an arbitrary destination.
+    as installing the packaged skill, writing evaluation evidence, or maintaining an
+    isolated rollout ledger at an explicit external destination.
 
     ``durable`` additionally flushes the parent directory, so the file is present
     by name after a crash. Use it for write-ahead records another step depends on.

@@ -419,6 +419,78 @@ deterministic hash-chain event, bounded safe summary, and rollback
 reference. Prompts, answers, canaries, secrets, and sensitive content are
 never copied to the event.
 
+## Governed host rollout records (Phase 6)
+
+`megamind/host-rollout-evidence/v1` is a host-supplied object with `host_id`,
+`model_class`, and exactly six boolean checks: `mandatory_preflight`,
+`privacy_enforcement`, `quiet_no_match`, `task_logging`, `failure_disclosure`,
+and `local_only_activation`. Every check must be true. Unknown fields are
+refused.
+
+`megamind/rollout-plan/v1` binds one host/wiki target to its effective model
+access, sensitivity, deterministic privacy rank, sequence and prior promotion
+ids, current card/catalog digests, matched and no-match preflight ids, promoted
+evaluation identity and blind-score seal, doctor aggregates, and hashed
+approval references. `status` is `ready` only when every typed check passes;
+otherwise it is `blocked`. The `plan_id` hashes the full plan body. No raw
+request, approval text, root, prompt, answer, or wiki content enters the plan.
+
+`megamind/host-wiki-promotion-proof/v1` is created only from a ready plan under
+its exact approval token. It carries `status: promoted`, `loadable: true`, one
+host, one wiki, one model class, and exactly the card-derived access. A prior
+proof chain must cover sequences `0..N-1` for the same host/model class and be
+nondecreasing by privacy rank. Public reference starts earliest; company,
+collaborative, personal, and unclassified surfaces sort later; pointer and
+`none` postures are never loadable. Unknown sensitivity does not move earlier
+because access happens to be bounded.
+
+Rollout state is an explicit directory outside every estate and vault:
+
+```text
+transactions/  # durable promote, blocked, and rollback records
+proofs/        # immutable promotion proofs
+active/        # host-consumable local projections
+receipts/      # rollback receipts
+outcomes/      # durable non-loadable blocked plans
+```
+
+The matched and no-match preflight evidence must both be recomputable against
+the current catalog for the declared model class. The no-match result must come
+from a substantive request: usable terms, no matches, and a request hash
+distinct from the matched one. A termless request proves nothing about host
+quietness and fails the `quiet-no-match` check.
+
+Promotion writes `megamind/rollout-transaction/v1` in `pending` state before
+the proof or active projection, verifies each exact document, then records
+`applied`. Replay resumes pending bytes or returns `noop`; foreign bytes or a
+stale token refuse. A blocked apply writes only a non-loadable outcome.
+
+`proofs/` and `receipts/` are append-only and content-addressed; `active/` is
+the single mutable projection and only a transaction moves it. A promote may
+replace a `rolled-back` projection for its binding, recorded as the
+transaction's `previous_active`, so a disarmed binding can be armed again by a
+fresh plan with its own evidence and approvals. It may never replace a
+`promoted` projection, other bytes, or a binding an unfinished promote
+transaction still owns, and replaying a rolled-back plan refuses instead of
+re-arming.
+
+`megamind/rollout-health/v1` rechecks the active projection, current card hash,
+exact effective access, non-provisional marker, and doctor errors. Any failure
+is `status: rollback-required` and `loadable: false`.
+`megamind/rollout-rollback-plan/v1` is dry-run and content-bound;
+`megamind/rollout-rollback-receipt/v1` disarms the active projection, hashes the
+safe reason, and retains the proof and transaction. Rollback is itself pending
+before mutation and replay-safe. `megamind/rollout-status/v1` reports bounded
+`active`, `rolled_back`, and `blocked` rows with full counts. `active` projects
+the live binding files, while `rolled_back` projects the append-only receipt
+ledger; `counts.rolled_back` is the receipt count, so re-arming a binding
+supersedes its live row without erasing the rollback from the audit view.
+
+These records authorize no provider or external action. The host remains the
+only owner of proof consumption, model execution, scheduling, workers, grading,
+research, publication, repositories, accounts, collaborators, merges, and
+spend.
+
 ## Canonical wiki root
 
 `megamind-axi init <path> --wiki <Name>` scaffolds the canonical layout:

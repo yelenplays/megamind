@@ -102,6 +102,26 @@ from .registry import (
     migrate_registry,
 )
 from .review import ReviewReport, review
+from .rollout import (
+    RolloutError,
+    RolloutInputs,
+    rollout_status,
+)
+from .rollout import (
+    apply_plan as apply_rollout_plan,
+)
+from .rollout import (
+    apply_rollback as apply_rollout_rollback,
+)
+from .rollout import (
+    build_plan as build_rollout_plan,
+)
+from .rollout import (
+    health as rollout_health,
+)
+from .rollout import (
+    plan_rollback as plan_rollout_rollback,
+)
 from .routing import RouteResult, route
 from .scaffold import InitError, init_vault, init_wiki_root
 from .semantic import NgramBackend, SemanticBackend
@@ -1198,6 +1218,63 @@ def cmd_provision_wiki(args: argparse.Namespace, root: Path, today: str) -> tupl
     }, 0
 
 
+def _rollout_inputs(args: argparse.Namespace) -> RolloutInputs:
+    return RolloutInputs(
+        state_root=Path(args.state_root),
+        estate=Path(args.estate),
+        wiki_root=Path(args.wiki_root),
+        wiki=str(args.wiki),
+        host_id=str(args.host_id),
+        model_class=str(args.model_class),
+        host_evidence=Path(args.host_evidence),
+        preflight_evidence=Path(args.preflight_evidence),
+        no_match_evidence=Path(args.no_match_evidence),
+        evaluation_evidence=Path(args.evaluation_evidence),
+        governance_approval=str(args.governance_approval),
+        access_approval=str(args.access_approval),
+        sequence=int(args.sequence),
+        prior_proofs=tuple(Path(value) for value in args.prior_proof),
+        today=_parse_today(getattr(args, "today", None)),
+    )
+
+
+def cmd_rollout(args: argparse.Namespace) -> tuple[Doc, int]:
+    action = args.rollout_command
+    if action == "promote":
+        inputs = _rollout_inputs(args)
+        if args.apply:
+            if not args.plan_id:
+                raise UsageError("rollout promote --apply requires --plan-id from the dry run")
+            result = apply_rollout_plan(inputs, args.plan_id)
+            return result, 0 if result["status"] in {"promoted", "noop"} else 1
+        result = build_rollout_plan(inputs)
+        return result, 0 if result["status"] == "ready" else 1
+    if action == "health":
+        result = rollout_health(Path(args.state_root), Path(args.wiki_root), args.promotion_id)
+        return result, 0 if result["status"] == "healthy" else 1
+    if action == "rollback":
+        today = _parse_today(getattr(args, "today", None))
+        if args.apply:
+            if not args.plan_id:
+                raise UsageError("rollout rollback --apply requires --plan-id from the dry run")
+            return (
+                apply_rollout_rollback(
+                    Path(args.state_root),
+                    args.promotion_id,
+                    args.reason,
+                    args.plan_id,
+                    today,
+                ),
+                0,
+            )
+        return plan_rollout_rollback(
+            Path(args.state_root), args.promotion_id, args.reason, today
+        ), 0
+    if action == "status":
+        return rollout_status(Path(args.state_root), full=args.full), 0
+    raise UsageError("usage: megamind-axi rollout promote|health|rollback|status ...")
+
+
 def cmd_setup_skill(dest: str | None) -> tuple[Doc, int]:
     files = [name for name, _ in skill_files()]
     if dest is None:
@@ -1822,6 +1899,63 @@ def build_parser() -> AxiParser:
     p_exp_record.add_argument("--audit-root", required=True)
     p_exp_record.add_argument("--out", default=None)
 
+    p_rollout = sub.add_parser(
+        "rollout",
+        help="governed per-host/per-wiki rollout proofs (local state only)",
+    )
+    _common_flags(p_rollout)
+    rollout_sub = p_rollout.add_subparsers(dest="rollout_command")
+    p_rollout_promote = rollout_sub.add_parser(
+        "promote", help="plan or record one evidence-bound host/wiki promotion"
+    )
+    _common_flags(p_rollout_promote)
+    for flag in (
+        "state-root",
+        "estate",
+        "wiki-root",
+        "wiki",
+        "host-id",
+        "host-evidence",
+        "preflight-evidence",
+        "no-match-evidence",
+        "evaluation-evidence",
+        "governance-approval",
+        "access-approval",
+    ):
+        p_rollout_promote.add_argument("--" + flag, required=True)
+    p_rollout_promote.add_argument("--model-class", required=True, choices=list(MODEL_CLASSES))
+    p_rollout_promote.add_argument("--sequence", type=int, required=True)
+    p_rollout_promote.add_argument("--prior-proof", action="append", default=[])
+    p_rollout_promote.add_argument("--today", default=argparse.SUPPRESS)
+    p_rollout_promote.add_argument("--apply", action="store_true")
+    p_rollout_promote.add_argument("--plan-id", default=None)
+
+    p_rollout_health = rollout_sub.add_parser(
+        "health", help="check an active proof for card, access, trust, and doctor drift"
+    )
+    _common_flags(p_rollout_health)
+    p_rollout_health.add_argument("--state-root", required=True)
+    p_rollout_health.add_argument("--wiki-root", required=True)
+    p_rollout_health.add_argument("--promotion-id", required=True)
+
+    p_rollout_rollback = rollout_sub.add_parser(
+        "rollback", help="plan or apply a proof-retaining local rollback receipt"
+    )
+    _common_flags(p_rollout_rollback)
+    p_rollout_rollback.add_argument("--state-root", required=True)
+    p_rollout_rollback.add_argument("--promotion-id", required=True)
+    p_rollout_rollback.add_argument("--reason", required=True)
+    p_rollout_rollback.add_argument("--today", default=argparse.SUPPRESS)
+    p_rollout_rollback.add_argument("--apply", action="store_true")
+    p_rollout_rollback.add_argument("--plan-id", default=None)
+
+    p_rollout_status = rollout_sub.add_parser(
+        "status", help="list promoted, rolled-back, and blocked local outcomes"
+    )
+    _common_flags(p_rollout_status)
+    p_rollout_status.add_argument("--state-root", required=True)
+    p_rollout_status.add_argument("--full", action="store_true")
+
     p_setup = sub.add_parser("setup", help="explicit opt-in integrations (local, zero-network)")
     _common_flags(p_setup)
     setup_sub = p_setup.add_subparsers(dest="setup_command")
@@ -2052,6 +2186,15 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
         }:
             raise UsageError("usage: megamind-axi experiment keygen|plan|validate|score|record ...")
         return cmd_experiment(args)
+    if command == "rollout":
+        if getattr(args, "rollout_command", None) not in {
+            "promote",
+            "health",
+            "rollback",
+            "status",
+        }:
+            raise UsageError("usage: megamind-axi rollout promote|health|rollback|status ...")
+        return cmd_rollout(args)
     if command == "setup":
         if getattr(args, "setup_command", None) != "skill":
             raise UsageError("usage: megamind-axi setup skill [--dest DIR]")
@@ -2086,6 +2229,10 @@ _ERROR_HELP: dict[str, list[str]] = {
     "evaluation_invalid": [
         "Check the frozen fixture, query set, task set, rubric, and threshold digests",
         f"Run `{EXECUTABLE} bench run --help` or `{EXECUTABLE} experiment plan --help` for inputs",
+    ],
+    "rollout_invalid": [
+        "Re-run `megamind-axi rollout promote` without --apply and review every typed check",
+        "Do not widen card access or override a provisional or failed evaluation outcome",
     ],
     "gap_not_found": [f"Run `{EXECUTABLE} gap list` to inspect durable gap ids"],
     "gap_transition_invalid": [
@@ -2132,6 +2279,7 @@ def main(argv: list[str] | None = None) -> int:
         PathEscapeError,
         GardenError,
         EvaluationError,
+        RolloutError,
     ) as error:
         code = str(getattr(error, "code", "operation_failed"))
         exit_code = 2 if code in {"not_initialized", "registry_invalid"} else 1

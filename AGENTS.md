@@ -6,7 +6,8 @@ The executable boundary is the `megamind-axi` AXI (TOON-default typed
 documents). Authoritative docs: `README.md` (product), `docs/axi.md` (output
 contract), `docs/architecture.md` (design and scoring weights),
 `docs/schemas.md` (file formats), `docs/evaluation.md` (benchmark and
-three-arm evaluation contract), `docs/roadmap.md` (scope), `CONTEXT.md`
+three-arm evaluation contract), `docs/rollout.md` (host rollout proof
+contract), `docs/roadmap.md` (scope), `CONTEXT.md`
 (settled domain vocabulary), `docs/adr/` (hard-to-reverse decisions).
 
 ## Working here
@@ -35,11 +36,17 @@ three-arm evaluation contract), `docs/roadmap.md` (scope), `CONTEXT.md`
   `.megamind/wiki-card.json` roots); they never read page content, redaction
   happens only at the projection boundary, and projections stay byte-stable
   and drift-checkable.
+- Phase 6 rollout is local proof activation, not deployment. The external state
+  directory stays outside every estate/vault; one proof binds one host/wiki,
+  model class, card-derived access, passing evidence, approvals, and an ordered
+  prior-proof chain. Promotion and rollback are write-ahead and proof-retaining;
+  no rollout surface may edit wiki/host/provider configuration or perform an
+  external action. See `docs/rollout.md` and ADR 0010.
 - Every filesystem write must go through `megamind.fsops`. Writes into a vault
   use `atomic_write` plus backup and audit; the bare `atomic_write_path`
   primitive is only for destinations outside any vault root (skill install,
-  evaluation artifacts). Secrets use `create_private_file`, which is
-  owner-only from its first syscall and refuses to replace an existing file.
+  evaluation artifacts, rollout state). Secrets use `create_private_file`, which
+  is owner-only from its first syscall and refuses to replace an existing file.
   Dry-run defaults and approval tokens (`plan_id`, `--approve-new-wiki`) are
   product contract, not polish.
 - Determinism is product contract: no wall-clock behavior (use the `--today`
