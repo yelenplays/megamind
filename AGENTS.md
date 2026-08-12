@@ -45,8 +45,8 @@ contract), `docs/roadmap.md` (scope), `CONTEXT.md`
 - Every filesystem write must go through `megamind.fsops`. Writes into a vault
   use `atomic_write` plus backup and audit; the bare `atomic_write_path`
   primitive is only for destinations outside any vault root (skill install,
-  evaluation artifacts, rollout state). Secrets use `create_private_file`, which is
-  owner-only from its first syscall and refuses to replace an existing file.
+  evaluation artifacts, rollout state). Secrets use `create_private_file`, which
+  is owner-only from its first syscall and refuses to replace an existing file.
   Dry-run defaults and approval tokens (`plan_id`, `--approve-new-wiki`) are
   product contract, not polish.
 - Determinism is product contract: no wall-clock behavior (use the `--today`

@@ -94,7 +94,7 @@ model are non-negotiable at every stage.
   once confidence coverage and a later evaluation clear it, with no command
   behind it
 
-## v0.5 (this release): Phase 4 evaluation
+## v0.5 (shipped): Phase 4 evaluation
 
 - Frozen, publishable synthetic release benchmark (`bench run|check`) over real
   public CLI interfaces, with tier-specific routing, privacy/access, pointer and
@@ -152,7 +152,7 @@ model are non-negotiable at every stage.
   [phase5-pilot-verification.md](phase5-pilot-verification.md). Task-private
   prompts, outputs, keys, maps, roots, and content are not committed.
 
-## v0.6: governed fleet and host rollout
+## v0.6 (this release): governed fleet and host rollout
 
 - One provider-neutral `rollout` command family for plan/apply, health,
   rollback, and status. Megamind emits and records local proofs; it never edits

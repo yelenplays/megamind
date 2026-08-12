@@ -176,13 +176,13 @@ the full component rationale.
 3. **Content truncation**: evolve diffs are bounded to 60 lines
    (`diff_truncated`, `diff_lines_total`, `--full`), doctor findings to 50, and
    every other item list - review sections, catalog wikis, preflight matches
-   and filtered entries, adopt file lists, gap journals - to 20, each with an
-   explicit note and `--full` to lift it. `gap list` additionally keeps the
-   unbounded per-gap `attempts` history behind `--full`, reporting only
-   `attempt_count` in a default row, and states the journal size in `total`.
-   Notes themselves stay bounded: a note that reports
-   dropped candidates names at most 5 of them and then states how many more
-   there were, so a wide index cannot inflate the packet through `notes`.
+   and filtered entries, adopt file lists, gap journals, rollout status rows -
+   to 20, each with an explicit note and `--full` to lift it. `gap list`
+   additionally keeps the unbounded per-gap `attempts` history behind `--full`,
+   reporting only `attempt_count` in a default row, and states the journal size
+   in `total`. Notes themselves stay bounded: a note that reports dropped
+   candidates names at most 5 of them and then states how many more there were,
+   so a wide index cannot inflate the packet through `notes`.
 4. **Pre-computed aggregates**: home returns proposal/review/doctor counts;
    review returns an `aggregates` object; route returns context-budget
    accounting; doctor returns error/warning counts.

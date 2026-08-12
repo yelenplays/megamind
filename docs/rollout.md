@@ -57,13 +57,14 @@ real identity is sensitive.
 
 ## Incremental privacy order
 
-Promote exactly one host/wiki binding per plan. The proof carries a deterministic
-`privacy_rank`, `sequence`, and the prior promotion ids. Every prior proof must
-belong to the same host and model class, cover exactly sequences `0..N-1`, remain
-loadable, and have a rank no higher than the target. This enforces a
-nondecreasing proof chain. Operators must nominate the complete authorized set
-before execution and assign lower-risk cards first; absent lower-risk tiers are
-an operator governance fact, not something Megamind can infer.
+Promote exactly one host/wiki binding per plan. The proof carries a
+deterministic `privacy_rank`, `sequence`, and the prior promotion ids. Every
+prior proof must belong to the same host and model class, cover exactly
+sequences `0..N-1`, remain loadable, and have a rank no higher than the target.
+This enforces a nondecreasing proof chain. Operators must nominate the complete
+authorized set before execution and assign lower-risk cards first; absent
+lower-risk tiers are an operator governance fact, not something Megamind can
+infer.
 
 The ranks are restrictive: public reference is first; bounded digest access is
 later; company and collaborative material later still; personal or

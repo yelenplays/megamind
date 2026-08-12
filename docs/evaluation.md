@@ -1,6 +1,6 @@
 # Phase 4 evaluation contract
 
-Megamind v0.5 ships two offline evaluation surfaces.
+Megamind ships two offline evaluation surfaces.
 
 ## Release benchmark
 

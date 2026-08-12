@@ -20,6 +20,11 @@ root. Reports we especially care about:
 - Evaluation blinding leaks: a blinding key, an unblinding map, or an arm's
   condition recoverable from a plan, grader packet, arm output, or audit
   event, or an evaluation artifact written into a vault or an evaluated root
+- Rollout proof bypasses: a promotion proof that authorizes wider access than
+  the card derives, stays loadable through rollback or health drift, or is
+  re-armed by replaying a rolled-back plan; rollout state written into a vault,
+  an estate, or a promoted wiki root; a raw request, approval text, or root
+  recoverable from a proof, receipt, or status document
 
 ## Reporting
 

@@ -349,5 +349,5 @@ directory. Setup never makes network calls or edits shell/provider config.
 `plan_mismatch`, `approval_required`, `evolve_invalid`, `adopt_invalid`,
 `init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
 `garden_invalid`, `gap_not_found`, `gap_transition_invalid`,
-`provision_recovery_required`, `evaluation_invalid`, `rollout_invalid`), a sanitized `message`,
-and `help[]` with corrective commands.
+`provision_recovery_required`, `evaluation_invalid`, `rollout_invalid`), a
+sanitized `message`, and `help[]` with corrective commands.

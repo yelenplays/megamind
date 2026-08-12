@@ -256,9 +256,10 @@ fields in `.megamind/wiki-card.json` instead. See
 
 - All vault writes are contained to the vault root; path traversal and
   symlinks that escape the root are rejected. The only writes outside a vault
-  are `setup skill --dest` and the evaluation artifacts, which go exactly where
-  you point them; an evaluation destination inside any vault or inside an
-  evaluated root is refused before anything is written.
+  are `setup skill --dest`, the evaluation artifacts, and the rollout state
+  directory, which go exactly where you point them; a destination that resolves
+  inside any vault - or inside an evaluated root, or inside the estate or wiki
+  root being promoted - is refused before anything is written.
 - Writes are atomic; every mutation of an existing file leaves a backup under
   `.megamind/audit/backups/` and an audit record in `.megamind/audit/log.jsonl`.
 - `evolve` is dry-run by default and requires the plan id from the dry run as

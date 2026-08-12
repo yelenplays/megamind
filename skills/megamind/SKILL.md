@@ -143,9 +143,9 @@ or wiki changes. On drift or failure, stop consumption and use plan-first
 `rollout rollback`; it disarms the local binding and retains a typed receipt.
 Re-arming that binding later needs a fresh plan with its own evidence and
 approvals, never a replay of the rolled-back one. Provisional, `none`, pointer,
-failed-evaluation, or unapproved targets remain unloadable. The host still owns preflight invocation, workers, scheduling,
-models, grading, research, publication, repositories, accounts, collaborators,
-merges, and spending.
+failed-evaluation, or unapproved targets remain unloadable. The host still owns
+preflight invocation, workers, scheduling, models, grading, research,
+publication, repositories, accounts, collaborators, merges, and spending.
 
 ## References
 

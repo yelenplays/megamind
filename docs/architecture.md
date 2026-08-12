@@ -299,14 +299,16 @@ host owns consumption of the proof and every external action. See
 
 Commands avoid wall-clock dependence where it matters: proposal ids and plan
 ids are content hashes, and `capture`, `evolve`, `route`, `review`, `catalog`,
-`preflight`, `gap`, `research-wave`, `provision-wiki`, and the home view accept
-`--today` for reproducible date handling in tests and benchmarks. `route`,
-`catalog`, `preflight`, and the gardening surfaces go further and read no clock
-at all: without `--today` freshness is simply reported as unknown rather than
-computed, and a gap record, wave id, or provisioning plan keeps an empty date
-rather than inventing one. Semantic reranking is equally deterministic: the
-char-ngram backend is a pure function of its inputs and rerank ties keep the
-lexical order. The only non-deterministic outputs are audit timestamps and
-`experiment keygen`, the one command that draws on OS entropy: a blinding key
-must be unpredictable or the published commitment is enumerable. Planning,
-validation, and scoring stay fully deterministic once that frozen key exists.
+`preflight`, `gap`, `research-wave`, `provision-wiki`, `rollout promote`,
+`rollout rollback`, and the home view accept `--today` for reproducible date
+handling in tests and benchmarks. `route`, `catalog`, `preflight`, and the
+gardening and rollout surfaces go further and read no clock at all: without
+`--today` freshness is simply reported as unknown rather than computed, and a
+gap record, wave id, provisioning plan, promotion proof, or rollback receipt
+keeps an empty date rather than inventing one. Semantic reranking is equally
+deterministic: the char-ngram backend is a pure function of its inputs and
+rerank ties keep the lexical order. The only non-deterministic outputs are audit
+timestamps and `experiment keygen`, the one command that draws on OS entropy: a
+blinding key must be unpredictable or the published commitment is enumerable.
+Planning, validation, and scoring stay fully deterministic once that frozen key
+exists.
