@@ -12,11 +12,12 @@ from datetime import date
 from pathlib import Path
 
 from .capture import list_proposals
+from .card import compiled_page_dir, is_canonical_page
 from .evolve import PROPOSAL_MARKER
 from .fsops import resolve_contained
 from .links import extract_links, page_name_table, resolve_link
 from .models import Document, parse_document
-from .registry import Registry
+from .registry import Registry, WikiEntry
 
 
 @dataclass
@@ -37,16 +38,40 @@ class ReviewReport:
         return not any(asdict(self).values())
 
 
-def _iter_wiki_pages(root: Path, registry: Registry) -> list[tuple[str, Path]]:
-    pages: list[tuple[str, Path]] = []
+def _iter_wiki_page_dirs(root: Path, registry: Registry) -> list[tuple[WikiEntry, Path]]:
+    """The compiled page directory of every wiki review is allowed to walk."""
+    directories: list[tuple[WikiEntry, Path]] = []
     for wiki in registry.wikis:
         try:
-            wiki_dir = resolve_contained(root, wiki.path)
+            wiki_dir = resolve_contained(root, compiled_page_dir(wiki))
         except ValueError:
             continue
         if not wiki_dir.is_dir():
             continue
-        for path in sorted(wiki_dir.rglob("*.md")):
+        directories.append((wiki, wiki_dir))
+    return directories
+
+
+def _walk_pages(root: Path, wiki: WikiEntry, wiki_dir: Path, pattern: str) -> list[Path]:
+    """Entries under a wiki's page tree, minus what is never a page.
+
+    The exclusion only ever removes anything when the compiled directory is the
+    root itself, which is the shape an adopted wiki keeps.
+    """
+    root_resolved = root.resolve()
+    entries: list[Path] = []
+    for path in sorted(wiki_dir.rglob(pattern)):
+        rel = path.relative_to(root_resolved).as_posix()
+        if wiki.path == "." and not is_canonical_page(rel):
+            continue
+        entries.append(path)
+    return entries
+
+
+def _iter_wiki_pages(root: Path, registry: Registry) -> list[tuple[str, Path]]:
+    pages: list[tuple[str, Path]] = []
+    for wiki, wiki_dir in _iter_wiki_page_dirs(root, registry):
+        for path in _walk_pages(root, wiki, wiki_dir, "*.md"):
             pages.append((wiki.name, path))
     return pages
 
@@ -137,14 +162,8 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
                     )
 
     # Promotion candidates
-    for wiki in registry.wikis:
-        try:
-            wiki_dir = resolve_contained(root, wiki.path)
-        except ValueError:
-            continue
-        if not wiki_dir.is_dir():
-            continue
-        for sub in sorted(p for p in wiki_dir.rglob("*") if p.is_dir()):
+    for wiki, wiki_dir in _iter_wiki_page_dirs(root, registry):
+        for sub in (p for p in _walk_pages(root, wiki, wiki_dir, "*") if p.is_dir()):
             if sub.parent == wiki_dir:
                 # First-level dirs (like topics/) are covered by the wiki's own
                 # index; only nested clusters are micro-wiki material.

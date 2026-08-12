@@ -129,8 +129,28 @@ model are non-negotiable at every stage.
   while the host owns model execution and its blind grading controls; a
   passing evaluation is evidence, not promotion, so a provisional wiki
   stays untrusted until a deliberate card edit; and value on real wikis,
-  along with generalization beyond the frozen corpus, is left to the
-  governed Phase 5 pilot
+  along with generalization beyond the frozen corpus, was left to the
+  governed Phase 5 pilot, which ran and did not establish it (below)
+
+## Phase 5 governed pilot verification
+
+- A restricted two-card pilot verified cloud digest-only routing, full compiled
+  routing, negative and ambiguous cases, declared context budgets, governed gap
+  lifecycles, one-hop capacity decisions, replay-safe research proposals, and
+  exact compiled-tree rollback without reading raw content.
+- The pilot exposed and repaired three public-CLI gaps: canonical wiki roots now
+  support local route/capture/review/evolve from their authoritative card,
+  canonical route honors the card context budget, and evolve now enforces the
+  immutable raw boundary plus durable content-verified rollback and interrupted
+  recovery.
+- The real blinded three-arm run completed under ADR 0009. All sealed outputs
+  validated with zero privacy/model-access violations and no contamination, but
+  target improvement and adjacent regression failed their frozen gates. The
+  typed outcome is `rollback-required`; the evaluation event is recorded, the
+  relevant gap remains open, and updated knowledge remains untrusted.
+- Privacy-safe maintained evidence is summarized in
+  [phase5-pilot-verification.md](phase5-pilot-verification.md). Task-private
+  prompts, outputs, keys, maps, roots, and content are not committed.
 
 ## Later / undecided
 

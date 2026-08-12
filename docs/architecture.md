@@ -121,7 +121,11 @@ explicit human approval (`--approve-new-wiki`).
 the reviewed diff; if the vault changed in between, the id no longer matches
 and the apply is refused. Merges embed an idempotency marker
 (`<!-- megamind:proposal:<id> -->`), so re-planning an already-merged proposal
-yields a no-op. Supersession marks the old page `superseded` with a
+yields a no-op. Apply first persists a durable transaction over the exact old
+and new bytes. `evolve --rollback --plan-id` restores that pre-change compiled
+tree, keeps the proposal and transaction evidence, and refuses before writing
+when any target contains foreign content. Interrupted applies resume from the
+same transaction. Supersession marks the old page `superseded` with a
 `superseded_by` pointer instead of deleting anything. An approved new
 top-level wiki is registered in the same apply: the registry entry, the card
 and index skeletons, and the regenerated router are plan changes covered by
@@ -140,7 +144,18 @@ compiled `wiki/` layer with its content-oriented `index.md` and append-only
 `log.md`, and `.megamind/` state headed by the authoritative
 `wiki-card.json`. Both shapes validate against the same v2 field set; `init
 --wiki` scaffolds new canonical roots and `adopt` onboards existing ones
-without touching their content.
+without touching their content. The local `route`, `capture`, `review`, and
+`evolve` surfaces adapt that one card into the same internal routing interface;
+for `route`, its declared context budget replaces the registry defaults. The
+card is rooted at `.`, but its compiled page tree is the directory of its
+declared index: `wiki/` for a scaffolded root, the root itself for a wiki
+adopted around a legacy hub page. `card.compiled_page_dir` derives that the
+same way routing resolves index entries, so `review` and `evolve` reach exactly
+the pages `route` can offer. Evolution in this shape defaults to and accepts
+only compiled destinations, rejecting every `raw/` destination or supersession
+target, and `review` reports only compiled pages; `raw/`, `AGENTS.md`, and any
+hidden entry at any depth (`.megamind/` state included) are never pages under a
+canonical root, whatever its card declares.
 
 ## Access policy
 

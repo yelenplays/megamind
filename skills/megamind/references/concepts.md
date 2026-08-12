@@ -39,7 +39,10 @@ Retrieval: routing card -> digest -> domain index -> exact pages, under
 
 Evolution: idea (proposal) -> topic page -> micro-wiki folder -> top-level
 wiki. Each promotion needs more evidence; the last one always needs explicit
-human approval (`--approve-new-wiki`).
+human approval (`--approve-new-wiki`). Apply is a durable transaction whose
+content-verified rollback retains the proposal and audit history. In a
+canonical wiki root the raw source layer remains immutable; evolution writes
+only the compiled wiki layer.
 
 ## Confidence
 

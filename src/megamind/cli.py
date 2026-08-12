@@ -26,7 +26,7 @@ from typing import Any, NoReturn
 from . import __version__, toon
 from .adopt import AdoptError, apply_adoption, plan_adoption, rollback_adoption
 from .capture import CaptureError, capture, list_proposals
-from .card import CardError
+from .card import CARD_PATH, CardError, load_wiki_card
 from .catalog import (
     RootRef,
     build_catalog,
@@ -63,7 +63,14 @@ from .evaluation import (
     write_blinding_key,
     write_document,
 )
-from .evolve import EvolveError, apply_plan, plan
+from .evolve import (
+    EvolveError,
+    apply_plan,
+    evolution_tree_hashes,
+    plan,
+    resume_evolution,
+    rollback_evolution,
+)
 from .fsops import PathEscapeError
 from .gardening import (
     RESULT_SCHEMA,
@@ -84,7 +91,16 @@ from .gardening import (
 )
 from .models import FrontmatterError, parse_document
 from .preflight import MODEL_CLASSES, run_preflight
-from .registry import REGISTRY_PATH, Registry, RegistryError, load_registry, migrate_registry
+from .registry import (
+    CURRENT_VERSION,
+    REGISTRY_PATH,
+    Budgets,
+    Registry,
+    RegistryError,
+    RegistryNotInitialized,
+    load_registry,
+    migrate_registry,
+)
 from .review import ReviewReport, review
 from .routing import RouteResult, route
 from .scaffold import InitError, init_vault, init_wiki_root
@@ -115,6 +131,22 @@ ROUTE_FIELDS_ALL = [
 DIFF_LINE_LIMIT = 60
 SECTION_ITEM_LIMIT = 20
 FINDINGS_LIMIT = 50
+
+# The key set of megamind/evolve-result/v1, in render order, with the empty
+# value each key carries in a state it does not describe. Tuples mark list
+# fields so a caller can never share a mutable default.
+EVOLVE_RESULT_DEFAULTS: dict[str, Any] = {
+    "status": "",
+    "action": "",
+    "proposal_id": "",
+    "destination": "",
+    "plan_id": "",
+    "applied": (),
+    "rolled_back": (),
+    "pre_change_tree_sha256": "",
+    "applied_tree_sha256": "",
+    "restored_tree_sha256": "",
+}
 
 Doc = dict[str, Any]
 
@@ -236,6 +268,22 @@ def cmd_init(target: str, starter: bool, wiki_name: str | None) -> tuple[Doc, in
         ),
     }
     return doc, 0
+
+
+def _load_routing_registry(root: Path) -> Registry:
+    """Load either root shape into the registry-shaped routing interface."""
+    try:
+        return load_registry(root)
+    except RegistryNotInitialized:
+        if not (root / CARD_PATH).is_file():
+            raise
+        card = load_wiki_card(root)
+        defaults = Budgets()
+        budgets = Budgets(
+            max_candidates=card.context_budget.max_candidates or defaults.max_candidates,
+            max_context_chars=card.context_budget.max_context_chars or defaults.max_context_chars,
+        )
+        return Registry(version=CURRENT_VERSION, budgets=budgets, wikis=[card])
 
 
 def _resolve_roots(estate: str | None, root: Path, root_label: str) -> list[RootRef]:
@@ -547,6 +595,22 @@ def cmd_capture(
     return doc, 0
 
 
+def _evolve_result(outcome: dict[str, Any], notes: list[str], help_steps: list[str]) -> Doc:
+    """Render `megamind/evolve-result/v1` with its one stable key set.
+
+    Apply, recovery, and rollback are three states of the same transaction, so
+    they render the same shape: a value that does not apply to a state stays
+    definitively empty instead of dropping its key.
+    """
+    doc: Doc = {"schema_version": "megamind/evolve-result/v1"}
+    for key, default in EVOLVE_RESULT_DEFAULTS.items():
+        value = outcome.get(key, default)
+        doc[key] = list(value) if isinstance(default, tuple) else value
+    doc["notes"] = notes
+    doc["help"] = help_steps
+    return doc
+
+
 def cmd_evolve(
     root: Path,
     registry: Registry,
@@ -554,11 +618,33 @@ def cmd_evolve(
     destination: str | None,
     supersedes: str | None,
     apply: bool,
+    rollback: bool,
     plan_id: str | None,
     approve_new_wiki: bool,
     full: bool,
     today: date | None,
 ) -> tuple[Doc, int]:
+    if rollback:
+        outcome = rollback_evolution(root, plan_id or "", proposal)
+        return _evolve_result(
+            outcome,
+            ["restored the pre-change compiled tree from the durable transaction"],
+            _help(
+                f"Run `{EXECUTABLE} doctor` to validate the restored vault",
+                f"Run `{EXECUTABLE} review` to inspect the retained proposal and audit trail",
+            ),
+        ), 0
+    if apply:
+        resumed = resume_evolution(root, plan_id or "", proposal)
+        if resumed is not None:
+            return _evolve_result(
+                resumed,
+                ["recovered from the durable evolution transaction"],
+                _help(
+                    f"Run `{EXECUTABLE} doctor` to validate the vault after recovery",
+                    f"Run `{EXECUTABLE} review` to see remaining open proposals",
+                ),
+            ), 0
     computed = plan(root, registry, proposal, destination=destination, supersedes=supersedes)
     if apply:
         applied = apply_plan(
@@ -569,25 +655,26 @@ def cmd_evolve(
             approve_new_wiki=approve_new_wiki,
             today=today,
         )
-        doc: Doc = {
-            "schema_version": "megamind/evolve-result/v1",
-            "status": "applied" if applied else "noop",
-            "action": computed.action,
-            "proposal_id": computed.proposal_id,
-            "destination": computed.destination,
-            "plan_id": computed.plan_id,
-            "applied": applied,
-            "notes": computed.notes,
-            "help": _help(
+        return _evolve_result(
+            {
+                "status": "applied" if applied else "noop",
+                "action": computed.action,
+                "proposal_id": computed.proposal_id,
+                "destination": computed.destination,
+                "plan_id": computed.plan_id,
+                "applied": applied,
+                **evolution_tree_hashes(root, computed.plan_id),
+            },
+            computed.notes,
+            _help(
                 f"Run `{EXECUTABLE} doctor` to validate the vault after the change",
                 f"Run `{EXECUTABLE} review` to see remaining open proposals",
             ),
-        }
-        return doc, 0
+        ), 0
     diff_lines = computed.render_diff().splitlines()
     truncated = not full and len(diff_lines) > DIFF_LINE_LIMIT
     shown = diff_lines[:DIFF_LINE_LIMIT] if truncated else diff_lines
-    doc = {
+    doc: Doc = {
         "schema_version": "megamind/evolve-plan/v1",
         "status": "planned" if computed.action != "noop" else "noop",
         "action": computed.action,
@@ -1446,10 +1533,11 @@ def build_parser() -> AxiParser:
 
     p_evolve = sub.add_parser(
         "evolve",
-        help="plan (default, dry-run) or apply an approved knowledge change",
+        help="plan (default, dry-run), apply, or roll back an approved knowledge change",
         epilog=(
             f"examples:\n  {EXECUTABLE} evolve <proposal-id>\n"
-            f"  {EXECUTABLE} evolve <proposal-id> --apply --plan-id <plan-id>"
+            f"  {EXECUTABLE} evolve <proposal-id> --apply --plan-id <plan-id>\n"
+            f"  {EXECUTABLE} evolve <proposal-id> --rollback --plan-id <plan-id>"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1458,6 +1546,9 @@ def build_parser() -> AxiParser:
     p_evolve.add_argument("--dest", default=None, help="destination page or wiki")
     p_evolve.add_argument("--supersedes", default=None, help="existing page the change supersedes")
     p_evolve.add_argument("--apply", action="store_true", help="apply instead of dry run")
+    p_evolve.add_argument(
+        "--rollback", action="store_true", help="restore an applied plan from its transaction"
+    )
     p_evolve.add_argument("--plan-id", default=None, help="approval token from the dry run")
     p_evolve.add_argument(
         "--approve-new-wiki",
@@ -1856,7 +1947,7 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
                     f"unknown fields: {', '.join(unknown)} "
                     f"(available: {', '.join(ROUTE_FIELDS_ALL)})"
                 )
-        registry = load_registry(root)
+        registry = _load_routing_registry(root)
         return cmd_route(
             root,
             registry,
@@ -1866,7 +1957,7 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             semantic=NgramBackend() if args.semantic else None,
         )
     if command == "capture":
-        registry = load_registry(root)
+        registry = _load_routing_registry(root)
         if args.text is not None:
             text, default_source = args.text, "inline"
         elif args.file is not None:
@@ -1883,9 +1974,13 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             today=_parse_today(getattr(args, "today", None)),
         )
     if command == "evolve":
+        if args.apply and args.rollback:
+            raise UsageError("--apply and --rollback are mutually exclusive")
         if args.apply and not args.plan_id:
             raise UsageError("--apply requires --plan-id from the dry run")
-        registry = load_registry(root)
+        if args.rollback and not args.plan_id:
+            raise UsageError("--rollback requires --plan-id from the applied plan")
+        registry = _load_routing_registry(root)
         return cmd_evolve(
             root,
             registry,
@@ -1893,13 +1988,14 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             destination=args.dest,
             supersedes=args.supersedes,
             apply=args.apply,
+            rollback=args.rollback,
             plan_id=args.plan_id,
             approve_new_wiki=args.approve_new_wiki,
             full=args.full,
             today=_parse_today(getattr(args, "today", None)),
         )
     if command == "review":
-        registry = load_registry(root)
+        registry = _load_routing_registry(root)
         return cmd_review(
             root, registry, today=_parse_today(getattr(args, "today", None)), full=args.full
         )

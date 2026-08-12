@@ -63,11 +63,15 @@ content dedupes (`status: duplicate` is a success, not an error).
    from `help[]` (it carries `--apply --plan-id <plan_id>`).
 3. To replace an outdated page instead of appending, add
    `--supersedes <old-page.md>`; the old page is marked superseded, not deleted.
-4. If `creates_new_wiki: true`, stop and ask the human explicitly; only then
+4. Apply persists a durable transaction. If validation requires undoing it, run
+   `megamind-axi evolve <proposal-id> --rollback --plan-id <plan-id>`; rollback
+   refuses foreign content and retains the proposal and audit evidence.
+5. If `creates_new_wiki: true`, stop and ask the human explicitly; only then
    add `--approve-new-wiki`.
 
 Never edit `.megamind/registry.json` or apply plans without an explicit human
-go-ahead.
+go-ahead. At a canonical wiki root, these commands use the authoritative card
+directly and evolve may write only compiled content, never `raw/`.
 
 ## Maintain the vault
 

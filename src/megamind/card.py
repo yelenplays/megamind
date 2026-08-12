@@ -10,7 +10,7 @@ Catalog and preflight read cards read-only; nothing in this module mutates.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .fsops import MEGAMIND_DIR, atomic_write, resolve_contained
 from .registry import (
@@ -24,6 +24,45 @@ from .registry import (
 
 CARD_PATH = Path(MEGAMIND_DIR) / "wiki-card.json"
 CARD_SCHEMA = "megamind/wiki-card/v2"
+CANONICAL_RAW_DIR = "raw"
+CANONICAL_COMPILED_DIR = "wiki"
+# Never compiled pages under a canonical root, whatever its card declares: the
+# immutable source layer, the control directory, and the agent instructions.
+NON_PAGE_ENTRIES = (CANONICAL_RAW_DIR, MEGAMIND_DIR, "AGENTS.md")
+HIDDEN_PREFIX = "."
+
+
+def compiled_page_dir(entry: WikiEntry) -> str:
+    """The directory that holds a wiki entry's compiled pages.
+
+    A canonical card is rooted at "." and declares where its pages live through
+    its index: a scaffolded root keeps them under ``wiki/``, while a root
+    adopted around a legacy ``README.md`` hub keeps them at the root itself.
+    Deriving the directory from the index is the rule ``routing`` already
+    applies to index entries, so a surface that walks a wiki as a page tree
+    reaches exactly the pages ``route`` can offer.
+    """
+    if entry.path != ".":
+        return entry.path
+    if entry.index:
+        return PurePosixPath(entry.index).parent.as_posix()
+    return CANONICAL_COMPILED_DIR
+
+
+def is_canonical_page(page_rel: str) -> bool:
+    """Whether a root-relative entry under a canonical root is a compiled page.
+
+    Only a card whose compiled directory is the root itself can reach the raw
+    layer, the control state, or a hidden tree, so this exclusion belongs beside
+    the directory derivation rather than in each caller. Hidden entries are
+    excluded at every depth, which keeps the page set a subset of what
+    ``links.page_name_table`` resolves: a page a walk admits but the link table
+    skips would report every wikilink out of it as dead.
+    """
+    parts = PurePosixPath(page_rel).parts
+    if not parts or parts[0] in NON_PAGE_ENTRIES:
+        return False
+    return not any(part.startswith(HIDDEN_PREFIX) for part in parts)
 
 
 class CardError(ValueError):

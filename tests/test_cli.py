@@ -15,6 +15,7 @@ import pytest
 from conftest import build_vault
 from megamind import toon
 from megamind.cli import DIFF_LINE_LIMIT, main
+from megamind.scaffold import init_wiki_root
 
 
 def run_json(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, dict[str, Any], str]:
@@ -120,6 +121,47 @@ def test_init_and_reinit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> 
 # --- route -------------------------------------------------------------------
 
 
+def test_route_uses_the_authoritative_card_at_a_canonical_wiki_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    card_path = root / ".megamind/wiki-card.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card["keywords"] = ["synthetic", "lighting"]
+    card_path.write_text(json.dumps(card), encoding="utf-8")
+    (root / "wiki/index.md").write_text(
+        "# Index\n\n- [Synthetic lighting](lighting.md)\n", encoding="utf-8"
+    )
+    (root / "wiki/lighting.md").write_text("# Synthetic lighting\n", encoding="utf-8")
+
+    code, doc, err = run_json(capsys, "--root", str(root), "route", "synthetic", "lighting")
+
+    assert code == 0
+    assert err == ""
+    assert doc["schema_version"] == "megamind/route-result/v2"
+    assert doc["decision"] == "load"
+    assert doc["candidates"][0]["path"] == "wiki/lighting.md"
+
+
+def test_canonical_wiki_route_uses_its_declared_context_budget(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    card_path = root / ".megamind/wiki-card.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card["keywords"] = ["synthetic"]
+    card["context_budget"] = {"max_candidates": 1, "max_context_chars": 700}
+    card_path.write_text(json.dumps(card), encoding="utf-8")
+
+    code, doc, _ = run_json(capsys, "--root", str(root), "route", "synthetic")
+
+    assert code == 0
+    assert doc["max_candidates"] == 1
+    assert doc["max_context_chars"] == 700
+
+
 def test_route_default_fields_are_minimal(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -201,6 +243,32 @@ def test_capture_and_duplicate_noop(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert doc2["proposal_id"] == doc["proposal_id"]
 
 
+def test_capture_creates_a_proposal_at_a_canonical_wiki_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+
+    code, doc, err = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "capture",
+        "--text",
+        "Synthetic lighting uses a neutral reference.",
+        "--type",
+        "guidance",
+        "--today",
+        "2026-03-01",
+    )
+
+    assert code == 0
+    assert err == ""
+    assert doc["schema_version"] == "megamind/capture-result/v1"
+    assert doc["status"] == "captured"
+    assert doc["path"].startswith(".megamind/proposals/")
+
+
 def test_capture_empty_is_typed_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     vault = build_vault(tmp_path)
     code, doc, _ = run_json(capsys, "--root", str(vault), "capture", "--text", "   ")
@@ -223,7 +291,383 @@ def test_capture_from_stdin(
     assert "source: stdin" in (vault / doc["path"]).read_text(encoding="utf-8")
 
 
+def test_review_lists_proposals_at_a_canonical_wiki_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    proposal_id = _capture_id(capsys, root, "Synthetic lighting uses a neutral reference.")
+
+    code, doc, err = run_json(capsys, "--root", str(root), "review")
+
+    assert code == 0
+    assert err == ""
+    assert doc["schema_version"] == "megamind/review-report/v1"
+    assert any(proposal_id in item for item in doc["open_proposals"])
+
+
+def test_review_at_a_canonical_wiki_root_reports_only_compiled_pages(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    (root / "raw/2024-lighting.md").write_text(
+        "---\ntitle: Synthetic lighting\nupdated: 2019-01-01\n---\n\n"
+        "# Synthetic lighting\n\nSource note. [gone](nowhere.md)\n",
+        encoding="utf-8",
+    )
+    (root / "wiki/synthetic-lighting.md").write_text(
+        "---\ntitle: Synthetic lighting\n---\n\n# Synthetic lighting\n", encoding="utf-8"
+    )
+    _capture_id(capsys, root, "Synthetic lighting uses a neutral reference.")
+
+    code, doc, err = run_json(capsys, "--root", str(root), "review", "--today", "2026-03-01")
+
+    assert code == 0
+    assert err == ""
+    assert "raw/" not in json.dumps(doc)
+    assert "AGENTS.md" not in json.dumps(doc)
+    assert doc["aggregates"]["duplicate_titles"] == 0
+    assert doc["aggregates"]["stale_pages"] == 0
+    assert doc["aggregates"]["dead_links"] == 0
+
+
 # --- evolve ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "destination", ["raw/forbidden.md", "./raw/forbidden.md", "wiki/../raw/forbidden.md"]
+)
+def test_evolve_refuses_the_immutable_raw_layer_at_a_canonical_wiki_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], destination: str
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    proposal_id = _capture_id(capsys, root, "Synthetic lighting uses a neutral reference.")
+
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--dest",
+        destination,
+    )
+
+    assert code == 1
+    assert doc["schema_version"] == "megamind/error/v1"
+    assert doc["code"] == "evolve_invalid"
+    assert not (root / "raw/forbidden.md").exists()
+
+
+@pytest.mark.parametrize(
+    "destination", ["AGENTS.md", ".megamind/wiki-card.json", "notes/outside.md"]
+)
+def test_evolve_rejects_non_compiled_targets_at_a_canonical_wiki_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], destination: str
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    proposal_id = _capture_id(capsys, root, "Synthetic lighting uses a neutral reference.")
+
+    code, doc, _ = run_json(
+        capsys, "--root", str(root), "evolve", proposal_id, "--dest", destination
+    )
+
+    assert code == 1
+    assert doc["code"] == "evolve_invalid"
+
+
+def test_evolve_plans_a_compiled_page_at_a_canonical_wiki_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    proposal_id = _capture_id(capsys, root, "Synthetic lighting uses a neutral reference.")
+
+    code, doc, err = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--dest",
+        "wiki/synthetic-lighting.md",
+    )
+
+    assert code == 0
+    assert err == ""
+    assert doc["schema_version"] == "megamind/evolve-plan/v1"
+    assert doc["status"] == "planned"
+    assert doc["destination"] == "wiki/synthetic-lighting.md"
+
+
+def test_evolve_default_destination_is_compiled_at_a_canonical_wiki_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    proposal_id = _capture_id(capsys, root, "SoloWiki lighting uses a neutral reference.")
+
+    code, planned, err = run_json(capsys, "--root", str(root), "evolve", proposal_id)
+
+    assert code == 0
+    assert err == ""
+    assert planned["status"] == "planned"
+    assert planned["destination"].startswith("wiki/topics/")
+    assert planned["creates_new_wiki"] is False
+
+    code, applied, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--apply",
+        "--plan-id",
+        planned["plan_id"],
+        "--today",
+        "2026-03-01",
+    )
+
+    assert code == 0
+    assert applied["status"] == "applied"
+    assert (root / planned["destination"]).is_file()
+
+
+def test_evolve_rollback_restores_the_compiled_tree_and_retains_the_proposal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    proposal_id = _capture_id(capsys, root, "Synthetic lighting uses a neutral reference.")
+    _, planned, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--dest",
+        "wiki/synthetic-lighting.md",
+    )
+    code, applied, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--dest",
+        "wiki/synthetic-lighting.md",
+        "--apply",
+        "--plan-id",
+        planned["plan_id"],
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0
+    assert applied["status"] == "applied"
+
+    code, rolled_back, err = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--rollback",
+        "--plan-id",
+        planned["plan_id"],
+    )
+
+    assert code == 0
+    assert err == ""
+    assert rolled_back["schema_version"] == "megamind/evolve-result/v1"
+    assert rolled_back["status"] == "rolled_back"
+    assert rolled_back["rolled_back"] == ["wiki/synthetic-lighting.md"]
+    assert applied["pre_change_tree_sha256"] == rolled_back["restored_tree_sha256"]
+    assert applied["applied_tree_sha256"] != applied["pre_change_tree_sha256"]
+    assert not (root / "wiki/synthetic-lighting.md").exists()
+    assert (root / f".megamind/proposals/{proposal_id}.md").is_file()
+    audit = (root / ".megamind/audit/log.jsonl").read_text(encoding="utf-8")
+    assert '"action": "evolve-rollback"' in audit
+
+
+def test_evolve_result_renders_one_stable_key_set(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    proposal_id = _capture_id(capsys, vault, "Pricing model gains an annual discount tier.")
+    _, planned, _ = run_json(capsys, "--root", str(vault), "evolve", proposal_id)
+    _, applied, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "evolve",
+        proposal_id,
+        "--apply",
+        "--plan-id",
+        planned["plan_id"],
+        "--today",
+        "2026-03-01",
+    )
+    _, resumed, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "evolve",
+        proposal_id,
+        "--apply",
+        "--plan-id",
+        planned["plan_id"],
+    )
+    _, replanned, _ = run_json(capsys, "--root", str(vault), "evolve", proposal_id)
+    _, noop, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "evolve",
+        proposal_id,
+        "--apply",
+        "--plan-id",
+        replanned["plan_id"],
+    )
+    _, rolled_back, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "evolve",
+        proposal_id,
+        "--rollback",
+        "--plan-id",
+        planned["plan_id"],
+    )
+
+    for doc in (applied, resumed, noop, rolled_back):
+        assert doc["schema_version"] == "megamind/evolve-result/v1"
+        assert list(doc) == list(applied)
+    assert applied["rolled_back"] == []
+    assert applied["restored_tree_sha256"] == ""
+    assert resumed["status"] == "noop"
+    assert noop["status"] == "noop"
+    assert noop["pre_change_tree_sha256"] == ""
+    assert noop["applied_tree_sha256"] == ""
+    assert rolled_back["applied"] == []
+    assert rolled_back["applied_tree_sha256"] == applied["applied_tree_sha256"]
+
+
+def test_evolve_rollback_refuses_foreign_content_without_deleting_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    proposal_id = _capture_id(capsys, root, "Synthetic lighting uses a neutral reference.")
+    _, planned, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--dest",
+        "wiki/synthetic-lighting.md",
+    )
+    run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--dest",
+        "wiki/synthetic-lighting.md",
+        "--apply",
+        "--plan-id",
+        planned["plan_id"],
+        "--today",
+        "2026-03-01",
+    )
+    target = root / "wiki/synthetic-lighting.md"
+    target.write_text("foreign content\n", encoding="utf-8")
+
+    code, refused, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--rollback",
+        "--plan-id",
+        planned["plan_id"],
+    )
+
+    assert code == 1
+    assert refused["schema_version"] == "megamind/error/v1"
+    assert refused["code"] == "evolve_invalid"
+    assert target.read_text(encoding="utf-8") == "foreign content\n"
+
+
+def test_evolve_apply_resumes_an_interrupted_canonical_transaction(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    proposal_id = _capture_id(capsys, root, "Synthetic lighting uses a neutral reference.")
+    _, planned, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--dest",
+        "wiki/synthetic-lighting.md",
+    )
+    import megamind.evolve as evolve_module
+
+    real_write = evolve_module.atomic_write
+
+    def interrupt(root_path: Path, target: str | Path, content: str, **kwargs: object) -> Path:
+        if str(target) == f".megamind/proposals/{proposal_id}.md":
+            raise KeyboardInterrupt("synthetic interruption")
+        return real_write(root_path, target, content, **kwargs)  # type: ignore[arg-type]
+
+    with monkeypatch.context() as patched:
+        patched.setattr(evolve_module, "atomic_write", interrupt)
+        with pytest.raises(KeyboardInterrupt, match="synthetic interruption"):
+            main(
+                [
+                    "--format",
+                    "json",
+                    "--root",
+                    str(root),
+                    "evolve",
+                    proposal_id,
+                    "--dest",
+                    "wiki/synthetic-lighting.md",
+                    "--apply",
+                    "--plan-id",
+                    planned["plan_id"],
+                    "--today",
+                    "2026-03-01",
+                ]
+            )
+    capsys.readouterr()
+
+    code, recovered, err = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--apply",
+        "--plan-id",
+        planned["plan_id"],
+    )
+
+    assert code == 0
+    assert err == ""
+    assert recovered["status"] == "applied"
+    assert recovered["notes"] == ["recovered from the durable evolution transaction"]
+    assert (root / "wiki/synthetic-lighting.md").is_file()
 
 
 def _capture_id(capsys: pytest.CaptureFixture[str], vault: Path, text: str) -> str:
@@ -753,6 +1197,107 @@ def test_adopt_dry_run_apply_and_rollback(
     assert rolled["status"] == "rolled_back"
     assert not (target / ".megamind/wiki-card.json").exists()
     assert (target / "README.md").is_file()
+
+
+def _adopted_legacy_root(capsys: pytest.CaptureFixture[str], target: Path) -> Path:
+    """A wiki adopted around a legacy README hub: pages live at the root."""
+    (target / "topics").mkdir(parents=True)
+    (target / "README.md").write_text(
+        "# Legacy wiki\n\n- [Pricing](topics/pricing.md)\n- [Old pricing](topics/old-pricing.md)\n",
+        encoding="utf-8",
+    )
+    (target / "topics/pricing.md").write_text(
+        "---\ntitle: Pricing\nupdated: 2019-01-01\n---\n\n# Pricing\n\n[gone](nowhere.md)\n",
+        encoding="utf-8",
+    )
+    (target / "topics/old-pricing.md").write_text(
+        "---\ntitle: Pricing\nstatus: shaky\n---\n\n# Pricing\n", encoding="utf-8"
+    )
+    _, planned, _ = run_json(capsys, "adopt", str(target))
+    run_json(capsys, "adopt", str(target), "--apply", "--plan-id", planned["plan_id"])
+    return target
+
+
+def test_review_walks_the_declared_page_tree_of_an_adopted_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _adopted_legacy_root(capsys, tmp_path / "LegacyWiki")
+    (target / "raw/source.md").write_text(
+        "---\ntitle: Pricing\nupdated: 2019-01-01\n---\n\n# Pricing\n\n[gone](nowhere.md)\n",
+        encoding="utf-8",
+    )
+
+    code, doc, err = run_json(capsys, "--root", str(target), "review", "--today", "2026-03-01")
+
+    assert code == 0
+    assert err == ""
+    assert doc["status"] == "attention"
+    assert doc["duplicate_titles"] == [
+        {"title": "pricing", "pages": "topics/old-pricing.md; topics/pricing.md"}
+    ]
+    assert doc["dead_links"] == [{"page": "topics/pricing.md", "target": "nowhere.md"}]
+    assert {item["page"] for item in doc["stale_pages"]} == {
+        "topics/pricing.md",
+        "topics/old-pricing.md",
+    }
+    assert "raw/" not in json.dumps(doc)
+    assert "AGENTS.md" not in json.dumps(doc)
+
+
+def test_evolve_targets_the_declared_page_tree_of_an_adopted_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = _adopted_legacy_root(capsys, tmp_path / "LegacyWiki")
+    proposal_id = _capture_id(capsys, target, "Pricing gains an annual tier.")
+
+    code, planned, err = run_json(
+        capsys, "--root", str(target), "evolve", proposal_id, "--dest", "topics/pricing.md"
+    )
+
+    assert code == 0
+    assert err == ""
+    assert planned["status"] == "planned"
+    assert planned["action"] == "merge"
+    assert planned["creates_new_wiki"] is False
+
+    code, defaulted, _ = run_json(
+        capsys, "--root", str(target), "evolve", proposal_id, "--dest", "LegacyWiki"
+    )
+    assert code == 0
+    assert defaulted["destination"].startswith("topics/")
+
+    for refused in ("raw/source.md", ".megamind/proposals/x.md", "AGENTS.md", ".trash/sneak.md"):
+        code, doc, _ = run_json(
+            capsys, "--root", str(target), "evolve", proposal_id, "--dest", refused
+        )
+        assert code == 1, refused
+        assert doc["code"] == "evolve_invalid", refused
+        assert "may write only compiled pages" in doc["message"], refused
+
+
+def test_review_skips_hidden_trees_of_an_adopted_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An adopted Obsidian vault keeps deleted notes in `.trash/`; they are not pages."""
+    target = _adopted_legacy_root(capsys, tmp_path / "LegacyWiki")
+    (target / ".trash").mkdir()
+    (target / ".trash/pricing.md").write_text(
+        "---\ntitle: Pricing\nupdated: 2019-01-01\n---\n\n# Pricing\n\n[[Deleted note]]\n",
+        encoding="utf-8",
+    )
+    (target / ".trash/deleted-note.md").write_text(
+        "---\ntitle: Deleted note\n---\n\n# Deleted note\n", encoding="utf-8"
+    )
+
+    code, doc, err = run_json(capsys, "--root", str(target), "review", "--today", "2026-03-01")
+
+    assert code == 0
+    assert err == ""
+    assert ".trash" not in json.dumps(doc)
+    assert doc["duplicate_titles"] == [
+        {"title": "pricing", "pages": "topics/old-pricing.md; topics/pricing.md"}
+    ]
+    assert doc["dead_links"] == [{"page": "topics/pricing.md", "target": "nowhere.md"}]
 
 
 def test_adopt_apply_and_rollback_are_mutually_exclusive(
