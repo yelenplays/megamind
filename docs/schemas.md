@@ -195,9 +195,17 @@ registry route ladder or canonical index ladder and only the already-declared
 card/digest/index allows. Pointer and no-digest outcomes cannot produce this
 schema because they fail typed before authorization.
 
+`catalog_visibility` stays what it is everywhere else: a projection control, not
+an access control. A `redacted` wiki, the documented default for personal wikis,
+is redacted in the rendered catalog and remains selectable on exactly the terms
+preflight already routes it on; whether it may be loaded is decided by the
+independent access, provisional-trust, routing-mode, follow-up, artifact, and
+containment checks. A `hidden` wiki is never projected, never offered, and never
+selectable.
+
 The complete packet is mandatory: truncation, malformed lists/evidence,
 changed request/catalog/model class, duplicate or unknown identity, any
-non-offer insertion, filtered/redacted/broken/absent/provisional/pointer state,
+non-offer insertion, filtered/hidden/broken/absent/provisional/pointer state,
 access `none`, missing load artifacts, and traversal or escaping symlinks are
 `selection_invalid`. The operation is read-only and deterministic.
 

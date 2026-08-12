@@ -20,7 +20,13 @@ from megamind.registry import ContextBudget, ModelAccess, WikiEntry, load_regist
 from test_cli import run_json, run_toon
 
 
-def _finance_vault(vault: Path) -> Path:
+def _finance_vault(vault: Path, catalog_visibility: str = "") -> Path:
+    """A personal-local finance wiki on the documented card defaults.
+
+    `catalog_visibility` is left unset on purpose: a personal wiki derives
+    `redacted`, which is the shape the real single-offer case has, so the
+    regressions below never run on a visibility the default would not produce.
+    """
     registry = load_registry(vault)
     wiki = vault / "FinanzWiki"
     wiki.mkdir()
@@ -33,7 +39,7 @@ def _finance_vault(vault: Path) -> Path:
             purpose="Answers allocation and retirement questions.",
             sensitivity="personal-local",
             model_access=ModelAccess(local="full", cloud="digest-only"),
-            catalog_visibility="full",
+            catalog_visibility=catalog_visibility,
             digest="FinanzWiki/DIGEST.md",
             context_budget=ContextBudget(max_candidates=1, max_context_chars=1440),
         )
@@ -131,6 +137,51 @@ def test_user_can_select_the_original_single_digest_offer(
     assert wiki["context_budget"] == {"max_candidates": 1, "max_context_chars": 1440}
     assert selected["selection_id"]
     assert selected["help"]
+
+
+def test_redacted_projection_still_authorizes_the_selected_personal_offer(
+    vault: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    request = "allocation retirement strategy"
+    vault = _finance_vault(vault)
+
+    code, catalog, _ = run_json(capsys, "--root", str(vault), "catalog", "--full")
+    assert code == 0
+    projected = [row for row in catalog["wikis"] if row.get("name") == "FinanzWiki"]
+    assert len(projected) == 1
+    assert projected[0]["catalog_visibility"] == "redacted"
+    assert projected[0]["redacted"] is True
+    assert "paths" not in projected[0]
+
+    original = _preflight(capsys, vault, request)
+    assert [offer["name"] for offer in original["offers"]] == ["FinanzWiki"]
+
+    code, selected, error = run_json(
+        capsys, *_select_args(vault, _evidence(tmp_path, original), request)
+    )
+
+    assert code == 0
+    assert error == ""
+    assert selected["selected"]["access"] == "digest-only"
+    assert selected["selected"]["allows"] == ["FinanzWiki/DIGEST.md"]
+
+
+def test_hidden_wiki_is_never_offered_or_selectable(
+    vault: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    request = "allocation retirement strategy"
+    vault = _finance_vault(vault, catalog_visibility="hidden")
+    original = _preflight(capsys, vault, request)
+    assert original["offers"] == []
+    assert original["redacted_count"] == 1
+
+    code, document, _ = run_json(
+        capsys, *_select_args(vault, _evidence(tmp_path, original), request)
+    )
+
+    assert code == 1
+    assert document["code"] == "selection_invalid"
+    assert "FinanzWiki/DIGEST.md" not in json.dumps(document)
 
 
 def _add_offer(
@@ -447,6 +498,23 @@ def test_malformed_preflight_input_is_one_typed_document(
     assert error == ""
     assert document["schema_version"] == "megamind/error/v1"
     assert document["code"] == "selection_invalid"
+
+
+def test_unreadable_evidence_is_refused_without_echoing_its_path(
+    vault: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    evidence = tmp_path / "host-recorded-preflight.json"
+
+    code, document, error = run_json(
+        capsys, *_select_args(vault, evidence, "allocation", wiki="Anything")
+    )
+
+    assert code == 1
+    assert error == ""
+    assert document["code"] == "selection_invalid"
+    rendered = json.dumps(document)
+    assert str(evidence) not in rendered
+    assert "host-recorded-preflight" not in rendered
 
 
 def test_selection_is_byte_stable_and_toon_json_equivalent(

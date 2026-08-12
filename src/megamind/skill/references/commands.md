@@ -84,8 +84,10 @@ threshold match. Current access and governance are rechecked: digest-only
 exposes only the approved digest; full exposes only its existing bounded
 follow-up ladder; the exact card budget appears only with a loadable path.
 Changed or malformed evidence, an unknown or duplicate identity, filtered,
-redacted, broken, absent, provisional, pointer, model-incompatible or
-no-digest state, and path/symlink escape return `selection_invalid`, exit 1.
+hidden, broken, absent, provisional, pointer, model-incompatible or no-digest
+state, and path/symlink escape return `selection_invalid`, exit 1. A
+`redacted` wiki is redacted in the catalog projection only; it stays selectable
+on exactly the terms preflight already routes it on.
 
 ## megamind-axi adopt <target> [--name N] [--apply --plan-id ID] [--rollback] [--full]
 

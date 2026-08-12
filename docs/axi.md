@@ -383,7 +383,9 @@ artifact, and symlink containment checks. Only one identity occurring exactly
 once in the original `offers[]` may succeed. Digest-only exposes exactly its
 present approved digest. Full access exposes only the existing bounded
 follow-up ladder and declared card/digest/index surface. A context budget is
-emitted only with that loadable follow-up. Changed requests, catalogs, model
-classes, malformed or truncated evidence, unknown/duplicate identities,
-filtered or withheld rows, broken or absent roots, pointers, provisional
-wikis, absent digests, and escaping paths fail as `selection_invalid`, exit 1.
+emitted only with that loadable follow-up. `catalog_visibility` is a projection
+control, so a `redacted` wiki stays selectable exactly as preflight already
+routes it, and only a `hidden` one is withheld. Changed requests, catalogs,
+model classes, malformed or truncated evidence, unknown/duplicate identities,
+filtered or hidden rows, broken or absent roots, pointers, provisional wikis,
+absent digests, and escaping paths fail as `selection_invalid`, exit 1.

@@ -182,6 +182,24 @@ def _declined(row: dict[str, object], query_tokens: list[str]) -> str | None:
     return None
 
 
+def allowed_paths(row: dict[str, object], access: str) -> list[str]:
+    """The single owner of which declared card paths an access level exposes.
+
+    Pointer wikis expose no path at all, digest-only exposes exactly its
+    approved digest when one is declared, and every wider access level exposes
+    only the already-declared card, digest, and index. Nothing derives a load
+    surface anywhere else, so tightening this list tightens every consumer.
+    """
+    paths = row.get("paths", {})
+    assert isinstance(paths, dict)
+    if row.get("routing_mode") == "pointer":
+        return []
+    if access == "digest-only":
+        digest = str(paths.get("digest") or "")
+        return [digest] if digest else []
+    return [str(paths[key]) for key in ("card", "digest", "index") if paths.get(key)]
+
+
 @dataclass(frozen=True)
 class _FollowUp:
     """The single owner of what an authorized match may load next.
@@ -505,15 +523,7 @@ def run_preflight(
                 continue
             row = strong[index][1]
             access = _access_level(row, model_class)
-            paths = row.get("paths", {})
-            assert isinstance(paths, dict)
-            if row.get("routing_mode") == "pointer":
-                allows: list[str] = []
-            elif access == "digest-only":
-                digest = str(paths.get("digest") or "")
-                allows = [digest] if digest else []
-            else:
-                allows = [str(paths[key]) for key in ("card", "digest", "index") if paths.get(key)]
+            allows = allowed_paths(row, access)
             follow_up = _follow_up(row, request, access)
             entry = _entry(index)
             entry["access"] = access

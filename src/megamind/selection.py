@@ -22,12 +22,23 @@ from .preflight import (
     _access_level,
     _context_budget,
     _follow_up,
+    allowed_paths,
     run_preflight,
 )
 from .registry import load_registry
 from .semantic import NgramBackend
 
 Doc = dict[str, Any]
+
+# `catalog_visibility` is a projection control, not an access control: a
+# `redacted` wiki is only redacted in the rendered catalog, and preflight
+# already routes it and hands it load paths. Everything this module does not
+# recognize as projection-only is withheld, so unknown values fail closed.
+_PROJECTION_ONLY_VISIBILITIES = frozenset({"full", "redacted"})
+
+# Selection hands out a load surface, so it only accepts the access levels that
+# have a defined one. Anything else, including a level added later, fails closed.
+_LOADABLE_ACCESS = frozenset({"full", "digest-only"})
 
 
 class SelectionError(ValueError):
@@ -49,10 +60,23 @@ class SelectionResult:
 
 
 def read_preflight_result(path: Path) -> Doc:
-    """Read one host-recorded JSON preflight packet without leaking its path."""
+    """Read one host-recorded JSON preflight packet without leaking its path.
+
+    ``str(OSError)`` embeds the filename it failed on, and this refusal is
+    emitted as a document on stdout, so filesystem failures are reported by
+    their reason alone. Decode and JSON errors are already path-free.
+    """
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise SelectionError(
+            f"preflight evidence is not readable: {error.strerror or type(error).__name__}"
+        ) from error
+    except UnicodeDecodeError as error:
+        raise SelectionError(f"preflight evidence is not valid UTF-8: {error}") from error
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as error:
         raise SelectionError(f"preflight evidence is not readable JSON: {error}") from error
     if not isinstance(raw, dict):
         raise SelectionError("preflight evidence must be a JSON object")
@@ -187,6 +211,13 @@ def _validate_original(
 
 
 def _selected_row(catalog: Catalog, wiki: str, offer: Doc) -> Doc:
+    """Return the one current catalog row this offer may still be selected from.
+
+    Visibility only decides what the rendered catalog shows, so a `redacted`
+    wiki stays selectable exactly as preflight already treats it; whether it may
+    actually be loaded is settled by the independent access, trust, follow-up,
+    artifact, and containment checks that own those decisions.
+    """
     rows = [row for row in catalog.rows if row.get("name") == wiki]
     if len(rows) != 1:
         raise SelectionError(
@@ -197,7 +228,7 @@ def _selected_row(catalog: Catalog, wiki: str, offer: Doc) -> Doc:
         raise SelectionError("selected wiki root does not match the original offer")
     if row.get("status") != "ok":
         raise SelectionError("selected wiki is currently broken or unavailable")
-    if row.get("catalog_visibility") != "full":
+    if row.get("catalog_visibility") not in _PROJECTION_ONLY_VISIBILITIES:
         raise SelectionError("selected wiki is withheld by catalog visibility and cannot be loaded")
     if bool(row.get("provisional")):
         raise SelectionError("selected wiki is provisional and cannot be loaded")
@@ -282,18 +313,13 @@ def select_offer(
     if access == "none":
         raise SelectionError("selected wiki is not accessible to this model class")
 
-    paths = row.get("paths")
-    if not isinstance(paths, dict):
+    if not isinstance(row.get("paths"), dict):
         raise SelectionError("selected wiki card paths are malformed")
-    if access == "digest-only":
-        digest = paths.get("digest")
-        if not isinstance(digest, str) or not digest:
-            raise SelectionError("selected digest-only wiki declares no approved digest")
-        allows = [digest]
-    elif access == "full":
-        allows = [str(paths[key]) for key in ("card", "digest", "index") if paths.get(key)]
-    else:
+    if access not in _LOADABLE_ACCESS:
         raise SelectionError("selected wiki has an unknown effective access level")
+    allows = allowed_paths(row, access)
+    if access == "digest-only" and not allows:
+        raise SelectionError("selected digest-only wiki declares no approved digest")
 
     follow_up = _follow_up(row, request, access)
     if not follow_up.loadable:
