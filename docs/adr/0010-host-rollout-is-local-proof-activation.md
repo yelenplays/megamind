@@ -14,8 +14,11 @@ proof, but Megamind never edits host or provider configuration.
 Rollout state is isolated from every wiki and estate. Promotion and rollback
 use durable write-ahead transactions, exact-byte replay, foreign-content
 refusal, and retained receipts. Rollback disarms a binding without deleting its
-proof or audit history. A provisional wiki, a `none` or pointer posture, a
-failed evaluation, a missing approval, or a broken proof remains unloadable.
+proof or audit history. Proofs and receipts are immutable; the active binding is
+the one mutable projection, so a disarmed binding can be armed again, but only
+by a fresh plan carrying its own evidence and approvals, never by replaying the
+rolled-back one. A provisional wiki, a `none` or pointer posture, a failed
+evaluation, a missing approval, or a broken proof remains unloadable.
 
 The proof records the exact effective access derived by `megamind.access`; no
 rollout flag can request a wider surface. Every host, wiki, model class, and

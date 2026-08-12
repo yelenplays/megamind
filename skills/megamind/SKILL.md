@@ -131,8 +131,9 @@ research, model choice, quotas, and cost.
 
 `megamind-axi rollout` records evidence, not a deployment. For one host/wiki
 binding, `rollout promote` requires current card access, matched and no-match
-preflights, typed host enforcement checks, a promoted value evaluation, doctor
-health, separate governance/access approval references, and the complete
+preflights (the no-match one from a real request with usable terms that still
+matched nothing), typed host enforcement checks, a promoted value evaluation,
+doctor health, separate governance/access approval references, and the complete
 nondecreasing prior-proof chain. Plan first; only re-run with `--apply
 --plan-id <id>` when every typed check passed. Never override a blocked plan.
 
@@ -140,8 +141,9 @@ A healthy proof authorizes only the exact card-derived model access and changes
 no host configuration. Run `rollout health` before consumption and after card
 or wiki changes. On drift or failure, stop consumption and use plan-first
 `rollout rollback`; it disarms the local binding and retains a typed receipt.
-Provisional, `none`, pointer, failed-evaluation, or unapproved targets remain
-unloadable. The host still owns preflight invocation, workers, scheduling,
+Re-arming that binding later needs a fresh plan with its own evidence and
+approvals, never a replay of the rolled-back one. Provisional, `none`, pointer,
+failed-evaluation, or unapproved targets remain unloadable. The host still owns preflight invocation, workers, scheduling,
 models, grading, research, publication, repositories, accounts, collaborators,
 merges, and spending.
 

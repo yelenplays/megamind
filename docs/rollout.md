@@ -14,7 +14,10 @@ actions.
 
 - a current authoritative card and its effective access from `megamind.access`;
 - one matching `megamind/preflight-result/v2` and one definitive no-match result
-  produced against the current catalog, for the exact model class;
+  produced against the current catalog, for the exact model class. The no-match
+  request must be a substantive one, with usable terms and a request hash
+  distinct from the matched request: an empty or termless request is quiet about
+  nothing and is refused as a negative control;
 - a `megamind/host-rollout-evidence/v1` attestation that the host enforces
   mandatory preflight, privacy, quiet no-match behavior, task logging, failure
   disclosure, and local-only activation;
@@ -123,6 +126,15 @@ retains the promotion proof and both transactions, copies only a hash of the
 reason, changes no wiki or host configuration, and is interruption-resumable.
 `rollout status` reports promoted, rolled-back, and blocked outcomes from this
 local state.
+
+A rolled-back binding is disarmed, not retired. Promoting the same host and wiki
+again requires a fresh plan with its own current evidence and its own separate
+governance and access approvals; that plan supersedes the disarmed projection
+while both the earlier proof and its receipt stay on disk. Replaying the
+rolled-back plan itself does not re-arm anything: it refuses with a typed error
+naming the rollback. A promotion that is still armed must be rolled back before
+it can be replaced, and an unfinished promote transaction for the same binding
+must be replayed or resolved before a different plan can take it over.
 
 ## What Phase 6 actually rolled out
 

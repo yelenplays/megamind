@@ -454,10 +454,25 @@ receipts/      # rollback receipts
 outcomes/      # durable non-loadable blocked plans
 ```
 
+The matched and no-match preflight evidence must both be recomputable against
+the current catalog for the declared model class. The no-match result must come
+from a substantive request: usable terms, no matches, and a request hash
+distinct from the matched one. A termless request proves nothing about host
+quietness and fails the `quiet-no-match` check.
+
 Promotion writes `megamind/rollout-transaction/v1` in `pending` state before
 the proof or active projection, verifies each exact document, then records
 `applied`. Replay resumes pending bytes or returns `noop`; foreign bytes or a
 stale token refuse. A blocked apply writes only a non-loadable outcome.
+
+`proofs/` and `receipts/` are append-only and content-addressed; `active/` is
+the single mutable projection and only a transaction moves it. A promote may
+replace a `rolled-back` projection for its binding, recorded as the
+transaction's `previous_active`, so a disarmed binding can be armed again by a
+fresh plan with its own evidence and approvals. It may never replace a
+`promoted` projection, other bytes, or a binding an unfinished promote
+transaction still owns, and replaying a rolled-back plan refuses instead of
+re-arming.
 
 `megamind/rollout-health/v1` rechecks the active projection, current card hash,
 exact effective access, non-provisional marker, and doctor errors. Any failure

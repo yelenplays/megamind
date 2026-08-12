@@ -311,9 +311,11 @@ non-loadable outcome and exits 1.
 The prior proof chain must cover exactly `0..sequence-1` for the same host and
 model class in nondecreasing restrictive privacy rank. Provisional, pointer,
 `none`, failed-evaluation, unhealthy, unapproved, or sequence-breaking targets
-stay unloadable. The proof binds the exact effective access and stores only
-safe evidence ids, card/catalog digests, and approval hashes, never roots or raw
-requests.
+stay unloadable. The no-match document must come from a substantive request:
+usable terms, no matches, and a request hash different from the matched one, so
+an empty or termless request never counts as a quiet negative control. The
+proof binds the exact effective access and stores only safe evidence ids,
+card/catalog digests, and approval hashes, never roots or raw requests.
 
 State must be outside every estate and vault. Promotion writes a durable
 pending transaction before the proof and active projection; exact replay
@@ -322,7 +324,11 @@ resumes or returns `noop`, while foreign content and stale ids refuse.
 `megamind/rollout-health/v1` and exits 1 with `rollback-required` on active,
 card, access, provisional, or doctor drift. `rollout rollback` is plan-first;
 apply durably disarms the binding and emits a retained
-`megamind/rollout-rollback-receipt/v1`. `rollout status` reports active,
+`megamind/rollout-rollback-receipt/v1`. Proofs and receipts are immutable; the
+active binding is the only mutable projection. A rolled-back binding can be
+armed again, but only by a fresh plan with its own evidence and approvals;
+replaying the rolled-back plan refuses instead of re-arming, and an armed
+binding must be rolled back first. `rollout status` reports active,
 rolled-back, and blocked rows. None of these commands changes a wiki, host,
 provider, account, collaborator, repository, publication, merge, or billing
 state.

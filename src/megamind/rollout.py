@@ -11,6 +11,11 @@ Rollout state lives in an explicit external directory, never in a wiki or
 estate. Every apply is a write-ahead transaction. Replaying an interrupted
 apply completes the same bytes; rollback disarms the binding without deleting
 proof or transaction evidence.
+
+Proofs and receipts are immutable and content-addressed. The active binding is
+the one mutable projection, and only a transaction may move it: a disarmed
+binding can be armed again, but only by a fresh plan carrying its own evidence
+and approvals, never by replaying the rolled-back one.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from .doctor import run_doctor
 from .fsops import atomic_write_path, content_hash, resolve_contained
 from .preflight import run_preflight
 from .registry import RegistryNotInitialized, WikiEntry, load_registry
+from .routing import tokenize
 
 Doc = dict[str, Any]
 
@@ -194,6 +200,7 @@ def _preflight_checks(
     access: str,
     entry: WikiEntry,
     expect_match: bool,
+    counterpart_request_hash: str = "",
 ) -> list[Doc]:
     schema_ok = document.get("schema_version") == PREFLIGHT_SCHEMA
     identity_ok = schema_ok and _valid_preflight_id(document)
@@ -206,9 +213,17 @@ def _preflight_checks(
     raw_matches = document.get("matches")
     matches: list[Any] = raw_matches if isinstance(raw_matches, list) else []
     if not expect_match:
+        request = document.get("request")
+        substantive = isinstance(request, str) and bool(tokenize(request))
+        request_hash = document.get("request_hash")
+        distinct = isinstance(request_hash, str) and request_hash != counterpart_request_hash
         quiet = document.get("status") == "no-match" and not matches
         checks.append(
-            _check("quiet-no-match", common and quiet, str(document.get("request_hash", "")))
+            _check(
+                "quiet-no-match",
+                common and quiet and substantive and distinct,
+                str(document.get("request_hash", "")),
+            )
         )
         return checks
 
@@ -374,6 +389,7 @@ def build_plan(inputs: RolloutInputs) -> Doc:
             access=access,
             entry=entry,
             expect_match=False,
+            counterpart_request_hash=str(positive.get("request_hash", "")),
         )
     )
     checks.extend(_evaluation_checks(evaluation))
@@ -478,6 +494,15 @@ def _read_if_exists(path: Path, label: str) -> Doc | None:
     return _read_json(path, label)
 
 
+def _is_disarmed(active: Doc | None, proof: Doc) -> bool:
+    """Is `active` this exact proof after a rollback disarmed the binding?"""
+    return (
+        active is not None
+        and active.get("status") == "rolled-back"
+        and active.get("promotion_id") == proof["promotion_id"]
+    )
+
+
 def apply_plan(inputs: RolloutInputs, approved_plan_id: str) -> Doc:
     plan = build_plan(inputs)
     if plan["plan_id"] != approved_plan_id:
@@ -535,6 +560,11 @@ def apply_plan(inputs: RolloutInputs, approved_plan_id: str) -> Doc:
         expected_pending["state"] = "pending"
         stored = _read_if_exists(_state_path(state, proof_rel), "promotion proof")
         if transaction.get("state") == "applied":
+            if stored == proof and _is_disarmed(existing_active, proof):
+                raise RolloutError(
+                    "this promotion was rolled back; build and approve a fresh plan with its "
+                    "own evidence to promote this host/wiki binding again"
+                )
             if stored != proof or existing_active != proof:
                 raise RolloutError("applied rollout transaction does not match stored proof")
             return _result(proof, "noop")
@@ -560,26 +590,25 @@ def apply_plan(inputs: RolloutInputs, approved_plan_id: str) -> Doc:
         }
         _write_state(state, transaction_rel, expected_pending)
 
+    previous_active = expected_pending.get("previous_active")
     for other_path in sorted(_state_path(state, "transactions").glob("promote-*.json")):
         if other_path == transaction_path:
             continue
         other = _read_json(other_path, "rollout transaction")
         if other.get("binding_key") != binding_key or other.get("operation") != "promote":
             continue
-        current_active = _read_if_exists(active_path, "active rollout binding")
-        replaced_history = (
-            current_active is not None
-            and current_active.get("status") == "rolled-back"
-            and current_active.get("promotion_id") == other.get("promotion_id")
-        )
-        if not replaced_history:
-            raise RolloutError("another transaction already owns this host/wiki binding")
+        if other.get("state") == "applied":
+            continue
+        raise RolloutError("another transaction already owns this host/wiki binding")
 
-    for relative, document in ((proof_rel, proof), (active_rel, proof)):
-        existing = _read_if_exists(_state_path(state, relative), "rollout artifact")
-        if existing is not None and existing != document:
-            raise RolloutError("rollout target contains foreign content")
-        _write_state(state, relative, document)
+    stored_proof = _read_if_exists(_state_path(state, proof_rel), "rollout artifact")
+    if stored_proof is not None and stored_proof != proof:
+        raise RolloutError("rollout target contains foreign content")
+    _write_state(state, proof_rel, proof)
+    current_active = _read_if_exists(active_path, "active rollout binding")
+    if current_active not in (None, proof, previous_active):
+        raise RolloutError("rollout target contains foreign content")
+    _write_state(state, active_rel, proof)
     applied = dict(expected_pending)
     applied["state"] = "applied"
     _write_state(state, transaction_rel, applied)

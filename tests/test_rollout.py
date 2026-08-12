@@ -451,6 +451,169 @@ def test_apply_and_rollback_resume_after_interrupted_write_ahead_transactions(
     assert receipt["status"] == "rolled-back"
 
 
+def test_a_rolled_back_binding_is_re_promotable_only_by_a_fresh_approved_plan(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path / "estate")
+    evidence = _evidence(tmp_path, capsys, vault)
+    first = _inputs(tmp_path, vault, evidence)
+    first_args = _promote_args(first)
+    code, plan, _ = run_json(capsys, *first_args)
+    assert code == 0 and plan["status"] == "ready"
+    code, promoted, _ = run_json(capsys, *first_args, "--apply", "--plan-id", str(plan["plan_id"]))
+    assert code == 0 and promoted["status"] == "promoted"
+    promotion_id = str(promoted["promotion_id"])
+
+    rollback_args = [
+        "rollout",
+        "rollback",
+        "--state-root",
+        str(first.state_root),
+        "--promotion-id",
+        promotion_id,
+        "--reason",
+        "synthetic re-promotion exercise",
+        "--today",
+        TODAY,
+    ]
+    code, rollback_plan, _ = run_json(capsys, *rollback_args)
+    assert code == 0
+    code, receipt, _ = run_json(
+        capsys, *rollback_args, "--apply", "--plan-id", str(rollback_plan["plan_id"])
+    )
+    assert code == 0 and receipt["status"] == "rolled-back"
+
+    # Replaying the rolled-back plan must refuse by name rather than re-arm.
+    code, refused, _ = run_json(capsys, *first_args, "--apply", "--plan-id", str(plan["plan_id"]))
+    assert code == 1
+    assert refused["code"] == "rollout_invalid"
+    assert "rolled back" in refused["message"]
+
+    # A fresh plan with its own separate approvals supersedes the disarmed one.
+    second = RolloutInputs(
+        **{
+            **first.__dict__,
+            "governance_approval": "synthetic-governance-approval-2",
+            "access_approval": "synthetic-access-approval-2",
+        }
+    )
+    second_args = _promote_args(second)
+    code, replacement_plan, _ = run_json(capsys, *second_args)
+    assert code == 0 and replacement_plan["status"] == "ready"
+    assert replacement_plan["plan_id"] != plan["plan_id"]
+    code, replacement, err = run_json(
+        capsys, *second_args, "--apply", "--plan-id", str(replacement_plan["plan_id"])
+    )
+    assert code == 0 and err == ""
+    assert replacement["status"] == "promoted"
+    assert replacement["loadable"] is True
+    assert replacement["promotion_id"] != promotion_id
+
+    # The superseded proof and its receipt are retained, not deleted.
+    assert (first.state_root / "proofs" / f"{promotion_id}.json").is_file()
+    assert (first.state_root / "receipts" / f"{receipt['receipt_id']}.json").is_file()
+
+    code, health, _ = run_json(
+        capsys,
+        "rollout",
+        "health",
+        "--state-root",
+        str(first.state_root),
+        "--wiki-root",
+        str(vault),
+        "--promotion-id",
+        str(replacement["promotion_id"]),
+    )
+    assert code == 0 and health["status"] == "healthy"
+    code, stale_health, _ = run_json(
+        capsys,
+        "rollout",
+        "health",
+        "--state-root",
+        str(first.state_root),
+        "--wiki-root",
+        str(vault),
+        "--promotion-id",
+        promotion_id,
+    )
+    assert code == 1 and stale_health["status"] == "rollback-required"
+
+    # An armed binding still refuses replacement until it is rolled back.
+    third = RolloutInputs(
+        **{**first.__dict__, "governance_approval": "synthetic-governance-approval-3"}
+    )
+    third_args = _promote_args(third)
+    code, third_plan, _ = run_json(capsys, *third_args)
+    assert code == 0 and third_plan["status"] == "ready"
+    code, blocked, _ = run_json(
+        capsys, *third_args, "--apply", "--plan-id", str(third_plan["plan_id"])
+    )
+    assert code == 1
+    assert blocked["code"] == "rollout_invalid"
+    assert "already promoted" in blocked["message"]
+
+
+def test_an_unfinished_promote_transaction_still_owns_its_host_wiki_binding(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = build_vault(tmp_path / "estate")
+    evidence = _evidence(tmp_path, capsys, vault)
+    first = _inputs(tmp_path, vault, evidence)
+    original = rollout_module._write_state
+
+    def interrupt(state: Path, relative: str, document: dict[str, Any]) -> Path:
+        if relative.startswith("proofs/"):
+            raise OSError("synthetic interruption")
+        return original(state, relative, document)
+
+    monkeypatch.setattr(rollout_module, "_write_state", interrupt)
+    with pytest.raises(OSError, match="synthetic interruption"):
+        apply_plan(first, str(build_plan(first)["plan_id"]))
+    monkeypatch.setattr(rollout_module, "_write_state", original)
+
+    competing = RolloutInputs(
+        **{**first.__dict__, "governance_approval": "synthetic-governance-approval-2"}
+    )
+    with pytest.raises(rollout_module.RolloutError, match="already owns this host/wiki binding"):
+        apply_plan(competing, str(build_plan(competing)["plan_id"]))
+    assert not (first.state_root / "active").exists()
+    assert not (first.state_root / "proofs").exists()
+
+
+def test_a_termless_no_match_preflight_is_not_quiet_host_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path / "estate")
+    evidence = _evidence(tmp_path, capsys, vault)
+    code, degenerate, err = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "preflight",
+        "the of and",
+        "--model-class",
+        "cloud",
+        "--today",
+        TODAY,
+        "--full",
+    )
+    assert code == 0 and err == ""
+    assert degenerate["status"] == "no-match" and degenerate["matches"] == []
+    evidence["no_match"] = _write_json(tmp_path / "evidence" / "termless.json", degenerate)
+    plan = build_plan(_inputs(tmp_path, vault, evidence))
+    assert plan["status"] == "blocked"
+    failed = {check["check"] for check in plan["checks"] if check["status"] == "failed"}
+    assert failed == {"quiet-no-match"}
+
+    # Replaying the matched request as its own negative control is refused too.
+    evidence["no_match"] = evidence["matched"]
+    reused = build_plan(_inputs(tmp_path, vault, evidence))
+    assert reused["status"] == "blocked"
+    assert "quiet-no-match" in {
+        check["check"] for check in reused["checks"] if check["status"] == "failed"
+    }
+
+
 def test_rollout_json_and_toon_are_the_same_typed_document(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
