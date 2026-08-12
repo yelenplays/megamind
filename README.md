@@ -132,6 +132,14 @@ megamind-axi preflight "how do we price cleanup offers" --estate ~/Wikis --model
   consultation happened. It never reads page content, never writes anything,
   and never calls a model or the network; whether and when to run it is the
   host's policy.
+- **Explicit offer selection** closes the intentional no-load state after a
+  user chooses one offered wiki. Record the complete original JSON packet with
+  `--full`, then run `megamind-axi select-offer <Wiki> --request "<exact original
+  request>" --preflight-result <packet.json> --model-class local|cloud` against
+  the same root or estate. The additive selection result revalidates the whole
+  preflight identity and current cards, authorizes only that one still-loadable
+  offer, preserves its confidence and evidence, and exposes no broader access
+  than the card already declared. A rephrased request is not a selection.
 
 ## Governed gardening: gaps, research waves, provisional wikis
 

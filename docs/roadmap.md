@@ -164,6 +164,10 @@ model are non-negotiable at every stage.
 - Incremental nondecreasing privacy ordering through sequence-complete prior
   proof chains. Unknown, sensitive, provisional, pointer, and `none` postures
   stay restrictive; no proof can widen the access module's result.
+- Governed explicit selection of one currently offered preflight wiki, bound to
+  the complete original request/catalog/model/card/root identity. Selection
+  preserves confidence and card access rather than raising either, and refuses
+  provisional, filtered, withheld, broken, pointer, stale, or escaping offers.
 - Durable external local state with write-ahead promotion and rollback,
   interruption recovery, exact replay, foreign-content refusal, health drift,
   non-loadable blocked outcomes, retained proofs, and typed rollback receipts.

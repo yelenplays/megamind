@@ -124,6 +124,7 @@ from .rollout import (
 )
 from .routing import RouteResult, route
 from .scaffold import InitError, init_vault, init_wiki_root
+from .selection import SelectionError, read_preflight_result, select_offer
 from .semantic import NgramBackend, SemanticBackend
 from .skillpack import skill_files, write_skill
 
@@ -423,6 +424,39 @@ def cmd_preflight(
             "Stay quiet about wikis on a no-match; answer without wiki context",
             f'Run `{EXECUTABLE} capture --text "<what you learn>" --type fact` afterwards',
         )
+    return doc, 0
+
+
+def cmd_select_offer(
+    wiki: str,
+    request: str,
+    preflight_result: str,
+    model_class: str,
+    estate: str | None,
+    root: Path,
+    root_label: str,
+    today: date | None,
+) -> tuple[Doc, int]:
+    refs = _resolve_roots(estate, root, root_label)
+    catalog = build_catalog(refs, today=today)
+    original = read_preflight_result(Path(preflight_result))
+    result = select_offer(refs, request, model_class, wiki, original, catalog)
+    doc: Doc = {
+        "schema_version": "megamind/preflight-selection-result/v1",
+        "status": "authorized",
+        "preflight_id": result.preflight_id,
+        "request_hash": result.request_hash,
+        "catalog_hash": result.catalog_hash,
+        "model_class": result.model_class,
+        "selection_id": result.selection_id,
+        "root_facts_hash": result.root_facts_hash,
+        "selection": result.selection,
+        "selected": result.selected,
+        "help": _help(
+            str(result.selected["follow_up"]),
+            "Record the selection_id with the task as proof of the explicit choice",
+        ),
+    }
     return doc, 0
 
 
@@ -1548,6 +1582,28 @@ def build_parser() -> AxiParser:
         help="rerank authorized matches with the local char-ngram backend (lexical stays default)",
     )
 
+    p_select = sub.add_parser(
+        "select-offer",
+        help="authorize one explicit user choice from an original preflight offer",
+        epilog=(
+            f'example: {EXECUTABLE} select-offer WikiName --request "<original request>" '
+            "--preflight-result preflight.json --model-class cloud --estate ~/Wikis"
+        ),
+    )
+    _common_flags(p_select)
+    p_select.add_argument("wiki", help="exact wiki name from the original offers[]")
+    p_select.add_argument(
+        "--request", required=True, help="the exact original request, not a rephrased selection"
+    )
+    p_select.add_argument(
+        "--preflight-result", required=True, help="complete original preflight-result/v2 JSON file"
+    )
+    p_select.add_argument(
+        "--model-class", required=True, choices=list(MODEL_CLASSES), help="original model class"
+    )
+    p_select.add_argument("--estate", default=None, help="same wiki estate used by preflight")
+    p_select.add_argument("--today", default=argparse.SUPPRESS, help="same ISO date as preflight")
+
     p_adopt = sub.add_parser(
         "adopt",
         help="non-destructively adopt an existing wiki directory (dry-run first)",
@@ -2060,6 +2116,17 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             full=args.full,
             semantic=NgramBackend() if args.semantic else None,
         )
+    if command == "select-offer":
+        return cmd_select_offer(
+            args.wiki,
+            args.request,
+            args.preflight_result,
+            args.model_class,
+            args.estate,
+            root,
+            root_label,
+            today=_parse_today(getattr(args, "today", None)),
+        )
     if command == "adopt":
         if args.apply and args.rollback:
             raise UsageError("--apply and --rollback are mutually exclusive")
@@ -2238,6 +2305,10 @@ _ERROR_HELP: dict[str, list[str]] = {
         "Check the frozen fixture, query set, task set, rubric, and threshold digests",
         f"Run `{EXECUTABLE} bench run --help` or `{EXECUTABLE} experiment plan --help` for inputs",
     ],
+    "selection_invalid": [
+        "Run `megamind-axi preflight <request> --full --format json` again and record its file",
+        "Select exactly one current trusted offer without changing the request or model class",
+    ],
     "rollout_invalid": [
         "Re-run `megamind-axi rollout promote` without --apply and review every typed check",
         "Do not widen card access or override a provisional or failed evaluation outcome",
@@ -2288,6 +2359,7 @@ def main(argv: list[str] | None = None) -> int:
         GardenError,
         EvaluationError,
         RolloutError,
+        SelectionError,
     ) as error:
         code = str(getattr(error, "code", "operation_failed"))
         exit_code = 2 if code in {"not_initialized", "registry_invalid"} else 1

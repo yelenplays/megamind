@@ -173,6 +173,34 @@ backend, which is not a proof input, so a rerank that changes scores without
 changing the ranked order keeps the same `preflight_id`. Repeated inputs with
 the same backend selection stay byte-stable.
 
+## Preflight selection result (`megamind/preflight-selection-result/v1`)
+
+`select-offer` consumes a complete original JSON `preflight-result/v2` plus the
+exact original request, model class, and one selected wiki identity. The result
+binds `preflight_id`, `request_hash`, `catalog_hash`, `model_class`, the selected
+wiki, current card/root facts, effective access, allows, follow-up, budget,
+confidence/evidence, and selection provenance into `selection_id`.
+`root_facts_hash` covers current card facts and root-relative resolved paths,
+including symlink resolution, without exposing machine-specific absolute paths
+or hashing page content.
+
+`selection.status` is `explicit-user-selection`, its basis is
+`selected-current-offer`, and `confidence_changed` is always false. `selected`
+starts with the exact validated original offer fields and additively carries
+only the current card-derived `access`, `routing_mode`, `allows`, `follow_up`,
+and, when that follow-up is loadable, `context_budget`. Thus a selected
+sub-floor offer remains visibly sub-floor rather than becoming a confidence
+match. Digest-only yields one approved digest path. Full yields the same
+registry route ladder or canonical index ladder and only the already-declared
+card/digest/index allows. Pointer and no-digest outcomes cannot produce this
+schema because they fail typed before authorization.
+
+The complete packet is mandatory: truncation, malformed lists/evidence,
+changed request/catalog/model class, duplicate or unknown identity, any
+non-offer insertion, filtered/redacted/broken/absent/provisional/pointer state,
+access `none`, missing load artifacts, and traversal or escaping symlinks are
+`selection_invalid`. The operation is read-only and deterministic.
+
 ## Governed gardening records (Phase 3)
 
 `.megamind/gaps.jsonl` is an append-only snapshot journal. The latest record

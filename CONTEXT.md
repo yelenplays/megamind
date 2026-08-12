@@ -85,6 +85,12 @@ a warning. Below it evidence stays an offer, hypothesis, or raw material; an
 `unknown` confidence never meets it.
 _Avoid_: tunable preference, guarantee of correctness
 
+**Explicit offer selection**:
+The governed follow-up after a user chooses exactly one wiki from a validated
+original preflight offer set. It preserves route confidence and authorizes only
+the selected wiki's current card-derived load surface.
+_Avoid_: threshold override, rephrased request, host-crafted path
+
 **Semantic rerank**:
 The optional local similarity pass (`--semantic`) that reorders only the
 candidates the lexical baseline already surfaced and access filtering already
