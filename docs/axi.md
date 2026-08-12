@@ -203,14 +203,20 @@ the full component rationale.
     example-driven.
 
 `evolve --apply` is a durable transaction. Its result additively carries
-`pre_change_tree_sha256` and `applied_tree_sha256` over the controlled compiled
-paths. Replaying an interrupted apply resumes from the write-ahead record.
+`pre_change_tree_sha256`, `applied_tree_sha256`, and `restored_tree_sha256`
+over the controlled compiled paths, plus `rolled_back` beside `applied`.
+Replaying an interrupted apply resumes from the write-ahead record.
 `evolve --rollback --plan-id` verifies every target before writing, refuses
 foreign content or a stale/tampered token, restores the proposal and exact
 pre-change controlled-tree hash, and returns `restored_tree_sha256` while
-retaining append-only audit and transaction evidence. At a canonical wiki root,
+retaining append-only audit and transaction evidence. Apply, recovery, and
+rollback are three states of one transaction and render one stable
+`evolve-result/v1` key set: a field a state does not describe carries its
+definitive empty value rather than disappearing. At a canonical wiki root,
 `route`, `capture`, `review`, and `evolve` use the authoritative card directly;
-`route` honors its card context budget and `evolve` rejects `raw/`.
+`route` honors its card context budget, `evolve` defaults to and accepts only
+compiled `wiki/` destinations and rejects `raw/`, and `review` reports only
+compiled pages.
 
 ## Error codes
 

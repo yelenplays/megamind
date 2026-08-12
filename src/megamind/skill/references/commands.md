@@ -135,9 +135,12 @@ pre-change controlled-tree hash, and retains append-only evidence.
 Applying a new top-level wiki also registers it in the same apply: the
 registry entry, card and index skeletons, and regenerated router are part of
 the reviewed diff and covered by the `plan_id`.
-Re-applying an applied proposal is `status: noop`, exit 0. At a canonical wiki
-root, route/capture/review/evolve use the authoritative card directly, route
-honors its context budget, and evolve rejects every `raw/` target.
+Re-applying an applied proposal is `status: noop`, exit 0. Apply, recovery, and
+rollback render one stable key set; a field a state does not describe is empty.
+At a canonical wiki root, route/capture/review/evolve use the authoritative card
+directly, route honors its context budget, evolve resolves a wiki-name
+destination to `wiki/topics/<slug>.md` and rejects every `raw/` target, and
+review reports only compiled pages.
 
 ## megamind-axi review [--today D] [--full]
 

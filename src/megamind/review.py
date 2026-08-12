@@ -12,6 +12,7 @@ from datetime import date
 from pathlib import Path
 
 from .capture import list_proposals
+from .card import compiled_page_dir
 from .evolve import PROPOSAL_MARKER
 from .fsops import resolve_contained
 from .links import extract_links, page_name_table, resolve_link
@@ -37,17 +38,25 @@ class ReviewReport:
         return not any(asdict(self).values())
 
 
-def _iter_wiki_pages(root: Path, registry: Registry) -> list[tuple[str, Path]]:
-    pages: list[tuple[str, Path]] = []
+def _iter_wiki_page_dirs(root: Path, registry: Registry) -> list[tuple[str, Path]]:
+    """The compiled page directory of every wiki review is allowed to walk."""
+    directories: list[tuple[str, Path]] = []
     for wiki in registry.wikis:
         try:
-            wiki_dir = resolve_contained(root, wiki.path)
+            wiki_dir = resolve_contained(root, compiled_page_dir(wiki))
         except ValueError:
             continue
         if not wiki_dir.is_dir():
             continue
+        directories.append((wiki.name, wiki_dir))
+    return directories
+
+
+def _iter_wiki_pages(root: Path, registry: Registry) -> list[tuple[str, Path]]:
+    pages: list[tuple[str, Path]] = []
+    for name, wiki_dir in _iter_wiki_page_dirs(root, registry):
         for path in sorted(wiki_dir.rglob("*.md")):
-            pages.append((wiki.name, path))
+            pages.append((name, path))
     return pages
 
 
@@ -137,13 +146,7 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
                     )
 
     # Promotion candidates
-    for wiki in registry.wikis:
-        try:
-            wiki_dir = resolve_contained(root, wiki.path)
-        except ValueError:
-            continue
-        if not wiki_dir.is_dir():
-            continue
+    for _name, wiki_dir in _iter_wiki_page_dirs(root, registry):
         for sub in sorted(p for p in wiki_dir.rglob("*") if p.is_dir()):
             if sub.parent == wiki_dir:
                 # First-level dirs (like topics/) are covered by the wiki's own

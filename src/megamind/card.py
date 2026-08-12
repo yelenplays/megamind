@@ -24,6 +24,19 @@ from .registry import (
 
 CARD_PATH = Path(MEGAMIND_DIR) / "wiki-card.json"
 CARD_SCHEMA = "megamind/wiki-card/v2"
+CANONICAL_RAW_DIR = "raw"
+CANONICAL_COMPILED_DIR = "wiki"
+
+
+def compiled_page_dir(entry: WikiEntry) -> str:
+    """The directory that holds a wiki entry's compiled pages.
+
+    A canonical card is rooted at ".", but only ``wiki/`` holds compiled pages
+    there: the immutable ``raw/`` layer, ``AGENTS.md``, and ``.megamind/`` state
+    are not wiki pages. Every surface that walks a wiki as a page tree resolves
+    the directory through here, so the compiled boundary has one definition.
+    """
+    return CANONICAL_COMPILED_DIR if entry.path == "." else entry.path
 
 
 class CardError(ValueError):

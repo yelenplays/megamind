@@ -306,6 +306,32 @@ def test_review_lists_proposals_at_a_canonical_wiki_root(
     assert any(proposal_id in item for item in doc["open_proposals"])
 
 
+def test_review_at_a_canonical_wiki_root_reports_only_compiled_pages(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    (root / "raw/2024-lighting.md").write_text(
+        "---\ntitle: Synthetic lighting\nupdated: 2019-01-01\n---\n\n"
+        "# Synthetic lighting\n\nSource note. [gone](nowhere.md)\n",
+        encoding="utf-8",
+    )
+    (root / "wiki/synthetic-lighting.md").write_text(
+        "---\ntitle: Synthetic lighting\n---\n\n# Synthetic lighting\n", encoding="utf-8"
+    )
+    _capture_id(capsys, root, "Synthetic lighting uses a neutral reference.")
+
+    code, doc, err = run_json(capsys, "--root", str(root), "review", "--today", "2026-03-01")
+
+    assert code == 0
+    assert err == ""
+    assert "raw/" not in json.dumps(doc)
+    assert "AGENTS.md" not in json.dumps(doc)
+    assert doc["aggregates"]["duplicate_titles"] == 0
+    assert doc["aggregates"]["stale_pages"] == 0
+    assert doc["aggregates"]["dead_links"] == 0
+
+
 # --- evolve ------------------------------------------------------------------
 
 
@@ -377,6 +403,39 @@ def test_evolve_plans_a_compiled_page_at_a_canonical_wiki_root(
     assert doc["destination"] == "wiki/synthetic-lighting.md"
 
 
+def test_evolve_default_destination_is_compiled_at_a_canonical_wiki_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "SoloWiki"
+    init_wiki_root(root, "SoloWiki")
+    proposal_id = _capture_id(capsys, root, "SoloWiki lighting uses a neutral reference.")
+
+    code, planned, err = run_json(capsys, "--root", str(root), "evolve", proposal_id)
+
+    assert code == 0
+    assert err == ""
+    assert planned["status"] == "planned"
+    assert planned["destination"].startswith("wiki/topics/")
+    assert planned["creates_new_wiki"] is False
+
+    code, applied, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "evolve",
+        proposal_id,
+        "--apply",
+        "--plan-id",
+        planned["plan_id"],
+        "--today",
+        "2026-03-01",
+    )
+
+    assert code == 0
+    assert applied["status"] == "applied"
+    assert (root / planned["destination"]).is_file()
+
+
 def test_evolve_rollback_restores_the_compiled_tree_and_retains_the_proposal(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -431,6 +490,69 @@ def test_evolve_rollback_restores_the_compiled_tree_and_retains_the_proposal(
     assert (root / f".megamind/proposals/{proposal_id}.md").is_file()
     audit = (root / ".megamind/audit/log.jsonl").read_text(encoding="utf-8")
     assert '"action": "evolve-rollback"' in audit
+
+
+def test_evolve_result_renders_one_stable_key_set(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    proposal_id = _capture_id(capsys, vault, "Pricing model gains an annual discount tier.")
+    _, planned, _ = run_json(capsys, "--root", str(vault), "evolve", proposal_id)
+    _, applied, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "evolve",
+        proposal_id,
+        "--apply",
+        "--plan-id",
+        planned["plan_id"],
+        "--today",
+        "2026-03-01",
+    )
+    _, resumed, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "evolve",
+        proposal_id,
+        "--apply",
+        "--plan-id",
+        planned["plan_id"],
+    )
+    _, replanned, _ = run_json(capsys, "--root", str(vault), "evolve", proposal_id)
+    _, noop, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "evolve",
+        proposal_id,
+        "--apply",
+        "--plan-id",
+        replanned["plan_id"],
+    )
+    _, rolled_back, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "evolve",
+        proposal_id,
+        "--rollback",
+        "--plan-id",
+        planned["plan_id"],
+    )
+
+    for doc in (applied, resumed, noop, rolled_back):
+        assert doc["schema_version"] == "megamind/evolve-result/v1"
+        assert list(doc) == list(applied)
+    assert applied["rolled_back"] == []
+    assert applied["restored_tree_sha256"] == ""
+    assert resumed["status"] == "noop"
+    assert noop["status"] == "noop"
+    assert noop["pre_change_tree_sha256"] == ""
+    assert noop["applied_tree_sha256"] == ""
+    assert rolled_back["applied"] == []
+    assert rolled_back["applied_tree_sha256"] == applied["applied_tree_sha256"]
 
 
 def test_evolve_rollback_refuses_foreign_content_without_deleting_it(

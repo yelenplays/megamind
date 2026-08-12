@@ -239,8 +239,9 @@ fields in `.megamind/wiki-card.json` instead. See
   foreign content. Creating a new top-level wiki additionally requires
   `--approve-new-wiki`; the apply then registers the wiki with its card and
   index skeletons in the same step. Canonical wiki roots route, capture,
-  review, and evolve directly from their authoritative card, while `evolve`
-  refuses their immutable `raw/` layer.
+  review, and evolve directly from their authoritative card, scoped to the
+  compiled `wiki/` layer: `evolve` targets it by default and refuses the
+  immutable `raw/` layer, and `review` never reports raw pages.
 - `adopt` follows the same gate for onboarding an existing wiki directory and
   only ever adds files; `adopt --rollback` removes exactly what it created.
 - Access policy is enforced by the card, not the host: unknown or contradictory

@@ -18,6 +18,7 @@ from datetime import date
 from pathlib import Path
 
 from .capture import PROPOSALS_DIR
+from .card import CANONICAL_COMPILED_DIR, CANONICAL_RAW_DIR, compiled_page_dir
 from .fsops import (
     MEGAMIND_DIR,
     append_audit,
@@ -132,7 +133,7 @@ def _destination_page(registry: Registry, destination: str, proposal_body: str) 
     wiki = registry.wiki_by_name(hint) or next((w for w in registry.wikis if w.path == hint), None)
     slug = _slugify(_first_heading(proposal_body))
     if wiki is not None:
-        return f"{wiki.path}/topics/{slug}.md"
+        return f"{compiled_page_dir(wiki)}/topics/{slug}.md"
     if not hint or hint == "uncategorized":
         raise EvolveError("proposal has no destination; pass --dest <page.md> or --dest <WikiName>")
     return f"{hint}/topics/{slug}.md"
@@ -331,12 +332,14 @@ def plan(
     page_rel = _destination_page(registry, hint, document.body)
     canonical_root = any(wiki.path == "." for wiki in registry.wikis)
     page_path = resolve_contained(root, page_rel)
-    raw_root = resolve_contained(root, "raw")
-    compiled_root = resolve_contained(root, "wiki")
+    raw_root = resolve_contained(root, CANONICAL_RAW_DIR)
+    compiled_root = resolve_contained(root, CANONICAL_COMPILED_DIR)
     if canonical_root and (page_path == raw_root or raw_root in page_path.parents):
         raise EvolveError("raw/ is immutable; evolve may write only compiled wiki/ pages")
     if canonical_root and compiled_root not in page_path.parents:
-        raise EvolveError("canonical evolution may write only compiled wiki/ pages")
+        raise EvolveError(
+            "canonical evolution may write only compiled wiki/ pages; pass --dest wiki/<page>.md"
+        )
     creates_new_wiki = not _is_inside_registered_wiki(registry, page_rel)
     if creates_new_wiki:
         notes.append(
@@ -638,6 +641,7 @@ def rollback_evolution(root: Path, plan_id: str, proposal_ref: str) -> dict[str,
         "status": "rolled_back",
         "action": str(manifest["action"]),
         "pre_change_tree_sha256": str(manifest["pre_change_tree_sha256"]),
+        "applied_tree_sha256": str(manifest["applied_tree_sha256"]),
         "restored_tree_sha256": restored_digest,
         "proposal_id": str(manifest["proposal_id"]),
         "destination": str(manifest["destination"]),

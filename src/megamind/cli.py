@@ -132,6 +132,22 @@ DIFF_LINE_LIMIT = 60
 SECTION_ITEM_LIMIT = 20
 FINDINGS_LIMIT = 50
 
+# The key set of megamind/evolve-result/v1, in render order, with the empty
+# value each key carries in a state it does not describe. Tuples mark list
+# fields so a caller can never share a mutable default.
+EVOLVE_RESULT_DEFAULTS: dict[str, Any] = {
+    "status": "",
+    "action": "",
+    "proposal_id": "",
+    "destination": "",
+    "plan_id": "",
+    "applied": (),
+    "rolled_back": (),
+    "pre_change_tree_sha256": "",
+    "applied_tree_sha256": "",
+    "restored_tree_sha256": "",
+}
+
 Doc = dict[str, Any]
 
 
@@ -579,6 +595,22 @@ def cmd_capture(
     return doc, 0
 
 
+def _evolve_result(outcome: dict[str, Any], notes: list[str], help_steps: list[str]) -> Doc:
+    """Render `megamind/evolve-result/v1` with its one stable key set.
+
+    Apply, recovery, and rollback are three states of the same transaction, so
+    they render the same shape: a value that does not apply to a state stays
+    definitively empty instead of dropping its key.
+    """
+    doc: Doc = {"schema_version": "megamind/evolve-result/v1"}
+    for key, default in EVOLVE_RESULT_DEFAULTS.items():
+        value = outcome.get(key, default)
+        doc[key] = list(value) if isinstance(default, tuple) else value
+    doc["notes"] = notes
+    doc["help"] = help_steps
+    return doc
+
+
 def cmd_evolve(
     root: Path,
     registry: Registry,
@@ -594,27 +626,25 @@ def cmd_evolve(
 ) -> tuple[Doc, int]:
     if rollback:
         outcome = rollback_evolution(root, plan_id or "", proposal)
-        rollback_doc: Doc = {
-            "schema_version": "megamind/evolve-result/v1",
-            **outcome,
-            "help": _help(
+        return _evolve_result(
+            outcome,
+            ["restored the pre-change compiled tree from the durable transaction"],
+            _help(
                 f"Run `{EXECUTABLE} doctor` to validate the restored vault",
                 f"Run `{EXECUTABLE} review` to inspect the retained proposal and audit trail",
             ),
-        }
-        return rollback_doc, 0
+        ), 0
     if apply:
         resumed = resume_evolution(root, plan_id or "", proposal)
         if resumed is not None:
-            return {
-                "schema_version": "megamind/evolve-result/v1",
-                **resumed,
-                "notes": ["recovered from the durable evolution transaction"],
-                "help": _help(
+            return _evolve_result(
+                resumed,
+                ["recovered from the durable evolution transaction"],
+                _help(
                     f"Run `{EXECUTABLE} doctor` to validate the vault after recovery",
                     f"Run `{EXECUTABLE} review` to see remaining open proposals",
                 ),
-            }, 0
+            ), 0
     computed = plan(root, registry, proposal, destination=destination, supersedes=supersedes)
     if apply:
         applied = apply_plan(
@@ -625,26 +655,26 @@ def cmd_evolve(
             approve_new_wiki=approve_new_wiki,
             today=today,
         )
-        doc: Doc = {
-            "schema_version": "megamind/evolve-result/v1",
-            "status": "applied" if applied else "noop",
-            "action": computed.action,
-            "proposal_id": computed.proposal_id,
-            "destination": computed.destination,
-            "plan_id": computed.plan_id,
-            "applied": applied,
-            **evolution_tree_hashes(root, computed.plan_id),
-            "notes": computed.notes,
-            "help": _help(
+        return _evolve_result(
+            {
+                "status": "applied" if applied else "noop",
+                "action": computed.action,
+                "proposal_id": computed.proposal_id,
+                "destination": computed.destination,
+                "plan_id": computed.plan_id,
+                "applied": applied,
+                **evolution_tree_hashes(root, computed.plan_id),
+            },
+            computed.notes,
+            _help(
                 f"Run `{EXECUTABLE} doctor` to validate the vault after the change",
                 f"Run `{EXECUTABLE} review` to see remaining open proposals",
             ),
-        }
-        return doc, 0
+        ), 0
     diff_lines = computed.render_diff().splitlines()
     truncated = not full and len(diff_lines) > DIFF_LINE_LIMIT
     shown = diff_lines[:DIFF_LINE_LIMIT] if truncated else diff_lines
-    doc = {
+    doc: Doc = {
         "schema_version": "megamind/evolve-plan/v1",
         "status": "planned" if computed.action != "noop" else "noop",
         "action": computed.action,

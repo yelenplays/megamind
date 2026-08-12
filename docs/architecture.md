@@ -146,9 +146,13 @@ compiled `wiki/` layer with its content-oriented `index.md` and append-only
 --wiki` scaffolds new canonical roots and `adopt` onboards existing ones
 without touching their content. The local `route`, `capture`, `review`, and
 `evolve` surfaces adapt that one card into the same internal routing interface;
-for `route`, its declared context budget replaces the registry defaults.
-Evolution in this shape is compiled-only and rejects every `raw/` destination
-or supersession target.
+for `route`, its declared context budget replaces the registry defaults. The
+card is rooted at `.`, but its compiled page tree is `wiki/`, so every surface
+that walks a wiki as pages resolves that directory through
+`card.compiled_page_dir`: evolution in this shape defaults to and accepts only
+compiled destinations, rejecting every `raw/` destination or supersession
+target, and `review` reports only compiled pages, never `raw/`, `AGENTS.md`, or
+`.megamind/` state.
 
 ## Access policy
 
