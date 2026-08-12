@@ -28,7 +28,7 @@ from .confidence import (
     route_confidence,
 )
 from .fsops import resolve_contained
-from .links import extract_links
+from .links import extract_links, link_target_path
 from .models import CONTENT_VISIBLE_PRIVACY, parse_document
 from .registry import Registry, WikiEntry
 from .semantic import SemanticBackend, disabled_outcome
@@ -304,8 +304,9 @@ def _index_candidates(
         entry_score = 0
         reasons: list[str] = []
         entry_signals = dict(signals)
+        target_path = link_target_path(link.target)
         label_tokens = _token_set(link.label)
-        target_tokens = _token_set(link.target.replace("/", " ").replace("-", " "))
+        target_tokens = _token_set(target_path.replace("/", " ").replace("-", " "))
         for token in query_tokens:
             if token in label_tokens:
                 entry_score += WEIGHT_INDEX_LABEL
@@ -317,7 +318,7 @@ def _index_candidates(
                 _best_signal(entry_signals, token, SIGNAL_STRENGTH["index-target"])
         if entry_score == 0:
             continue
-        page_rel = (index_dir / link.target.split("#", 1)[0]).as_posix()
+        page_rel = (index_dir / target_path).as_posix()
         try:
             page_path = resolve_contained(root, page_rel)
         except ValueError:

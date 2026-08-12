@@ -15,7 +15,7 @@ from .capture import list_proposals
 from .card import compiled_page_dir, is_canonical_page
 from .evolve import PROPOSAL_MARKER
 from .fsops import resolve_contained
-from .links import extract_links, page_name_table, resolve_link
+from .links import extract_links, link_target_path, page_name_table, resolve_link
 from .models import Document, parse_document
 from .registry import Registry, WikiEntry
 
@@ -208,7 +208,7 @@ def _link_target_rel(
         name = link.target.strip().removesuffix(".md")
         target = names.get(name)
         return target.relative_to(root).as_posix() if target else None
-    raw = link.target.split("#", 1)[0]
+    raw = link_target_path(link.target)
     if not raw:
         return None
     candidate = (source_file.parent / raw).resolve()

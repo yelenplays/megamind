@@ -203,6 +203,18 @@ def test_proof_identity_is_deterministic_and_input_bound(vault: Path) -> None:
     assert changed_catalog.catalog_hash != first.catalog_hash
 
 
+def test_page_content_cannot_change_preflight_identity(vault: Path) -> None:
+    first = run_preflight([_ref(vault)], "pricing", "cloud")
+    page = vault / "ProductWiki/topics/pricing-model.md"
+    page.write_text("---\nmalformed frontmatter\n---\n\nprivate changed body\n", encoding="utf-8")
+
+    second = run_preflight([_ref(vault)], "pricing", "cloud")
+
+    assert second.catalog_hash == first.catalog_hash
+    assert second.preflight_id == first.preflight_id
+    assert second.matches == first.matches
+
+
 def test_proof_binds_request_hash_not_the_raw_request(vault: Path) -> None:
     result = run_preflight([_ref(vault)], "synthetic secret-flavored request", "cloud")
     assert result.request_hash

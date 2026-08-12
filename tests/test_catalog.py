@@ -61,7 +61,8 @@ def test_catalog_aggregates_every_wiki_with_card_detail(tmp_path: Path) -> None:
     product = by_name["ProductWiki"]
     assert product["root"] == f"{estate}/vault"
     assert product["model_access"] == {"local": "full", "cloud": "full", "derived": []}
-    assert product["maintenance"]["doctor"] == "healthy"
+    assert product["maintenance"]["doctor"] == "not-applicable"
+    assert product["maintenance"]["stale_pages"] is None
     solo = by_name["SoloWiki"]
     assert solo["source"] == "wiki-card"
     assert solo["paths"]["index"] == "wiki/index.md"
@@ -194,15 +195,36 @@ def test_projection_drift_check(tmp_path: Path) -> None:
 
 def test_catalog_never_reads_page_content(tmp_path: Path) -> None:
     estate = _build_estate(tmp_path)
-    rows = _rows(estate, today=date(2026, 8, 10))
-    blob = json.dumps(rows)
-    page_text = (estate / "vault" / "ProductWiki/topics/pricing-model.md").read_text(
-        encoding="utf-8"
-    )
-    distinctive = "flat monthly plan"
-    assert distinctive in page_text
-    assert distinctive not in blob
-    assert distinctive not in render_projection(build_catalog(discover_roots(estate)))
+    refs = discover_roots(estate)
+    before = build_catalog(refs, today=date(2026, 8, 10))
+    page = estate / "vault" / "ProductWiki/topics/pricing-model.md"
+    assert "flat monthly plan" in page.read_text(encoding="utf-8")
+
+    page.write_text("---\nmalformed frontmatter\n---\n\nprivate changed body\n", encoding="utf-8")
+    after = build_catalog(refs, today=date(2026, 8, 10))
+
+    assert after.rows == before.rows
+    assert after.catalog_hash == before.catalog_hash
+    assert "private changed body" not in json.dumps(visible_rows(after))
+    assert "private changed body" not in render_projection(after)
+
+
+def test_personal_privacy_cannot_be_projected_as_public_by_sensitivity(tmp_path: Path) -> None:
+    estate = _build_estate(tmp_path)
+    vault = estate / "vault"
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.privacy = "personal-local"
+    product.sensitivity = "public-reference"
+    product.model_access.cloud = "full"
+    save_registry(vault, registry)
+
+    row = next(row for row in _rows(estate) if row.get("name") == "ProductWiki")
+    assert row["sensitivity"] == "personal-local"
+    assert row["catalog_visibility"] == "redacted"
+    assert row["redacted"] is True
+    assert "model_access" in row["redacted_fields"]
 
 
 def test_staleness_is_computed_only_with_a_date(tmp_path: Path) -> None:

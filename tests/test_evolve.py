@@ -8,6 +8,7 @@ import pytest
 from megamind.capture import capture
 from megamind.doctor import has_errors, run_doctor
 from megamind.evolve import EvolveError, apply_plan, plan
+from megamind.links import extract_links, link_target_path
 from megamind.models import parse_document
 from megamind.registry import load_registry
 from megamind.review import review
@@ -189,6 +190,71 @@ def test_unregistered_wiki_shaped_directory_is_a_doctor_warning(vault: Path) -> 
     assert len(matches) == 1
     assert matches[0].severity == "warning"
     assert "not registered" in matches[0].message
+
+
+def test_bracketed_heading_still_yields_an_extractable_index_link(vault: Path) -> None:
+    """An index line only routes if `extract_links` can read the link back out."""
+    registry = load_registry(vault)
+    destination = "ProductWiki/topics/pricing-tiers.md"
+    proposal_id = _capture(vault, "# Pricing tiers [Q3]\n\nThree synthetic tiers apply.")
+    computed = plan(vault, registry, proposal_id, destination=destination)
+    apply_plan(vault, registry, computed, approved_plan_id=computed.plan_id, today=TODAY)
+
+    index = parse_document((vault / "ProductWiki/INDEX.md").read_text(encoding="utf-8"))
+    links = extract_links(index.body)
+    assert "topics/pricing-tiers.md" in [link.target for link in links]
+    assert "Pricing tiers (Q3)" in [link.label for link in links]
+
+    routed = route(vault, load_registry(vault), "pricing tiers")
+    assert any(candidate.path == destination for candidate in routed.candidates)
+
+    # The extractable link is also what stops a later proposal appending a duplicate.
+    second = _capture(vault, "# Pricing tiers [Q3]\n\nA later synthetic revision.")
+    replan = plan(vault, load_registry(vault), second, destination=destination)
+    assert [change.path for change in replan.changes] == [destination]
+
+
+def test_evolved_page_with_spaces_and_parentheses_routes_and_dedupes(vault: Path) -> None:
+    """A filename Markdown cannot carry literally must still route back from the index."""
+    registry = load_registry(vault)
+    destination = "ProductWiki/topics/pricing (2026).md"
+    proposal_id = _capture(vault, "# Pricing tiers\n\nThree synthetic tiers apply.")
+    computed = plan(vault, registry, proposal_id, destination=destination)
+    apply_plan(vault, registry, computed, approved_plan_id=computed.plan_id, today=TODAY)
+
+    index = parse_document((vault / "ProductWiki/INDEX.md").read_text(encoding="utf-8"))
+    assert "(topics/pricing%20%282026%29.md)" in index.body
+    assert "topics/pricing (2026).md" in [
+        link_target_path(link.target) for link in extract_links(index.body)
+    ]
+
+    routed = route(vault, load_registry(vault), "pricing tiers")
+    assert any(candidate.path == destination for candidate in routed.candidates)
+
+    second = _capture(vault, "# Pricing tiers\n\nA later synthetic revision.")
+    replan = plan(vault, load_registry(vault), second, destination=destination)
+    assert [change.path for change in replan.changes] == [destination]
+
+    findings = run_doctor(vault)
+    assert not has_errors(findings), [f.message for f in findings if f.severity == "error"]
+
+
+def test_wiki_without_a_usable_index_says_the_page_is_not_index_routable(vault: Path) -> None:
+    """A created page that route cannot reach must not be reported as if it could."""
+    registry = load_registry(vault)
+    undeclared = "ResearchDigest/topics/interview-cadence.md"
+    proposal_id = _capture(vault, "# Interview cadence\n\nSynthetic research cadence.")
+    computed = plan(vault, registry, proposal_id, destination=undeclared)
+    assert [change.path for change in computed.changes] == [undeclared]
+    assert any("ResearchDigest declares no index" in note for note in computed.notes)
+    assert any("will not be index-routable" in note for note in computed.notes)
+
+    (vault / "ProductWiki/INDEX.md").unlink()
+    missing = _capture(vault, "# Support rota\n\nSupport rotates weekly.")
+    orphaned = plan(vault, registry, missing, destination="ProductWiki")
+    assert [change.path for change in orphaned.changes] == ["ProductWiki/topics/support-rota.md"]
+    assert any("ProductWiki/INDEX.md is missing" in note for note in orphaned.notes)
+    assert any("will not be index-routable" in note for note in orphaned.notes)
 
 
 def test_supersede_missing_page_fails(vault: Path) -> None:

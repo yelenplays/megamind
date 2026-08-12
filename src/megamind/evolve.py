@@ -12,6 +12,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -28,6 +29,7 @@ from .fsops import (
     remove_contained,
     resolve_contained,
 )
+from .links import encode_link_target, extract_links, link_target_path
 from .models import Document, parse_document
 from .registry import (
     REGISTRY_PATH,
@@ -102,6 +104,21 @@ def _slugify(text: str) -> str:
     return slug[:60] or "note"
 
 
+def _link_label(text: str) -> str:
+    """Render arbitrary heading text as a label ``links.extract_links`` reads back.
+
+    The extractor reads a small Markdown subset whose label ends at the first
+    ``]``, so a heading carrying brackets would emit an index line that is no
+    longer a link at all: the page would not route, the dedupe guard would
+    append the same broken line again on every later proposal, and doctor would
+    see no link to call dead. Brackets become parentheses because no escape of
+    them survives that subset; a backslash is escaped so the label still renders
+    as written.
+    """
+    label = text.replace("\\", "\\\\").replace("[", "(").replace("]", ")").strip()
+    return label or "note"
+
+
 def _load_proposal(root: Path, ref: str) -> tuple[str, Document]:
     """Accept a proposal id or a path to a proposal file."""
     candidate = ref if ref.endswith(".md") else (PROPOSALS_DIR / f"{ref}.md").as_posix()
@@ -167,11 +184,51 @@ def _require_canonical_page(
     return page_path
 
 
-def _is_inside_registered_wiki(registry: Registry, page: str) -> bool:
-    return any(
-        wiki.path == "." or page == wiki.path or page.startswith(wiki.path.rstrip("/") + "/")
+def _registered_wiki_for_page(registry: Registry, page: str) -> WikiEntry | None:
+    matches = [
+        wiki
         for wiki in registry.wikis
-    )
+        if wiki.path == "." or page == wiki.path or page.startswith(wiki.path.rstrip("/") + "/")
+    ]
+    return max(matches, key=lambda wiki: len(wiki.path), default=None)
+
+
+def _is_inside_registered_wiki(registry: Registry, page: str) -> bool:
+    return _registered_wiki_for_page(registry, page) is not None
+
+
+def _index_change_for_page(
+    root: Path, wiki: WikiEntry, page_rel: str, page_label: str, notes: list[str]
+) -> FileChange | None:
+    """Append one routable Markdown link when a declared index omits a page.
+
+    Without a reachable index there is nothing to append, so the page is created
+    but stays unreachable from ``route``; the plan says so rather than reporting
+    a silently unroutable page.
+    """
+    if not wiki.index:
+        notes.append(f"{wiki.name} declares no index: {page_rel} will not be index-routable")
+        return None
+    if page_rel == wiki.index:
+        return None
+    index_path = resolve_contained(root, wiki.index)
+    if not index_path.is_file():
+        notes.append(
+            f"declared index {wiki.index} is missing: {page_rel} will not be index-routable"
+        )
+        return None
+    page_path = resolve_contained(root, page_rel)
+    old_text = index_path.read_text(encoding="utf-8")
+    document = parse_document(old_text)
+    for link in extract_links(document.body):
+        if link.style != "markdown":
+            continue
+        target = link_target_path(link.target)
+        if target and (index_path.parent / target).resolve() == page_path:
+            return None
+    target = encode_link_target(Path(os.path.relpath(page_path, index_path.parent)).as_posix())
+    new_text = old_text.rstrip("\n") + f"\n\n- [{_link_label(page_label)}]({target})\n"
+    return FileChange(path=wiki.index, old=old_text, new=new_text)
 
 
 def _new_wiki_identity(page_rel: str, destination_hint: str) -> tuple[str, str]:
@@ -224,7 +281,7 @@ def _new_index(name: str, page_link: str, page_label: str) -> str:
         "\n"
         f"# {name} index\n"
         "\n"
-        f"- [{page_label}]({page_link})\n"
+        f"- [{page_label}]({encode_link_target(page_link)})\n"
     )
 
 
@@ -267,7 +324,7 @@ def _registration_changes(
     )
 
     changes: list[FileChange] = []
-    page_label = page_rel.rsplit("/", 1)[-1].removesuffix(".md").replace("-", " ")
+    page_label = _link_label(page_rel.rsplit("/", 1)[-1].removesuffix(".md").replace("-", " "))
     skeletons = {
         entry.card: _new_card(name, entry.privacy, keywords),
         entry.index: _new_index(name, page_rel[len(wiki_path) + 1 :], page_label),
@@ -418,6 +475,14 @@ def plan(
         # reviewed diff and the plan id covers them, so an approved apply wires
         # the new wiki into routing in the same step.
         changes.extend(_registration_changes(root, registry, page_rel, hint, notes))
+    else:
+        wiki = _registered_wiki_for_page(registry, page_rel)
+        assert wiki is not None
+        page_label = _first_heading(document.body)
+        index_change = _index_change_for_page(root, wiki, page_rel, page_label, notes)
+        if index_change is not None:
+            changes.append(index_change)
+            notes.append(f"adds {page_rel} to the declared index {wiki.index}")
 
     payload = json.dumps(
         {

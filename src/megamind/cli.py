@@ -1285,11 +1285,13 @@ def cmd_setup_skill(dest: str | None) -> tuple[Doc, int]:
             "files": files,
             "notes": [
                 "setup writes only into the directory you pass; nothing else is touched",
+                "the destination must resolve outside every Megamind vault",
                 "uninstall by deleting <dest>/megamind; no other state is created",
             ],
             "help": _help(
-                f"Run `{EXECUTABLE} setup skill --dest .claude/skills` for this project",
                 f"Run `{EXECUTABLE} setup skill --dest $HOME/.claude/skills` for all projects",
+                f"Run `{EXECUTABLE} setup skill --dest <project>/.claude/skills` for one "
+                "project outside any vault",
             ),
         }
         return plan_doc, 0
@@ -1962,7 +1964,7 @@ def build_parser() -> AxiParser:
     p_setup_skill = setup_sub.add_parser(
         "skill",
         help="install the Agent Skill into a directory you choose",
-        epilog=f"example: {EXECUTABLE} setup skill --dest .claude/skills",
+        epilog=f"example: {EXECUTABLE} setup skill --dest $HOME/.claude/skills",
     )
     _common_flags(p_setup_skill)
     p_setup_skill.add_argument(
@@ -2221,6 +2223,12 @@ _ERROR_HELP: dict[str, list[str]] = {
     "frontmatter_invalid": [
         f"Run `{EXECUTABLE} doctor` to locate the file with unsupported frontmatter",
         "Fix the frontmatter block by hand; Megamind parses a small YAML subset",
+    ],
+    "path_escape": [
+        "A path a command writes into a vault must resolve inside that vault root: "
+        "`..` and outward symlinks are refused",
+        f"A `{EXECUTABLE} setup skill --dest DIR` destination is the reverse and must "
+        "resolve outside every vault, for example `$HOME/.claude/skills`",
     ],
     "garden_invalid": [
         f"Run `{EXECUTABLE} doctor` to validate governed records",

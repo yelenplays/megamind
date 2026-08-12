@@ -267,7 +267,9 @@ fields in `.megamind/wiki-card.json` instead. See
   a durable write-ahead transaction. `--rollback --plan-id` restores the exact
   pre-change compiled tree only while every target still matches that
   transaction, retains the proposal and append-only evidence, and refuses
-  foreign content. Creating a new top-level wiki additionally requires
+  foreign content. An evolved page under an existing wiki's declared index is
+  linked from that index in the same reviewed transaction, without widening
+  the card's routing scope. Creating a new top-level wiki additionally requires
   `--approve-new-wiki`; the apply then registers the wiki with its card and
   index skeletons in the same step. Canonical wiki roots route, capture,
   review, and evolve directly from their authoritative card, scoped to the
@@ -290,7 +292,8 @@ fields in `.megamind/wiki-card.json` instead. See
 - `megamind-axi setup skill --dest <skills-dir>` installs the bundled
   [Agent Skills](https://agentskills.io)-compatible skill (also checked in at
   [`skills/megamind/`](skills/megamind/)). Setup is explicit, local, and
-  zero-network; uninstall by deleting the installed directory.
+  zero-network, and refuses a destination that resolves inside a vault;
+  uninstall by deleting the installed directory.
 
 ## Honest limitations
 

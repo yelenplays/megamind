@@ -34,8 +34,10 @@ posture out explicitly (backup plus audit record).
 
 `megamind/catalog/v1`. Read-only fleet catalog over one root (`--root`) or a
 directory of roots (`--estate`, discovered one level deep). Each row carries
-the card fields, the effective model access, and maintenance aggregates.
-Broken, unreachable, stale, and redacted entries are stated explicitly.
+the card fields, the effective model access, and content-free maintenance
+aggregates. Compiled page doctor and staleness checks remain on the explicit
+`doctor` and `review` surfaces. Broken, unreachable, stale, and redacted
+entries are stated explicitly.
 `catalog_hash` is a content hash of the rows. `--emit-projection` adds the
 byte-stable human-readable projection; `--check-projection` compares a
 checked-in projection against the cards and exits 1 on drift or a missing
@@ -131,7 +133,10 @@ an `evolve-<plan-id>.json` write-ahead transaction, appends audit records, and
 returns pre-change/applied controlled-tree SHA-256 values. Interrupted apply
 replay resumes from that record. Rollback verifies every target, refuses
 foreign content or stale/tampered ids, restores the proposal and exact
-pre-change controlled-tree hash, and retains append-only evidence.
+pre-change controlled-tree hash, and retains append-only evidence. An evolved
+page in an existing wiki is linked from its present declared index in the same
+reviewed transaction, without widening card routing scope; without a usable
+declared index the plan and result note that the page is not index-routable.
 Applying a new top-level wiki also registers it in the same apply: the
 registry entry, card and index skeletons, and regenerated router are part of
 the reviewed diff and covered by the `plan_id`.
@@ -339,8 +344,9 @@ repository, publication, merge, or billing state.
 
 Without `--dest`: a `megamind/setup-plan/v1` document describing what would
 be installed. With `--dest`: copies the skill into `DIR/megamind` without
-overwriting (`megamind/setup-result/v1`). Uninstall by deleting that
-directory. Setup never makes network calls or edits shell/provider config.
+overwriting (`megamind/setup-result/v1`) and refuses a destination resolving
+inside a vault before any write. Uninstall by deleting that directory. Setup
+never makes network calls or edits shell/provider config.
 
 ## Errors
 

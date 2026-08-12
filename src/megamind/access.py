@@ -14,14 +14,13 @@ Derivation order for each access axis:
 2. otherwise the default implied by the legacy privacy class, narrowed by the
    default the sensitivity implies: a company-private or collaborative wiki
    defaults to cloud none until its card states an explicit cloud policy;
-3. sensitivity ceilings, keyed on the *derived* sensitivity so an unset
-   `sensitivity` field can never escape them: personal-local caps cloud at
-   digest-only and unclassified caps cloud at none. A sensitivity that was
-   itself derived from a privacy class carrying its own access ceiling
-   (digest-only, pointer-only) defers to that ceiling instead of stacking on
-   top of it;
-4. privacy ceilings: digest-only privacy caps both axes at digest-only,
-   pointer-only privacy forces both axes to none and the mode to pointer.
+3. the explicit sensitivity is reconciled with the privacy-derived
+   sensitivity, and the more restrictive classification wins;
+4. sensitivity ceilings key on that effective sensitivity: personal-local
+   caps cloud at digest-only and unclassified caps cloud at none;
+5. privacy ceilings independently preserve legacy boundaries: personal-local
+   caps cloud at digest-only, digest-only caps both axes at digest-only, and
+   pointer-only forces both axes to none and the mode to pointer.
 """
 
 from __future__ import annotations
@@ -32,6 +31,13 @@ from .models import PRIVACY_SENSITIVITY
 from .registry import WikiEntry
 
 _ACCESS_RANK = {"none": 0, "digest-only": 1, "full": 2}
+_SENSITIVITY_RANK = {
+    "public-reference": 0,
+    "company-private": 1,
+    "collaborative": 1,
+    "personal-local": 2,
+    "unclassified": 3,
+}
 
 # (local, cloud) defaults implied by the legacy privacy class. "" privacy is
 # the canonical wiki-card case: locally usable, cloud-restrictive.
@@ -44,7 +50,13 @@ _PRIVACY_DEFAULTS: dict[str, tuple[str, str]] = {
     "": ("full", "none"),
 }
 
-_PRIVACY_CEILING: dict[str, str] = {
+_PRIVACY_LOCAL_CEILING: dict[str, str] = {
+    "digest-only": "digest-only",
+    "pointer-only": "none",
+}
+
+_PRIVACY_CLOUD_CEILING: dict[str, str] = {
+    "personal-local": "digest-only",
     "digest-only": "digest-only",
     "pointer-only": "none",
 }
@@ -93,10 +105,16 @@ def effective_policy(wiki: WikiEntry) -> EffectivePolicy:
     """Compute the binding access posture for a wiki card."""
     derived: list[str] = []
 
+    privacy_sensitivity = PRIVACY_SENSITIVITY.get(wiki.privacy)
     if wiki.sensitivity:
         sensitivity = wiki.sensitivity
+        if (
+            privacy_sensitivity is not None
+            and _SENSITIVITY_RANK[privacy_sensitivity] > _SENSITIVITY_RANK[sensitivity]
+        ):
+            sensitivity = privacy_sensitivity
     else:
-        sensitivity = PRIVACY_SENSITIVITY.get(wiki.privacy, "unclassified")
+        sensitivity = privacy_sensitivity or "unclassified"
         derived.append("sensitivity")
 
     default_local, default_cloud = _PRIVACY_DEFAULTS[wiki.privacy]
@@ -109,12 +127,13 @@ def effective_policy(wiki: WikiEntry) -> EffectivePolicy:
         derived.append("cloud")
 
     sensitivity_ceiling = _SENSITIVITY_CLOUD_CEILING.get(sensitivity)
-    privacy_ceiling_governs = "sensitivity" in derived and wiki.privacy in _PRIVACY_CEILING
+    privacy_ceiling_governs = "sensitivity" in derived and wiki.privacy in _PRIVACY_LOCAL_CEILING
     if sensitivity_ceiling is not None and not privacy_ceiling_governs:
         cloud = narrower(cloud, sensitivity_ceiling)
-    if wiki.privacy in _PRIVACY_CEILING:
-        local = narrower(local, _PRIVACY_CEILING[wiki.privacy])
-        cloud = narrower(cloud, _PRIVACY_CEILING[wiki.privacy])
+    if wiki.privacy in _PRIVACY_LOCAL_CEILING:
+        local = narrower(local, _PRIVACY_LOCAL_CEILING[wiki.privacy])
+    if wiki.privacy in _PRIVACY_CLOUD_CEILING:
+        cloud = narrower(cloud, _PRIVACY_CLOUD_CEILING[wiki.privacy])
 
     if wiki.routing_mode:
         routing_mode = wiki.routing_mode
@@ -127,7 +146,11 @@ def effective_policy(wiki: WikiEntry) -> EffectivePolicy:
     if wiki.catalog_visibility:
         visibility = wiki.catalog_visibility
     else:
-        visibility = "redacted" if sensitivity == "personal-local" else "full"
+        visibility = (
+            "redacted"
+            if wiki.privacy == "personal-local" or sensitivity == "personal-local"
+            else "full"
+        )
         derived.append("catalog_visibility")
 
     return EffectivePolicy(
@@ -145,6 +168,15 @@ def policy_findings(wiki: WikiEntry) -> list[PolicyFinding]:
     findings: list[PolicyFinding] = []
     policy = effective_policy(wiki)
     name = wiki.name
+
+    if wiki.sensitivity and wiki.sensitivity != policy.sensitivity:
+        findings.append(
+            PolicyFinding(
+                "error",
+                f"wiki {name} declares sensitivity '{wiki.sensitivity}' but privacy "
+                f"only allows '{policy.sensitivity}'; the restrictive value wins",
+            )
+        )
 
     for axis in ("local", "cloud"):
         explicit = getattr(wiki.model_access, axis)

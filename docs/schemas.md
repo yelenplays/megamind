@@ -77,11 +77,15 @@ v2 card fields, all optional:
   axes, pointer-only to `none` on both. A `company-private` or `collaborative`
   sensitivity defaults cloud to `none` whatever its privacy class implies.
   Unknown, missing, broken, or unmigrated classifications always derive
-  restrictively, and explicit values that exceed a sensitivity or privacy
-  ceiling are clamped down (doctor reports the contradiction as an `access`
-  error; the restrictive value always wins). Ceilings key on the *derived*
-  sensitivity, so an entry that omits `sensitivity` is clamped exactly like
-  one that spells out the value its privacy class implies.
+  restrictively. An explicit sensitivity is reconciled with the sensitivity
+  implied by privacy, and the more restrictive classification wins; doctor
+  reports a wider contradiction. Explicit access values that exceed a
+  sensitivity or privacy ceiling are likewise clamped down and reported as an
+  `access` error. Personal-local privacy always caps cloud access at
+  digest-only. A consistently classified company-private card may still set
+  an explicit cloud policy, including `full`. Ceilings key on the effective
+  sensitivity, so omitting `sensitivity` or spelling a wider one cannot escape
+  a clamp.
 - `routing_mode`: `full` or `pointer`. Pointer wikis return location metadata
   and zero content. Pointer-only privacy forces pointer mode.
 - `source_policy`: a free-text `summary`, an `allowlist` path pointer, and
@@ -552,6 +556,10 @@ Digest: `megamind: digest` plus a body kept deliberately small; it is what
 gets read when no exact page matches, and the only routable content of
 `digest-only` wikis. Index: `megamind: index` plus one Markdown link per topic
 page with a short hint; the router scores these entries to find exact pages.
+Link targets are read percent-decoded, so a page name carrying a space, `(`,
+`)`, `#`, or `%` is linked in the encoded form Markdown can carry, and a
+generated entry label carries `[` and `]` rewritten as `(` and `)` so the line
+stays a readable link.
 
 ## Topic page
 
