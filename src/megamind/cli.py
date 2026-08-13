@@ -2838,11 +2838,10 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             not args.input
         ):
             raise UsageError(f"research {args.research_action} requires --input JSON_FILE")
-        if (
-            args.research_action in {"status", "cancel", "resume", "reconcile"}
-            and not args.job_id
-            and args.research_action != "plan"
-        ):
+        # `status` is the discovery surface: bare, it lists every durable job,
+        # and --job-id only narrows it. The actions that mutate one attempt
+        # still name it explicitly.
+        if args.research_action in {"cancel", "resume", "reconcile"} and not args.job_id:
             raise UsageError(f"research {args.research_action} requires --job-id")
         return cmd_research_state(args, root, _garden_today(args))
     if command == "provision-wiki":

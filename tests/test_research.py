@@ -512,6 +512,111 @@ def test_forged_lifecycle_cannot_lift_the_emitted_packet_verdict(
     assert doc["packet"]["confidence"] == honest["confidence"]
 
 
+def test_terminal_outcome_freezes_and_packet_id_is_part_of_its_identity(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _research_vault(tmp_path)
+    job, claim_id = _lane_to_packet_ready(capsys, root)
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "packet",
+        "--input",
+        _write(
+            root,
+            "packet.json",
+            {
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "claims": [claim_id],
+                "interpretation": "The synthetic product ships on a weekly train.",
+            },
+        ),
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0, doc
+    packet_id = str(doc["packet"]["packet_id"])
+
+    answered = {
+        "job_id": job["job_id"],
+        "attempt_id": job["attempt_id"],
+        "state": "answered",
+        "plan_id": job["plan_id"],
+        "packet_id": packet_id,
+        "reason": "synthesis accepted",
+    }
+    code, doc = _run(
+        capsys, root, "research", "outcome", "--input", _write(root, "outcome.json", answered)
+    )
+    assert code == 0, doc
+    answered_id = str(doc["outcome"]["outcome_id"])
+    frozen = json.loads(
+        (root / ".megamind" / "research" / "outcomes" / f"{answered_id}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert frozen["schema"] == "megamind/research-outcome/v1"
+    assert frozen["packet_id"] == packet_id
+
+    # packet_id is outcome content, not the outcome's identity field: the same
+    # terminal state naming no packet freezes as a distinct artifact.
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "outcome",
+        "--input",
+        _write(root, "outcome-detached.json", {**answered, "packet_id": ""}),
+    )
+    assert code == 0, doc
+    detached_id = str(doc["outcome"]["outcome_id"])
+    assert detached_id != answered_id
+
+    # A packet-free terminal outcome freezes on its own.
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "outcome",
+        "--input",
+        _write(
+            root,
+            "outcome-cancelled.json",
+            {**answered, "state": "cancelled", "packet_id": "", "reason": "cancelled"},
+        ),
+    )
+    assert code == 0, doc
+    assert _artifacts(root, "outcomes") == {
+        f"{answered_id}.json",
+        f"{detached_id}.json",
+        f"{doc['outcome']['outcome_id']}.json",
+    }
+
+
+def test_research_status_lists_durable_jobs_without_a_job_id(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _research_vault(tmp_path)
+    job, _claim_id = _lane_to_extracting(capsys, root)
+
+    code, doc = _run(capsys, root, "research", "status")
+    assert code == 0, doc
+    assert [entry["job_id"] for entry in doc["jobs"]] == [job["job_id"]]
+    assert doc["count"] == 1
+
+    # The per-job form still filters, and the actions that act on one attempt
+    # still refuse without it.
+    code, doc = _run(capsys, root, "research", "status", "--job-id", "no-such-job")
+    assert code == 0, doc
+    assert doc["count"] == 0
+    for action in ("cancel", "resume", "reconcile"):
+        code, doc = _run(capsys, root, "research", action)
+        assert code == 2, doc
+        assert doc["code"] == "usage_error"
+
+
 def test_packet_refuses_a_forged_host_confidence(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

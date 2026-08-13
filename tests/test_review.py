@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from conftest import write
 from megamind.capture import capture
 from megamind.registry import load_registry
@@ -105,3 +107,25 @@ def test_review_is_read_only(vault: Path) -> None:
     before = sorted(str(p) for p in vault.rglob("*"))
     review(vault, registry, today=TODAY)
     assert sorted(str(p) for p in vault.rglob("*")) == before
+
+
+def test_research_artifacts_reported_from_an_unresolved_root(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The documented default invocation runs inside the vault, so root is `.`."""
+    registry = load_registry(vault)
+    write(
+        vault,
+        ".megamind/research/packets/abc123abc123.json",
+        '{"schema": "megamind/research-packet/v1", "packet_id": "abc123abc123"}\n',
+    )
+    write(
+        vault,
+        ".megamind/research/evidence/e1.json",
+        '{"decision": "deferred", "correction_status": "expression_of_concern"}\n',
+    )
+    monkeypatch.chdir(vault)
+    report = review(Path("."), registry, today=TODAY)
+    assert report.research_packets == [".megamind/research/packets/abc123abc123.json"]
+    assert report.pending_source_rights == [".megamind/research/evidence/e1.json"]
+    assert report.contradictions == [".megamind/research/evidence/e1.json"]

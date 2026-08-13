@@ -749,13 +749,19 @@ class ResearchStore:
         )
 
     def save_immutable(self, kind: str, identifier: str, value: Mapping[str, Any]) -> Path:
-        directory = {PACKET_SCHEMA: PACKETS_DIR, OUTCOME_SCHEMA: OUTCOMES_DIR}.get(kind)
-        if directory is None:
+        # Only the artifact's own identity field is excluded from its hash. A
+        # packet_id inside an outcome is content, and dropping it would refuse
+        # every outcome the lane can produce.
+        spec = {
+            PACKET_SCHEMA: (PACKETS_DIR, "packet_id"),
+            OUTCOME_SCHEMA: (OUTCOMES_DIR, "outcome_id"),
+        }.get(kind)
+        if spec is None:
             raise ResearchError("unknown immutable research artifact")
+        directory, identity_field = spec
         artifact = dict(value)
         artifact.pop("schema", None)
-        artifact.pop("packet_id", None)
-        artifact.pop("outcome_id", None)
+        artifact.pop(identity_field, None)
         expected = content_hash(_stable(artifact))
         if identifier != expected:
             raise ResearchError("artifact id does not match content")

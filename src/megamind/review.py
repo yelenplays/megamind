@@ -93,11 +93,15 @@ def _page_title(document: Document, path: Path) -> str:
 def review(root: Path, registry: Registry, today: date | None = None) -> ReviewReport:
     report = ReviewReport()
     reference_day = today or date.today()
-    research_root = root / ".megamind" / "research"
+    # Both sides of every relative_to stay on the resolved root: `root` is often
+    # `.` or a symlinked path, and mixing the two forms raises instead of
+    # emitting a report.
+    root_resolved = root.resolve()
+    research_root = root_resolved / ".megamind" / "research"
     packets = research_root / "packets"
     if packets.is_dir():
         report.research_packets = [
-            path.relative_to(root.resolve()).as_posix() for path in sorted(packets.glob("*.json"))
+            path.relative_to(root_resolved).as_posix() for path in sorted(packets.glob("*.json"))
         ]
     evidence = research_root / "evidence"
     if evidence.is_dir():
@@ -108,10 +112,9 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
                 continue
             if isinstance(raw, dict):
                 if raw.get("decision") == "deferred":
-                    report.pending_source_rights.append(path.relative_to(root.resolve()).as_posix())
+                    report.pending_source_rights.append(path.relative_to(root_resolved).as_posix())
                 if raw.get("correction_status") == "expression_of_concern":
-                    report.contradictions.append(path.relative_to(root.resolve()).as_posix())
-    root_resolved = root.resolve()
+                    report.contradictions.append(path.relative_to(root_resolved).as_posix())
 
     all_page_bodies: dict[str, str] = {}
     page_docs: dict[str, Document] = {}
