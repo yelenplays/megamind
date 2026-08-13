@@ -482,7 +482,7 @@ def correction_head(
     return heads[0] if len(heads) == 1 else None
 
 
-def _validate_correction_chain(
+def validate_correction_chain(
     evidence_id: str, notices: Mapping[str, Mapping[str, Any]]
 ) -> None:
     chain = [notice for notice in notices.values() if str(notice["evidence_id"]) == evidence_id]
@@ -531,6 +531,11 @@ def resolve_corrections(
     chain = [item for item in notices if str(item["evidence_id"]) == evidence_id]
     if not chain:
         return dict(record["corrections"])
+    indexed_chain = {str(item["notice_id"]): item for item in chain}
+    try:
+        validate_correction_chain(evidence_id, indexed_chain)
+    except EvidenceError:
+        return {**dict(record["corrections"]), "status": UNKNOWN_CORRECTION}
     head = correction_head(evidence_id, chain)
     if head is None:
         return {**dict(record["corrections"]), "status": UNKNOWN_CORRECTION}
@@ -1131,9 +1136,12 @@ class EvidenceStore:
     def __init__(self, root: Path):
         self.root = root
 
-    def _path(self, kind: str, identifier: str) -> Path:
-        if kind not in MUTABLE_FIELDS:
+    def _require_kind(self, kind: str) -> None:
+        if kind not in STORE_KINDS:
             raise EvidenceError("unknown evidence store kind")
+
+    def _path(self, kind: str, identifier: str) -> Path:
+        self._require_kind(kind)
         return Path(MEGAMIND_DIR) / "evidence" / kind / f"{identifier}.json"
 
     def _transaction_path(self, identifier: str) -> Path:
@@ -1193,6 +1201,8 @@ class EvidenceStore:
     def _admission_records(
         self, items: Sequence[tuple[str, Mapping[str, Any]]] = ()
     ) -> dict[str, dict[str, dict[str, Any]]]:
+        for kind, _ in items:
+            self._require_kind(kind)
         records: dict[str, dict[str, dict[str, Any]]] = {}
         for kind in STORE_KINDS:
             records[kind] = {
@@ -1213,6 +1223,7 @@ class EvidenceStore:
         quote_ceiling_chars: int,
         records: Mapping[str, Mapping[str, Mapping[str, Any]]],
     ) -> dict[str, Any]:
+        self._require_kind(kind)
         if kind == "quotations":
             provisional = validate_quotation(data, quote_ceiling_chars=quote_ceiling_chars)
             if provisional["resolves"] and normalized_text is None:
@@ -1237,7 +1248,7 @@ class EvidenceStore:
             evidence_id = str(notice["evidence_id"])
             if evidence_id not in records["evidence"]:
                 raise EvidenceError(f"correction notice references an unknown evidence record: {evidence_id}")
-            _validate_correction_chain(evidence_id, records["corrections"])
+            validate_correction_chain(evidence_id, records["corrections"])
             return notice
         return _validate(kind, data)
 
@@ -1250,6 +1261,7 @@ class EvidenceStore:
         records: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
     ) -> tuple[Path, dict[str, Any], str]:
         """Validate one record and prove it may be written, without writing."""
+        self._require_kind(kind)
         canonical = self._validate_admission(
             kind,
             data,
@@ -1280,6 +1292,7 @@ class EvidenceStore:
         *,
         quote_ceiling_chars: int = QUOTE_CEILING_CHARS,
     ) -> Path:
+        self._require_kind(kind)
         self._recover_transactions()
         rel, _, text = self._prepare(
             kind,
@@ -1305,6 +1318,8 @@ class EvidenceStore:
         reports it broken. Validation and the immutability check therefore run
         over the whole set before the first byte is written.
         """
+        for kind, _ in items:
+            self._require_kind(kind)
         self._recover_transactions()
         records = self._admission_records(items)
         prepared = [
@@ -1347,6 +1362,7 @@ class EvidenceStore:
         return [resolve_contained(self.root, rel) for rel, _, _ in prepared]
 
     def get(self, kind: str, identifier: str) -> dict[str, Any]:
+        self._require_kind(kind)
         self._recover_transactions()
         return self._read(kind, identifier)
 
@@ -1362,6 +1378,7 @@ class EvidenceStore:
 
     def scan_readonly(self, kind: str) -> ScanResult:
         """List records without recovering a pending transaction."""
+        self._require_kind(kind)
         directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / kind)
         if not directory.is_dir():
             return []

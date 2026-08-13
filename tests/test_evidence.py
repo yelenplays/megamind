@@ -21,7 +21,9 @@ from megamind.evidence import (
     EvidenceStore,
     acceptance_gates,
     reconcile_claims,
+    resolve_corrections,
     validate_claim,
+    validate_correction_chain,
     validate_correction_notice,
     validate_evidence_record,
     validate_quotation,
@@ -1250,6 +1252,38 @@ def test_evidence_store_requires_a_single_append_only_correction_chain(tmp_path:
         evidence_id, "retracted", "2026-08-14", str(first["notice_id"])
     )
     store.put("corrections", second)
+
+
+def test_invalid_correction_chains_resolve_restrictively() -> None:
+    evidence_id = str(_evidence()["evidence_id"])
+    notices = {
+        "root": {"notice_id": "root", "evidence_id": evidence_id, "supersedes": ""},
+        "left": {"notice_id": "left", "evidence_id": evidence_id, "supersedes": "right"},
+        "right": {"notice_id": "right", "evidence_id": evidence_id, "supersedes": "left"},
+    }
+    with pytest.raises(EvidenceError, match="disconnected"):
+        validate_correction_chain(evidence_id, notices)
+    assert resolve_corrections(_evidence(), list(notices.values()))["status"] == "unknown"
+
+
+def test_evidence_store_rejects_unknown_kinds_before_transaction_recovery(tmp_path: Path) -> None:
+    root = governed_vault(tmp_path)
+    journal = root / MEGAMIND_DIR / "evidence" / "transactions" / "pending.json"
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    journal.write_text("not a transaction journal\n", encoding="utf-8")
+    store = EvidenceStore(root)
+
+    operations = (
+        lambda: store.put("typo", {}),
+        lambda: store.put_all([("typo", {})]),
+        lambda: store.get("typo", "record"),
+        lambda: store.scan_readonly("typo"),
+        lambda: store.scan("typo"),
+    )
+    for operation in operations:
+        with pytest.raises(EvidenceError, match="unknown evidence store kind"):
+            operation()
+        assert journal.read_text(encoding="utf-8") == "not a transaction journal\n"
 
 
 def test_record_quotations_commits_nothing_when_one_span_is_unwritable(

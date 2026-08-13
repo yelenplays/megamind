@@ -16,7 +16,7 @@ from typing import Any
 from .access import policy_findings
 from .capture import list_proposals
 from .card import CardError, load_wiki_card
-from .evidence import STORE_KINDS, EvidenceStore, correction_head
+from .evidence import STORE_KINDS, EvidenceError, EvidenceStore, validate_correction_chain
 from .fsops import MEGAMIND_DIR, PathEscapeError, resolve_contained
 from .gardening import validate_gap_journal
 from .links import extract_links, page_name_table, resolve_link
@@ -402,13 +402,14 @@ def _check_correction_chains(
                 )
             )
     for evidence_id in sorted({str(notice["evidence_id"]) for notice in notices.values()}):
-        chain = [notice for notice in notices.values() if str(notice["evidence_id"]) == evidence_id]
-        if correction_head(evidence_id, chain) is None:
+        try:
+            validate_correction_chain(evidence_id, notices)
+        except EvidenceError as error:
             findings.append(
                 _error(
                     "evidence",
                     _evidence_rel("evidence", evidence_id),
-                    "correction chain has no single current notice",
+                    str(error),
                 )
             )
 
