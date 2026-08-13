@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from pathlib import Path
 from typing import Any
@@ -1732,6 +1733,7 @@ def test_doctor_leaves_a_durable_interrupted_transaction_for_a_mutation_to_recov
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = governed_vault(tmp_path)
+    store = EvidenceStore(root)
     interrupted = proposed_claim("the interrupted synthetic fact")
     rel = Path(MEGAMIND_DIR) / "evidence" / "claims" / f"{interrupted['claim_id']}.json"
     staged = json.dumps(interrupted, sort_keys=True, indent=2) + "\n"
@@ -1753,6 +1755,11 @@ def test_doctor_leaves_a_durable_interrupted_transaction_for_a_mutation_to_recov
                 "schema": "megamind/evidence-transaction/v1",
                 "transaction_id": transaction_id,
                 "items": items,
+                "authority": hmac.new(
+                    bytes.fromhex(store._transaction_authority(create=True)),
+                    json.dumps({"items": items}, sort_keys=True, separators=(",", ":")).encode(),
+                    hashlib.sha256,
+                ).hexdigest(),
             },
             sort_keys=True,
             indent=2,
@@ -1779,6 +1786,7 @@ def test_doctor_leaves_a_durable_interrupted_transaction_for_a_mutation_to_recov
 def test_evidence_recovery_refuses_a_hostile_staged_journal(tmp_path: Path) -> None:
     root = governed_vault(tmp_path)
     store = EvidenceStore(root)
+    store._transaction_authority(create=True)
     claim = proposed_claim("the existing synthetic fact")
     path = store.put("claims", claim)
     items = [
@@ -1797,6 +1805,7 @@ def test_evidence_recovery_refuses_a_hostile_staged_journal(tmp_path: Path) -> N
                 "schema": "megamind/evidence-transaction/v1",
                 "transaction_id": transaction_id,
                 "items": items,
+                "authority": "0" * 64,
             },
             sort_keys=True,
             indent=2,
@@ -1805,7 +1814,7 @@ def test_evidence_recovery_refuses_a_hostile_staged_journal(tmp_path: Path) -> N
         encoding="utf-8",
     )
 
-    with pytest.raises(EvidenceError, match="does not match staged post-state"):
+    with pytest.raises(EvidenceError, match="transaction authority is invalid"):
         store.recover()
 
     assert path.is_file()

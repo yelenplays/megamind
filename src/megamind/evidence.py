@@ -9,8 +9,10 @@ quotation, and contradiction outcomes with typed values.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
+import secrets
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -32,6 +34,7 @@ from .fsops import (
     atomic_write,
     backup_existing,
     content_hash,
+    create_private_file,
     identity_bytes,
     remove_contained,
     resolve_contained,
@@ -50,6 +53,7 @@ CLAIM_SCHEMA = "megamind/claim/v1"
 CONTRADICTION_SCHEMA = "megamind/contradiction/v1"
 CORRECTION_SCHEMA = "megamind/correction-notice/v1"
 TRANSACTION_SCHEMA = "megamind/evidence-transaction/v1"
+TRANSACTION_AUTHORITY_PATH = Path(MEGAMIND_DIR) / "evidence" / "transaction-authority.key"
 
 GATE_VERDICTS = ("pass", "fail", "unknown")
 DECISIONS = ("accepted", "rejected", "deferred")
@@ -1214,6 +1218,30 @@ class EvidenceStore:
     def _transaction_path(self, identifier: str) -> Path:
         return Path(MEGAMIND_DIR) / "evidence" / "transactions" / f"{identifier}.json"
 
+    def _transaction_authority(self, *, create: bool) -> str:
+        path = resolve_contained(self.root, TRANSACTION_AUTHORITY_PATH)
+        if not path.is_file():
+            if not create:
+                raise EvidenceError("evidence transaction authority is unavailable")
+            try:
+                create_private_file(path, secrets.token_hex(32), durable=True)
+            except FileExistsError:
+                pass
+        try:
+            authority = path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise EvidenceError("evidence transaction authority is unavailable") from error
+        if not re.fullmatch(r"[0-9a-f]{64}", authority):
+            raise EvidenceError("evidence transaction authority is invalid")
+        if path.stat().st_mode & 0o077:
+            raise EvidenceError("evidence transaction authority is not private")
+        return authority
+
+    def _transaction_proof(self, authority: str, items: object) -> str:
+        return hmac.new(
+            bytes.fromhex(authority), _stable({"items": items}).encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+
     def _recover_transactions(self) -> None:
         directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / "transactions")
         if not directory.is_dir():
@@ -1227,6 +1255,7 @@ class EvidenceStore:
                 "schema",
                 "transaction_id",
                 "items",
+                "authority",
             }:
                 raise EvidenceError("evidence transaction journal is invalid")
             if payload["schema"] != TRANSACTION_SCHEMA or payload["transaction_id"] != journal.stem:
@@ -1237,6 +1266,11 @@ class EvidenceStore:
             expected = content_hash(_stable({"items": items}))
             if expected != journal.stem:
                 raise EvidenceError("evidence transaction journal is invalid")
+            authority = self._transaction_authority(create=False)
+            if not isinstance(payload["authority"], str) or not hmac.compare_digest(
+                payload["authority"], self._transaction_proof(authority, items)
+            ):
+                raise EvidenceError("evidence transaction authority is invalid")
             restores: list[tuple[Path, str | None, str]] = []
             for item in items:
                 if (
@@ -1443,6 +1477,7 @@ class EvidenceStore:
             )
             if previous is not None:
                 backup_existing(self.root, rel, durable=True)
+        authority = self._transaction_authority(create=True)
         transaction_id = content_hash(_stable({"items": items_for_journal}))
         journal_rel = self._transaction_path(transaction_id)
         atomic_write(
@@ -1453,6 +1488,7 @@ class EvidenceStore:
                     "schema": TRANSACTION_SCHEMA,
                     "transaction_id": transaction_id,
                     "items": items_for_journal,
+                    "authority": self._transaction_proof(authority, items_for_journal),
                 },
                 sort_keys=True,
                 indent=2,
