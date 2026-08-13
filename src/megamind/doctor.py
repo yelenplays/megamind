@@ -466,6 +466,15 @@ def _check_research_records(root: Path, findings: list[Finding]) -> None:
                     findings.append(
                         _error("research", rel, f"packet cites unknown claim {claim_id}")
                     )
+            for contradiction_id in record["contradiction_ids"]:
+                if contradiction_id not in records["contradictions"]:
+                    findings.append(
+                        _error(
+                            "research",
+                            rel,
+                            f"packet cites unknown contradiction {contradiction_id}",
+                        )
+                    )
 
 
 def run_doctor(root: Path) -> list[Finding]:

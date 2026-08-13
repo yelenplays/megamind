@@ -284,11 +284,13 @@ re-running `record-artifact` re-derives acceptance to `rejected` on G9.
 constants, using stored evidence acceptance, derived origin corroboration, the
 wiki freshness policy against `--today`, and stored unresolved contradictions.
 `reconcile` from `{claims: []}` requires `--today` and stores those claims
-together with the contradictions derived from them, so the vault it leaves
-behind is one `doctor` reports clean. `status` truncates its lists like every
-other list section, takes `--full`, and reports an unreadable record under
-`problems[]` instead of failing. Every action requires an initialized vault
-root.
+together with the contradictions derived from them. Every citation is resolved
+against the store before the citing record is admitted: `reconcile` from
+`{contradictions: []}` and `packet` refuse a claim or contradiction id this
+vault does not hold, so the vault any of these actions leaves behind is one
+`doctor` reports clean. `status` truncates its lists like every other list
+section, takes `--full`, and reports an unreadable record under `problems[]`
+instead of failing. Every action requires an initialized vault root.
 
 ## Error codes
 

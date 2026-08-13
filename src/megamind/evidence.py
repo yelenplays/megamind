@@ -879,7 +879,9 @@ def validate_claim(
     }
 
 
-def validate_contradiction(raw: object) -> dict[str, Any]:
+def validate_contradiction(
+    raw: object, *, claims: Mapping[str, Mapping[str, Any]] | None = None
+) -> dict[str, Any]:
     data = _map("contradiction", raw)
     _unknown(
         "contradiction",
@@ -903,6 +905,10 @@ def validate_contradiction(raw: object) -> dict[str, Any]:
     if len(ids) < 2 or len(set(ids)) != len(ids):
         raise EvidenceError("contradiction needs at least two distinct claim ids")
     ids = sorted(ids)
+    if claims is not None:
+        for claim_id in ids:
+            if claim_id not in claims:
+                raise EvidenceError(f"contradiction references an unknown claim: {claim_id}")
     basis = _str("contradiction basis", data.get("basis"), nonempty=True, limit=40)
     if basis not in {"incompatible-value", "incompatible-polarity", "incompatible-scope"}:
         raise EvidenceError("contradiction basis is invalid")

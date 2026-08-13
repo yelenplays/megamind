@@ -67,6 +67,7 @@ from .evaluation import (
 )
 from .evidence import (
     CORRECTION_SCHEMA,
+    ID_KEYS,
     QUOTE_CEILING_CHARS,
     EvidenceError,
     EvidenceStore,
@@ -1224,6 +1225,16 @@ def _valid_records(root: Path, kind: str) -> list[dict[str, Any]]:
     return [record for _, record, _ in EvidenceStore(root).scan(kind) if record is not None]
 
 
+def _known_records(root: Path, kind: str) -> dict[str, dict[str, Any]]:
+    """Stored records keyed by identity, for resolving references at admission.
+
+    Every reference a record makes is resolved against this projection before
+    the record is written, so no supported command can commit a citation that
+    doctor will then report as dangling.
+    """
+    return {str(record[ID_KEYS[kind]]): record for record in _valid_records(root, kind)}
+
+
 def _stored_quotations(root: Path, evidence_id: str) -> list[dict[str, Any]]:
     """The already-validated hash-bound spans recorded against one artifact."""
     return [
@@ -1434,8 +1445,7 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         notice = validate_correction_notice(raw)
         evidence_store = EvidenceStore(root)
         evidence_id = str(notice["evidence_id"])
-        known = {str(record["evidence_id"]) for record in _valid_records(root, "evidence")}
-        if evidence_id not in known:
+        if evidence_id not in _known_records(root, "evidence"):
             raise UsageError(f"correction notice cites unknown evidence record: {evidence_id}")
         chain = [
             item
@@ -1520,15 +1530,11 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         evidence_store = EvidenceStore(root)
         # Citation targets are resolved against the store, so a claim can only
         # rely on a span this vault actually holds and validated.
-        known_quotations = {
-            identifier: record
-            for identifier, record, _ in evidence_store.scan("quotations")
-            if record is not None
-        }
+        known_quotations = _known_records(root, "quotations")
         claims = [validate_claim(item, quotations=known_quotations) for item in values]
         paths = [
-            evidence_store.put("claims", item).relative_to(root.resolve()).as_posix()
-            for item in claims
+            path.relative_to(root.resolve()).as_posix()
+            for path in evidence_store.put_all([("claims", item) for item in claims])
         ]
         return _research_doc(
             "megamind/claim/v1",
@@ -1555,13 +1561,16 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
                 raise UsageError(
                     "reconcile from claims requires --today ISO_DATE to date the contradiction"
                 )
-            known_quotations = {
-                str(item["quotation_id"]): item for item in _valid_records(root, "quotations")
-            }
-            claims = [validate_claim(item, quotations=known_quotations) for item in raw["claims"]]
+            claims = [
+                validate_claim(item, quotations=_known_records(root, "quotations"))
+                for item in raw["claims"]
+            ]
             contradictions = reconcile_claims(claims, today=today, gap_id=args.gap_id)
         elif isinstance(values, list):
-            contradictions = [validate_contradiction(item) for item in values]
+            # A hand-supplied contradiction names claims it did not create, so
+            # every one of them has to already exist in this vault.
+            known_claims = _known_records(root, "claims")
+            contradictions = [validate_contradiction(item, claims=known_claims) for item in values]
         else:
             raise UsageError(
                 "reconcile input must be a JSON list, {claims: []}, or {contradictions: []}"
@@ -1585,7 +1594,11 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             "Contradictions remain visible; unresolved claims are never averaged",
         ), 0
     if action == "packet":
-        packet = validate_packet(raw)
+        packet = validate_packet(
+            raw,
+            claims=_known_records(root, "claims"),
+            contradictions=_known_records(root, "contradictions"),
+        )
         path = store.put("packets", packet)
         return _research_doc(
             PACKET_SCHEMA,
@@ -2920,7 +2933,11 @@ _ERROR_HELP: dict[str, list[str]] = {
         "Do not widen card access or override a provisional or failed evaluation outcome",
     ],
     "evidence_invalid": [
-        "Validate the frozen host artifact and its typed acceptance fields before recording it"
+        "Validate the frozen host artifact and its typed acceptance fields before recording it",
+        f"Run `{EXECUTABLE} research record-correction --input FILE` to change a stored "
+        "artifact's correction or retraction posture; frozen facts are never re-recorded",
+        f"Run `{EXECUTABLE} research record-claims` or `reconcile` only after every "
+        "evidence, quotation, and claim they cite is stored",
     ],
     "research_invalid": [
         "Validate the research JSON receipt and replay its content-addressed identity"

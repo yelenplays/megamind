@@ -279,7 +279,10 @@ def validate_job(raw: object) -> dict[str, Any]:
 
 
 def validate_packet(
-    raw: object, *, claims: Mapping[str, Mapping[str, Any]] | None = None
+    raw: object,
+    *,
+    claims: Mapping[str, Mapping[str, Any]] | None = None,
+    contradictions: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     data = _map("research packet", raw)
     _unknown(
@@ -304,10 +307,16 @@ def validate_packet(
     if claims is not None:
         for claim_id in claim_ids:
             if claim_id not in claims:
-                raise ResearchError("packet references an unknown claim")
+                raise ResearchError(f"packet references an unknown claim: {claim_id}")
     contradiction_ids = sorted(
         _strings("packet contradiction_ids", data.get("contradiction_ids", []))
     )
+    if contradictions is not None:
+        for contradiction_id in contradiction_ids:
+            if contradiction_id not in contradictions:
+                raise ResearchError(
+                    f"packet references an unknown contradiction: {contradiction_id}"
+                )
     interpretation = _str(
         "packet interpretation", data.get("interpretation", ""), required=False, limit=5000
     )

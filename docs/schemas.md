@@ -880,8 +880,14 @@ resolves restrictively to `unknown` and doctor reports it.  The head is the
 posture G9 judges and the posture claim confidence weighs, so a retraction
 removes support the moment it is recorded, before the artifact's acceptance
 block is re-derived.  Records that reference each other are written as one set
-only after every member is proven writable, so a vault never lands in a state
-its own doctor reports as broken.
+only after every member is proven writable, and every reference a record makes
+is resolved against the store before that record is admitted: a quotation names
+a stored artifact, a claim names stored quotations and artifacts, a
+contradiction names stored claims, a correction notice names a stored artifact
+and the notice it supersedes, and a packet names stored claims and
+contradictions.  Admission and doctor therefore enforce one invariant rather
+than competing over it, and a vault never lands in a state its own doctor
+reports as broken.
 
 The local job spine is represented by `megamind/research-plan/v1`,
 `megamind/research-job/v1`, `megamind/source-candidate/v1`,

@@ -25,6 +25,7 @@ from megamind.evidence import (
 from megamind.fsops import MEGAMIND_DIR, content_hash
 from megamind.policy import RESEARCH_POLICY_SCHEMA, PolicyError, ResearchPolicy, freshness_state
 from megamind.registry import load_registry, save_registry
+from megamind.research import PACKET_SCHEMA
 from megamind.scaffold import init_wiki_root
 
 
@@ -1249,3 +1250,157 @@ def test_research_status_degrades_on_an_unreadable_record(
     assert len(doc["plans"]) == 1
     assert [problem["record"] for problem in doc["problems"]] == ["bad"]
     assert any("doctor" in entry for entry in doc["help"])
+
+
+def stored_claim_ids(tmp_path: Path, capsys: pytest.CaptureFixture[str], root: Path) -> list[str]:
+    """Reconcile two claims into the store and return their ids."""
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "--today",
+        "2026-08-13",
+        "research",
+        "reconcile",
+        "--input",
+        write_json(
+            tmp_path / "in" / "seed-claims.json",
+            {
+                "claims": [
+                    proposed_claim("the synthetic fact is A"),
+                    proposed_claim("the synthetic fact is B"),
+                ]
+            },
+        ),
+    )
+    assert code == 0
+    return [str(claim["claim_id"]) for claim in doc["claims"]]
+
+
+def test_packet_refuses_unknown_claim_and_contradiction_references(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+
+    def packet(claim_ids: list[str], contradiction_ids: list[str]) -> dict[str, Any]:
+        body = {
+            "plan_id": "plan-1",
+            "claim_ids": sorted(claim_ids),
+            "contradiction_ids": sorted(contradiction_ids),
+            "interpretation": "",
+            "supported_by": [],
+            "answerability": {},
+            "confidence": "unknown",
+        }
+        return {
+            "schema": PACKET_SCHEMA,
+            "packet_id": content_hash(
+                json.dumps({"schema": PACKET_SCHEMA, **body}, sort_keys=True, separators=(",", ":"))
+            ),
+            **body,
+        }
+
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "packet",
+        "--input",
+        write_json(tmp_path / "in" / "ghost.json", packet(["ghostclaim01"], [])),
+    )
+    assert code == 1
+    assert doc["code"] == "research_invalid"
+    assert "ghostclaim01" in doc["message"]
+    assert not (root / MEGAMIND_DIR / "research" / "packets").exists()
+
+    claim_ids = stored_claim_ids(tmp_path, capsys, root)
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "packet",
+        "--input",
+        write_json(tmp_path / "in" / "ghost2.json", packet(claim_ids, ["ghostconflict"])),
+    )
+    assert code == 1
+    assert "ghostconflict" in doc["message"]
+
+    contradictions = sorted(
+        path.stem for path in (root / MEGAMIND_DIR / "evidence" / "contradictions").glob("*.json")
+    )
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "packet",
+        "--input",
+        write_json(tmp_path / "in" / "good.json", packet(claim_ids, contradictions)),
+    )
+    assert code == 0
+    assert doc["status"] == "packet-ready"
+
+    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
+    assert code == 0, doctor
+
+
+def test_reconcile_refuses_a_contradiction_citing_unknown_claims(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    ids = sorted(["ghostclaim01", "ghostclaim02"])
+    contradiction = {
+        "schema": CONTRADICTION_SCHEMA,
+        "contradiction_id": content_hash(
+            json.dumps(
+                {"claim_ids": ids, "claim_key": "synthetic-fact"},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        ),
+        "claim_ids": ids,
+        "claim_key": "synthetic-fact",
+        "basis": "incompatible-value",
+        "resolution": "unresolved",
+        "resolution_detail": "",
+        "gap_id": "",
+        "created": "2026-08-13",
+        "updated": "2026-08-13",
+    }
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "reconcile",
+        "--input",
+        write_json(tmp_path / "in" / "contradictions.json", {"contradictions": [contradiction]}),
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert "ghostclaim01" in doc["message"]
+    assert not (root / MEGAMIND_DIR / "evidence" / "contradictions").exists()
+
+    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
+    assert code == 0, doctor
+
+
+def test_evidence_invalid_help_names_the_correction_action(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    record = research_evidence()
+    artifact = ["--root", str(root), "research", "record-artifact", "--wiki", "StarterWiki"]
+    code, _, _ = run_json(
+        capsys, *artifact, "--input", write_json(tmp_path / "in" / "evidence.json", record)
+    )
+    assert code == 0
+    retracted = {**record, "corrections": {**record["corrections"], "status": "retracted"}}
+    code, doc, _ = run_json(
+        capsys, *artifact, "--input", write_json(tmp_path / "in" / "retracted.json", retracted)
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert any("record-correction" in entry for entry in doc["help"])
