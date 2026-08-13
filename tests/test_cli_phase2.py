@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -37,10 +38,188 @@ def test_assess_claim_above_the_floor(tmp_path: Path, capsys: pytest.CaptureFixt
     assert err == ""
     assert doc["schema_version"] == "megamind/confidence-report/v1"
     assert doc["kind"] == "claim"
-    assert doc["score"] == 0.95
+    assert doc["score"] == 0.9
     assert doc["meets_floor"] is True
     assert doc["reliance_floor"] == 0.75
     assert doc["components"]
+
+
+def source_json(quality: str, origin: str, **facts: object) -> str:
+    return json.dumps({"quality": quality, "origin": origin, **facts})
+
+
+def test_assess_claim_corroborates_only_by_declared_origin_id(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Independence has to be declarable at the boundary, or it cannot exist."""
+    argv = (
+        "assess",
+        "claim",
+        "--source-json",
+        source_json("primary", "https://vendor.example/release-notes", origin_id="vendor-notes"),
+        "--source-json",
+        source_json("primary", "https://vendor.example/changelog", origin_id="vendor-changelog"),
+        "--lifecycle",
+        "active",
+        "--freshness",
+        "fresh",
+    )
+    code, doc, err = run_json(capsys, *argv)
+    assert code == 0
+    assert err == ""
+    assert doc["score"] == 0.95
+    assert doc["meets_floor"] is True
+    assert any(
+        component["factor"] == "corroboration" and component["effect"] == "+0.05"
+        for component in doc["components"]
+    )
+    code_toon, toon_out, _ = run_toon(capsys, *argv)
+    assert code_toon == 0
+    assert toon.encode(doc) == toon_out
+
+
+def test_assess_claim_reposted_urls_share_one_origin(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, doc, _ = run_json(
+        capsys,
+        "assess",
+        "claim",
+        "--source-json",
+        source_json("primary", "https://source.example/a", origin_id="wire-report"),
+        "--source-json",
+        source_json("primary", "https://blog.example/repost-of-a", origin_id="wire-report"),
+        "--lifecycle",
+        "active",
+        "--freshness",
+        "fresh",
+    )
+    assert code == 0
+    assert doc["score"] == 0.9
+    assert any(
+        component["factor"] == "corroboration" and component["effect"] == "+0.00"
+        for component in doc["components"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        pytest.param("http://[::1]/docs", "http://[::2]/docs", id="ipv6-literal"),
+        pytest.param("docs for std::vector", "docs for std::array", id="cpp-namespace"),
+        pytest.param("Space::Page", "Other::Page", id="wiki-namespace"),
+    ],
+)
+def test_assess_claim_origin_separators_never_become_independence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], first: str, second: str
+) -> None:
+    """A display origin is opaque: no substring of it can buy corroboration."""
+    code, doc, _ = run_json(
+        capsys,
+        "assess",
+        "claim",
+        "--source",
+        f"synthesis:{first}",
+        "--source",
+        f"synthesis:{second}",
+        "--lifecycle",
+        "active",
+        "--freshness",
+        "fresh",
+    )
+    assert code == 0
+    assert doc["score"] == 0.7
+    assert doc["meets_floor"] is False
+    assert doc["input"]["sources"] == [f"synthesis:{first}", f"synthesis:{second}"]
+    assert any(
+        component["factor"] == "corroboration" and component["effect"] == "+0.00"
+        for component in doc["components"]
+    )
+
+
+def test_assess_claim_json_source_keeps_a_separator_bearing_origin_whole(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, doc, _ = run_json(
+        capsys,
+        "assess",
+        "claim",
+        "--source-json",
+        source_json("primary", "http://[::1]/docs", origin_id="host-a"),
+        "--source-json",
+        source_json("primary", "http://[::2]/docs", origin_id="host-a"),
+        "--lifecycle",
+        "active",
+        "--freshness",
+        "fresh",
+    )
+    assert code == 0
+    assert doc["score"] == 0.9
+    assert any(
+        "http://[::1]/docs" in component["detail"] or component["factor"] != "source"
+        for component in doc["components"]
+    )
+
+
+def test_assess_claim_retracted_source_is_removed_not_downweighted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, doc, _ = run_json(
+        capsys,
+        "assess",
+        "claim",
+        "--source-json",
+        source_json("primary", "study", origin_id="doi:10.1000/xyz", correction_status="retracted"),
+        "--lifecycle",
+        "active",
+        "--freshness",
+        "fresh",
+    )
+    assert code == 0
+    assert doc["score"] == "unknown"
+    assert doc["meets_floor"] is False
+    assert any("retracted, removed" in component["detail"] for component in doc["components"])
+
+
+def test_assess_claim_json_source_can_be_ineligible(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, doc, _ = run_json(
+        capsys,
+        "assess",
+        "claim",
+        "--source-json",
+        source_json("primary", "restricted", origin_id="vendor-a", eligible=False),
+    )
+    assert code == 0
+    assert doc["score"] == "unknown"
+    assert any("ineligible, ignored" in component["detail"] for component in doc["components"])
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param("not json", id="not-json"),
+        pytest.param("[]", id="not-an-object"),
+        pytest.param('{"quality":"primary"}', id="missing-origin"),
+        pytest.param('{"quality":"vibes","origin":"x"}', id="unknown-quality"),
+        pytest.param('{"quality":"primary","origin":"  "}', id="blank-origin"),
+        pytest.param('{"quality":"primary","origin":"x","origin_id":" "}', id="blank-origin-id"),
+        pytest.param(
+            '{"quality":"primary","origin":"x","correction_status":"probably-fine"}',
+            id="unknown-correction-status",
+        ),
+        pytest.param('{"quality":"primary","origin":"x","eligible":"yes"}', id="non-bool-eligible"),
+        pytest.param('{"quality":"primary","origin":"x","api_key":"CANARY"}', id="unknown-field"),
+    ],
+)
+def test_assess_claim_rejects_malformed_source_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], bad: str
+) -> None:
+    code, doc, _ = run_json(capsys, "assess", "claim", "--source-json", bad)
+    assert code == 2
+    assert doc["code"] == "usage_error"
+    assert "CANARY" not in doc["message"]
 
 
 def test_assess_claim_unknown_stays_unknown(
@@ -78,12 +257,10 @@ def test_assess_claim_contradiction_freezes_below_the_floor(
 def test_assess_claim_rejects_bad_source_spec(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code, doc, _ = run_json(capsys, "assess", "claim", "--source", "nonsense")
-    assert code == 2
-    assert doc["code"] == "usage_error"
-    code, doc, _ = run_json(capsys, "assess", "claim", "--source", "vibes:origin")
-    assert code == 2
-    assert doc["code"] == "usage_error"
+    for bad in ("nonsense", "vibes:origin", "primary:", "  :origin"):
+        code, doc, _ = run_json(capsys, "assess", "claim", "--source", bad)
+        assert code == 2, bad
+        assert doc["code"] == "usage_error"
 
 
 def test_assess_claim_toon_json_parity(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

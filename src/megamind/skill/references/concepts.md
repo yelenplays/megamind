@@ -51,8 +51,11 @@ fixed 0.75 reliance floor. Route confidence blends the strongest per-token
 routing signal with query coverage; the thresholds are 0.75 (load), 0.25
 (offer below, no-match under), and a 0.05 ambiguity band. Claim confidence
 weighs eligible source quality (primary, synthesis, hypothesis, prior),
-independent corroboration (one origin counts once), freshness, lifecycle, and
-contradictions. Answer confidence is the weakest relied-upon claim.
+independent corroboration by derived `origin_id` (sources sharing one count
+once, and unknown independence collapses to a single origin), freshness,
+lifecycle, and contradictions. A source whose correction status is not clean
+is removed from support rather than down-weighted. Answer confidence is the
+weakest relied-upon claim.
 `unknown` is first-class: no evidence, no number.
 
 ## Explicit offer selection

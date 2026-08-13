@@ -21,12 +21,12 @@ outcome: at least 0.75 loads automatically, 0.25 to 0.75 (or top candidates
 inside the 0.05 ambiguity band) offers choices without loading, below 0.25 is
 a quiet no-match. Claim confidence starts from the strongest eligible source
 by authority order (primary, synthesis, hypothesis, prior), adds capped
-corroboration for independent origins only (sources derived from one origin
-count once), and is capped deterministically by lifecycle state, staleness,
-unknown freshness, and unresolved contradictions (which freeze a claim below
-the floor). Answer confidence is exactly the weakest materially relied-upon
-claim. When there is no evidence to score, the score is `unknown`: never 0,
-never a guess, and never floor-meeting.
+corroboration for derived `origin_id` values only (unknown independence
+collapses to one origin), and is capped deterministically by lifecycle state,
+staleness, unknown freshness, and unresolved contradictions (which freeze a
+claim below the floor). Answer confidence is exactly the weakest materially
+relied-upon claim. When there is no evidence to score, the score is
+`unknown`: never 0, never a guess, and never floor-meeting.
 
 ## Consequences
 

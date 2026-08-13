@@ -23,8 +23,8 @@
     {
       "name": "two independent primary origins corroborate",
       "sources": [
-        {"quality": "primary", "origin": "release-notes"},
-        {"quality": "primary", "origin": "changelog"}
+        {"quality": "primary", "origin": "release-notes", "origin_id": "release-origin"},
+        {"quality": "primary", "origin": "changelog", "origin_id": "changelog-origin"}
       ],
       "lifecycle": "active",
       "freshness": "fresh",
@@ -34,9 +34,9 @@
     {
       "name": "three independent origins hit the corroboration cap",
       "sources": [
-        {"quality": "primary", "origin": "release-notes"},
-        {"quality": "primary", "origin": "changelog"},
-        {"quality": "primary", "origin": "incident-review"}
+        {"quality": "primary", "origin": "release-notes", "origin_id": "release-origin"},
+        {"quality": "primary", "origin": "changelog", "origin_id": "changelog-origin"},
+        {"quality": "primary", "origin": "incident-review", "origin_id": "incident-origin"}
       ],
       "lifecycle": "active",
       "freshness": "fresh",
@@ -54,8 +54,8 @@
     {
       "name": "two independent synthesis origins reach the floor exactly",
       "sources": [
-        {"quality": "synthesis", "origin": "wiki-page"},
-        {"quality": "synthesis", "origin": "design-doc"}
+        {"quality": "synthesis", "origin": "wiki-page", "origin_id": "wiki-origin"},
+        {"quality": "synthesis", "origin": "design-doc", "origin_id": "design-origin"}
       ],
       "lifecycle": "active",
       "freshness": "fresh",

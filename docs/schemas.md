@@ -275,18 +275,54 @@ on the target wiki, or insufficient capacity through the wave produces a typed
 worker.
 
 `megamind/research-nomination/v1` correlation IDs are stable within a wave.
-`megamind/research-result/v1` accepts only host-labelled eligible sources and
-bounds results to 20 sources. Eligible results create a replay-safe
-`.megamind/proposals/research-ingest-<id>.json` proposal with
-`immutable_raw_required: true`; no command fetches a URL or writes `raw/`.
-A result with no eligible source is `status: rejected` before any write, so no
-proposal, audit record, or log event is created: correlation is the idempotency
-key, and a proposal written for an empty result could never be repaired by the
-replay that finally carries a real source. Because correlation alone keys the
-file, a replay is bound to the whole immutable nomination identity: the same
-correlation with a different wiki, topic, or set of eligible sources refuses
-rather than letting the returned document claim an identity or a citation the
-stored proposal does not carry. Origins and summaries are
+`megamind/research-result/v1` remains readable as a restrictive legacy
+nomination. Its caller-supplied `eligible` flag is not evidence and cannot
+create an ingest proposal, infer quality or rights, or authorize a future
+apply. A v2 result is the only result that can propose a source. Either
+version bounds one result to 20 sources and refuses a longer list. Each v2
+source carries an `acceptance` block with required host-supplied typed facts:
+
+```json
+{
+  "origin_id": "derived-origin-identity",
+  "retrieval": {"date": "2026-08-13", "precision": "exact"},
+  "publication": {"date": "2026-08", "precision": "month"},
+  "snapshot": {"sha256": "<64 hex>", "normalized_sha256": "<64 hex>"},
+  "rights": {
+    "license": "CC-BY-4.0",
+    "quote_policy": "quote-bounded",
+    "snapshot_policy": "local-snapshot-allowed"
+  },
+  "corrections": {
+    "status": "clean",
+    "checked_at": {"date": "2026-08-13", "precision": "exact"},
+    "method": "host-registry",
+    "notice_ids": []
+  }
+}
+```
+
+Megamind derives eligibility from these validated facts. Missing, unknown,
+malformed, contradictory, non-clean correction, or retracted facts produce a
+typed ineligible reason and never become support. That reason names the field
+and the vocabulary it violated, never the offending value, and is bounded
+before it reaches the document. Contradiction is checked
+across facts, not only within one: a `clean` status carrying `notice_ids` is
+refused, and so is a publication whose earliest possible day falls after the
+exact retrieval date (a coarse `month` or `year` publication is an interval,
+so it is ordered by the first day it can denote). The `origin` display string
+is separate from `origin_id`; only the latter may corroborate a claim, and
+unknown independence collapses to one origin. Rights and correction facts are
+owned by the host and are never fetched by Megamind. Instruction-shaped source
+text is inert data and cannot set acceptance, quality, destination, or
+lifecycle fields. Accepted v2 results create a replay-safe proposal with
+schema `megamind/ingest-proposal/v2` and `immutable_raw_required: true`; no
+command fetches a URL or writes `raw/`. Correlation remains the idempotency
+key: exact replays are no-ops and divergent nomination or evidence facts
+refuse. Every host string that reaches the durable proposal - origins,
+summaries, and the `origin_id`, `license`, `method`, and `notice_ids`
+acceptance strings - crosses one projection boundary: it is bounded (an
+over-long acceptance string is a typed refusal, never a silent truncation) and
 redacted only where a credential assignment or a local filesystem path is
 structurally identified, so a cited origin such as
 `https://docs.example.com/home/getting-started` survives intact.

@@ -34,7 +34,7 @@ with a stable `schema_version`:
 | `megamind/gaps-result/v1`, `megamind/gap-result/v1` | `gap` |
 | `megamind/gap-transition/v1`, `megamind/gap-attempt/v1` | `gap` mutations |
 | `megamind/research-wave/v1` | `research-wave` |
-| `megamind/research-result/v1` | `research-result` |
+| `megamind/research-result/v1` or `v2` | `research-result` (v1 restrictive legacy; v2 typed acceptance) |
 | `megamind/provisional-wiki-result/v1` | `provision-wiki` |
 | `megamind/benchmark-result/v1`, `megamind/benchmark-check/v1` | `bench run`, `bench check` |
 | `megamind/evaluation-key/v1` | `experiment keygen` |
@@ -159,9 +159,26 @@ passed and otherwise explicitly unknown.
 
 `assess claim` scores one claim from `--source quality:origin` evidence
 (`primary`, `synthesis`, `hypothesis`, `prior`; `--ineligible-source` counts
-for nothing), `--lifecycle`, `--freshness`, and `--contradicted`; sources
-derived from one origin count once, unresolved contradictions freeze the
-claim below the floor, and stale or undated evidence can never reach it.
+for nothing), `--lifecycle`, `--freshness`, and `--contradicted`. The origin
+is a display fact and is never parsed for meaning, so everything after the
+first colon belongs to it. Derived facts are therefore stated out of band, as
+a JSON object per source:
+
+```
+--source-json '{"quality":"primary","origin":"release notes",
+                "origin_id":"vendor-a","correction_status":"clean",
+                "eligible":true}'
+```
+
+Only `quality` and `origin` are required, unknown keys are refused, and the
+defaults are the restrictive ones. Only the explicitly declared `origin_id`
+corroborates, so sources derived from one `origin_id` count once and an
+omitted or unknown identity collapses to one origin: the plain `--source`
+shorthand therefore never corroborates. A `correction_status` other than
+`clean` (`corrected`, `expression_of_concern`, `retracted`, `unknown`)
+removes that source from support rather than lowering its weight. Unresolved
+contradictions freeze the claim below the floor, and stale or undated
+evidence can never reach it.
 `assess answer --claim SCORE|unknown ...` caps an answer at its weakest
 materially relied-upon claim. Both emit `megamind/confidence-report/v1` with
 the full component rationale.

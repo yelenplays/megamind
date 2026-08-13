@@ -87,11 +87,13 @@ rows a decision covers, so a `load` never hands out authorization to a weaker
 row riding behind a strong one - `route` omits it from the packet with a note
 and `preflight` demotes it to an offer with no loadable paths. Claim confidence scores
 one claim from its eligible sources by authority order (primary 0.9,
-synthesis 0.7, hypothesis 0.5, prior 0.2), adds capped corroboration for
-independent origins only (sources derived from one origin count once), and
-applies deterministic caps: unresolved contradictions (0.5), staleness (0.6),
-unknown freshness or lifecycle (0.7), lifecycle state (proposed 0.5, shaky
-0.6, rejected/superseded 0.1). Answer confidence is the weakest materially
+synthesis 0.7, hypothesis 0.5, prior 0.2), removes every source whose
+host-supplied correction status is not `clean` instead of down-weighting it,
+adds capped corroboration for derived `origin_id` values only (unknown
+independence collapses to one origin), and applies deterministic caps:
+unresolved contradictions (0.5), staleness (0.6), unknown freshness or
+lifecycle (0.7), lifecycle state (proposed 0.5, shaky 0.6,
+rejected/superseded 0.1). Answer confidence is the weakest materially
 relied-upon claim. `unknown` is first-class everywhere: no evidence means no
 number, and unknown never meets the floor. Every constant is pinned by
 `tests/fixtures/confidence-calibration.json`; `megamind-axi assess
@@ -248,8 +250,17 @@ deeper topics are deferred nominations.
 
 Gap records use semantic identity hashes and an append-only snapshot journal.
 Transitions are validated, replayable, and linked to audit and safe log events.
-Research results are eligibility-filtered and become immutable-source ingest
-proposals. Raw sources are never written by Megamind. Provisional wiki creation
+Research results are acceptance-filtered and become immutable-source ingest
+proposals only through `research-result/v2`. Its acceptance block binds the
+host-supplied derived `origin_id`, retrieval/publication dates with precision,
+snapshot digests, rights/quotation posture, and correction status. A v1
+result remains readable only as a restrictive legacy nomination: caller
+`eligible` labels, source prose, quality, destination, and lifecycle never
+become authority. Missing, unknown, malformed, contradictory, or retracted
+facts are typed ineligible outcomes rather than down-weighted evidence, so
+an unsupported claim stays unknown; the claim rubric above owns how a
+derived `origin_id` corroborates and what a correction status does. Raw
+sources are never written by Megamind. Provisional wiki creation
 validates every qualification input and the complete registry plan before any
 byte is written, refuses a canonical wiki root and a v1 registry rather than
 creating an ambiguous root shape or migrating one silently, writes the canonical

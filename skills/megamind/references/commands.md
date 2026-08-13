@@ -128,9 +128,28 @@ the surfaced candidates only.
 `megamind/confidence-report/v1`: deterministic confidence against the 0.75
 reliance floor, with the full `components[]` rationale. `assess claim` takes
 `--source <quality>:<origin>` (`primary|synthesis|hypothesis|prior`, repeat
-per source), `--ineligible-source <quality>:<origin>` (counts for nothing),
+per source), `--ineligible-source` in the same form (counts for nothing),
 `--lifecycle <state|unknown>`, `--freshness fresh|stale|unknown`, and
-`--contradicted`. Sources derived from one origin count once; unresolved
+`--contradicted`. Everything after the first colon is the origin, so an
+origin containing `::` (`http://[::1]/x`, `std::vector`, `Space::Page`) stays
+one opaque display string. That shorthand states unknown independence and
+never corroborates. Declare derived facts out of band instead, one JSON
+object per source:
+
+```
+--source-json '{"quality":"primary","origin":"release notes",
+                "origin_id":"vendor-a","correction_status":"clean",
+                "eligible":true}'
+```
+
+`quality` and `origin` are required, unknown keys are refused, and omitted
+keys take the restrictive default. Pass the independently derived `origin_id`
+whenever you have one: sources sharing one count once, and an omitted
+identity never corroborates - two copies of the same page, or a repost, must
+never be given different ids. `correction_status`
+(`clean|corrected|expression_of_concern|retracted|unknown`, default `clean`)
+removes that source from support when it is not `clean` instead of lowering
+it, so a retracted-only claim is `unknown`. Unresolved
 contradictions freeze the claim below the floor; stale or undated evidence
 can never reach it; no eligible evidence yields `score: unknown`, never a
 fabricated number. `assess answer` takes `--claim <score|unknown>` per
@@ -216,12 +235,57 @@ typed pause/refusal.
 
 ## megamind-axi research-result --nomination-json JSON --result-json JSON
 
-Validates a host round-trip by stable correlation id and turns eligible
-sources into an immutable-source ingest proposal. Results are bounded and
-idempotent; a result with no eligible source is rejected before any proposal,
-audit, or log write, and a replay that changes any part of the nomination
-identity - wiki, topic, or the eligible sources - refuses.
-Megamind performs no network or external action and never writes `raw/`.
+Validates a host round-trip by stable correlation id. Only a
+`megamind/research-result/v2` document can propose a source, and Megamind
+derives eligibility itself from the typed `acceptance` block each source
+carries:
+
+```json
+{
+  "schema": "megamind/research-result/v2",
+  "correlation_id": "<from the nomination>",
+  "sources": [
+    {
+      "origin": "https://docs.example.com/notes",
+      "summary": "what the source says",
+      "acceptance": {
+        "origin_id": "derived-origin-identity",
+        "retrieval": {"date": "2026-08-13", "precision": "exact"},
+        "publication": {"date": "2026-08", "precision": "month"},
+        "snapshot": {"sha256": "<64 hex>", "normalized_sha256": "<64 hex>"},
+        "rights": {
+          "license": "CC-BY-4.0",
+          "quote_policy": "quote-free|quote-bounded|no-quote",
+          "snapshot_policy": "local-snapshot-allowed|no-store"
+        },
+        "corrections": {
+          "status": "clean",
+          "checked_at": {"date": "2026-08-13", "precision": "exact"},
+          "method": "how you checked",
+          "notice_ids": []
+        }
+      }
+    }
+  ]
+}
+```
+
+Every field is required. `retrieval` and `corrections.checked_at` must be
+`exact`; `publication` may be `exact`, `month`, or `year` but never start
+after retrieval. `origin_id` is the independence identity you derived, never
+the URL and never `unknown`. A fact that is missing, unknown, malformed,
+contradictory, non-clean, or retracted is a typed ineligible source, not an
+error to work around: report it and correct the fact. Its `reason` names the
+field and the allowed vocabulary rather than echoing your value, so read it
+against the payload you sent. A `v1` result stays
+readable as a restrictive legacy nomination - its `eligible` flag is not
+evidence and mints no proposal, so a source rejected as
+`legacy_v1_requires_v2_acceptance` needs real v2 facts, not a retry.
+Results are bounded and idempotent; a result with no eligible source is
+rejected before any proposal, audit, or log write, and a replay that changes
+any part of the nomination identity - wiki, topic, or the accepted sources -
+refuses. Megamind performs no network or external action and never writes
+`raw/`.
 
 ## megamind-axi provision-wiki NAME PATH [criteria flags]
 

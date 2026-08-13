@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .card import card_file, serialize_wiki_card
+from .confidence import CLEAN_CORRECTION, CORRECTION_STATUSES, UNKNOWN_ORIGIN_IDS
 from .fsops import (
     MEGAMIND_DIR,
     PathEscapeError,
@@ -45,7 +46,12 @@ from .registry import (
 
 GAP_SCHEMA = "megamind/gap/v1"
 NOMINATION_SCHEMA = "megamind/research-nomination/v1"
-RESULT_SCHEMA = "megamind/research-result/v1"
+RESULT_SCHEMA_V1 = "megamind/research-result/v1"
+RESULT_SCHEMA_V2 = "megamind/research-result/v2"
+# The current result document is selected per input: v1 remains readable as a
+# restrictive legacy nomination, while only v2 can mint an ingest proposal.
+RESULT_SCHEMA = RESULT_SCHEMA_V2
+INGEST_PROPOSAL_SCHEMA_V2 = "megamind/ingest-proposal/v2"
 WAVE_SCHEMA = "megamind/research-wave/v1"
 GAP_KINDS = ("missing", "weak", "stale", "contradictory")
 GAP_STATUSES = (
@@ -73,6 +79,14 @@ EVENT_TYPES = (
 )
 MAX_RESULT_SOURCES = 20
 MAX_TEXT = 1000
+_ACCEPTANCE_FIELDS = {"origin_id", "retrieval", "publication", "snapshot", "rights", "corrections"}
+_SOURCE_V1_FIELDS = {"origin", "summary", "eligible"}
+_SOURCE_V2_FIELDS = {"origin", "summary", "acceptance"}
+_RESULT_FIELDS = {"schema", "correlation_id", "sources"}
+_DATE_PRECISIONS = {"exact", "month", "year"}
+_QUOTE_POLICIES = {"quote-free", "quote-bounded", "no-quote"}
+_SNAPSHOT_POLICIES = {"local-snapshot-allowed", "no-store"}
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 class GardenError(ValueError):
@@ -128,6 +142,160 @@ def _date(today: str | None) -> str:
         return date.fromisoformat(today).isoformat()
     except ValueError as error:
         raise GardenError(f"dates must be ISO (YYYY-MM-DD): {today}") from error
+
+
+def _require_fields(value: Mapping[str, Any], allowed: set[str], label: str) -> None:
+    """Refuse unknown keys by naming the allowed set, never the offending key.
+
+    These refusals become a typed ``reason`` on the returned document, so they
+    are built from this module's own constants: a host-supplied key name is
+    data, and data never travels back out as message text.
+    """
+    if not set(value) <= allowed:
+        raise GardenError(
+            f"{label} contains unknown field(s); allowed: {', '.join(sorted(allowed))}"
+        )
+
+
+def _date_fact(value: object, label: str, *, exact_only: bool = False) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise GardenError(f"{label} must be an object with date and precision")
+    _require_fields(value, {"date", "precision"}, label)
+    raw_date = value.get("date")
+    precision = value.get("precision")
+    if not isinstance(raw_date, str) or not isinstance(precision, str):
+        raise GardenError(f"{label} date and precision must be strings")
+    if not isinstance(precision, str) or precision not in _DATE_PRECISIONS:
+        raise GardenError(f"{label} precision must be one of {', '.join(sorted(_DATE_PRECISIONS))}")
+    if precision == "unknown" or (exact_only and precision != "exact"):
+        raise GardenError(f"{label} precision is not sufficiently certain")
+    formats = {"exact": r"^\d{4}-\d{2}-\d{2}$", "month": r"^\d{4}-\d{2}$", "year": r"^\d{4}$"}
+    if not re.fullmatch(formats[precision], raw_date):
+        raise GardenError(f"{label} date does not match precision {precision}")
+    try:
+        if precision == "exact":
+            date.fromisoformat(raw_date)
+        elif precision == "month":
+            date.fromisoformat(raw_date + "-01")
+        else:
+            date.fromisoformat(raw_date + "-01-01")
+    except ValueError as error:
+        raise GardenError(f"{label} date is not valid ISO") from error
+    return {"date": raw_date, "precision": precision}
+
+
+def _earliest_day(fact: Mapping[str, str]) -> date:
+    """The first instant a validated date fact can denote.
+
+    A coarse precision is an interval, not a point, so ordering two facts is
+    only honest against the earliest day each interval can start on.
+    """
+    raw_date = fact["date"]
+    suffix = {"exact": "", "month": "-01", "year": "-01-01"}[fact["precision"]]
+    return date.fromisoformat(raw_date + suffix)
+
+
+def _fact_text(value: object, label: str, limit: int) -> str:
+    """Bound and redact a host string before it can reach a durable record.
+
+    Acceptance facts are written into the proposal file and the returned
+    document, so they cross the same projection boundary as origins and
+    summaries: over-long input fails typed rather than being silently cut, and
+    a credential assignment or local path never survives into the vault.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise GardenError(f"{label} must be a non-empty string")
+    if len(value) > limit:
+        raise GardenError(f"{label} must be at most {limit} characters")
+    safe = _short(value, limit)
+    if not safe:
+        raise GardenError(f"{label} must be a non-empty string")
+    return safe
+
+
+def _validate_acceptance(source: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate host facts; source prose never participates in these gates."""
+    acceptance = source.get("acceptance")
+    if not isinstance(acceptance, Mapping):
+        raise GardenError("research-result/v2 source acceptance must be an object")
+    _require_fields(acceptance, _ACCEPTANCE_FIELDS, "acceptance")
+    origin_id = _fact_text(acceptance.get("origin_id"), "acceptance origin_id", 300)
+    if origin_id.casefold() in UNKNOWN_ORIGIN_IDS:
+        raise GardenError("acceptance origin_id independence is unknown")
+    retrieval = _date_fact(acceptance.get("retrieval"), "acceptance retrieval", exact_only=True)
+    publication = _date_fact(acceptance.get("publication"), "acceptance publication")
+    # Evidence cannot be retrieved before the earliest day it could exist.
+    if _earliest_day(publication) > _earliest_day(retrieval):
+        raise GardenError("acceptance dates are contradictory: publication is after retrieval")
+
+    snapshot = acceptance.get("snapshot")
+    if not isinstance(snapshot, Mapping):
+        raise GardenError("acceptance snapshot must be an object")
+    _require_fields(snapshot, {"sha256", "normalized_sha256"}, "acceptance snapshot")
+    hashes: dict[str, str] = {}
+    for key in ("sha256", "normalized_sha256"):
+        value = snapshot.get(key)
+        if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+            raise GardenError(f"acceptance snapshot {key} must be a SHA-256 digest")
+        hashes[key] = value.lower()
+
+    rights = acceptance.get("rights")
+    if not isinstance(rights, Mapping):
+        raise GardenError("acceptance rights must be an object")
+    _require_fields(rights, {"license", "quote_policy", "snapshot_policy"}, "acceptance rights")
+    license_name = _fact_text(rights.get("license"), "acceptance rights license", 300)
+    quote_policy = rights.get("quote_policy")
+    snapshot_policy = rights.get("snapshot_policy")
+    if not isinstance(quote_policy, str) or quote_policy not in _QUOTE_POLICIES:
+        raise GardenError(
+            f"acceptance rights quote_policy must be one of {', '.join(sorted(_QUOTE_POLICIES))}"
+        )
+    if not isinstance(snapshot_policy, str) or snapshot_policy not in _SNAPSHOT_POLICIES:
+        raise GardenError(
+            "acceptance rights snapshot_policy must be one of "
+            f"{', '.join(sorted(_SNAPSHOT_POLICIES))}"
+        )
+
+    corrections = acceptance.get("corrections")
+    if not isinstance(corrections, Mapping):
+        raise GardenError("acceptance corrections must be an object")
+    _require_fields(
+        corrections, {"status", "checked_at", "method", "notice_ids"}, "acceptance corrections"
+    )
+    correction_status = corrections.get("status")
+    notice_ids = corrections.get("notice_ids")
+    if not isinstance(correction_status, str) or correction_status not in CORRECTION_STATUSES:
+        raise GardenError(
+            f"acceptance corrections status must be one of {', '.join(CORRECTION_STATUSES)}"
+        )
+    method = _fact_text(corrections.get("method"), "acceptance corrections method", 300)
+    if not isinstance(notice_ids, list) or any(not isinstance(item, str) for item in notice_ids):
+        raise GardenError("acceptance corrections notice_ids must be a list of strings")
+    checked_at = _date_fact(
+        corrections.get("checked_at"), "acceptance corrections checked_at", exact_only=True
+    )
+    if correction_status == CLEAN_CORRECTION and notice_ids:
+        raise GardenError("acceptance corrections are contradictory: clean has notice_ids")
+    if correction_status != CLEAN_CORRECTION:
+        raise GardenError(f"source correction status is not clean: {correction_status}")
+
+    return {
+        "origin_id": origin_id,
+        "retrieval": retrieval,
+        "publication": publication,
+        "snapshot": hashes,
+        "rights": {
+            "license": license_name,
+            "quote_policy": quote_policy,
+            "snapshot_policy": snapshot_policy,
+        },
+        "corrections": {
+            "status": correction_status,
+            "checked_at": checked_at,
+            "method": method,
+            "notice_ids": sorted(_short(item, 200) for item in notice_ids),
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -624,13 +792,14 @@ def make_nomination(wave_id: str, entry: Mapping[str, Any], source_policy: str =
 class ResearchResult:
     correlation_id: str
     status: str
-    eligible_sources: list[dict[str, str]]
-    ineligible_sources: list[dict[str, str]]
+    eligible_sources: list[dict[str, Any]]
+    ineligible_sources: list[dict[str, Any]]
     ingest_proposal: str
     reason: str = ""
+    schema: str = RESULT_SCHEMA_V1
 
     def to_data(self) -> dict[str, Any]:
-        return {"schema": RESULT_SCHEMA, **asdict(self)}
+        return {"schema": self.schema, **asdict(self)}
 
 
 def ingest_research_result(
@@ -638,40 +807,66 @@ def ingest_research_result(
 ) -> ResearchResult:
     if not isinstance(result, Mapping):
         raise GardenError("research result must be a JSON object")
+    _require_fields(result, _RESULT_FIELDS, "research result")
+    schema = result.get("schema", RESULT_SCHEMA_V1)
+    if not isinstance(schema, str) or schema not in {RESULT_SCHEMA_V1, RESULT_SCHEMA_V2}:
+        raise GardenError(
+            f"research result schema must be {RESULT_SCHEMA_V1} or {RESULT_SCHEMA_V2}"
+        )
     if result.get("correlation_id") != nomination.correlation_id:
         raise GardenError("research result correlation_id does not match nomination")
     sources = result.get("sources", [])
     if not isinstance(sources, list) or len(sources) > MAX_RESULT_SOURCES:
         raise GardenError(f"research result sources must be a list of at most {MAX_RESULT_SOURCES}")
-    eligible: list[dict[str, str]] = []
-    ineligible: list[dict[str, str]] = []
+    eligible: list[dict[str, Any]] = []
+    ineligible: list[dict[str, Any]] = []
+    source_fields = _SOURCE_V2_FIELDS if schema == RESULT_SCHEMA_V2 else _SOURCE_V1_FIELDS
     for source in sources:
         if not isinstance(source, Mapping):
             raise GardenError("each research source must be an object")
+        _require_fields(source, source_fields, "research source")
         origin = source.get("origin", "")
-        # An origin is an opaque host-supplied fact, including any URL: Megamind
-        # records it and never resolves, fetches, or validates it against a
-        # network. It must still be a real identifier so a proposal can cite it.
+        # Origins remain opaque display facts. They are never fetched or
+        # interpreted as instructions; v2's origin_id is the separate typed
+        # independence identity used by confidence arithmetic.
         if not isinstance(origin, str) or not origin.strip():
             raise GardenError("each research source must declare a non-empty origin string")
-        item = {
+        summary = source.get("summary", "")
+        if not isinstance(summary, str):
+            raise GardenError("research source summary must be a string")
+        base: dict[str, Any] = {
             "origin": _short(origin, 300),
-            "summary": _short(str(source.get("summary", "")), 500),
+            "summary": _short(summary, 500),
         }
-        (eligible if source.get("eligible") is True else ineligible).append(item)
+        if schema == RESULT_SCHEMA_V1:
+            # v1 is deliberately readable, but its caller label is only a
+            # legacy nomination. It has no evidence, quality, rights, or
+            # autonomous-apply authority and therefore cannot mint a proposal.
+            ineligible.append({**base, "reason": "legacy_v1_requires_v2_acceptance"})
+            continue
+        try:
+            acceptance = _validate_acceptance(source)
+        except GardenError as error:
+            ineligible.append({**base, "reason": _short(f"acceptance_invalid: {error}", 300)})
+            continue
+        accepted = {**base, "origin_id": acceptance["origin_id"], "acceptance": acceptance}
+        eligible.append(accepted)
     if not eligible:
-        # Nothing citable: refuse before the proposal, audit, and log writes.
-        # Correlation is the idempotency key, so a proposal written here could
-        # never be repaired by the replay that finally carries a real source.
         return ResearchResult(
-            nomination.correlation_id, "rejected", [], ineligible, "", "no eligible sources"
+            nomination.correlation_id,
+            "rejected",
+            [],
+            ineligible,
+            "",
+            "legacy_v1_requires_v2_acceptance"
+            if schema == RESULT_SCHEMA_V1
+            else "no eligible sources",
+            schema,
         )
-    # Correlation is the idempotency key. A replay cannot create a second
-    # proposal merely because ineligible data was redacted or reordered.
     result_id = content_hash(nomination.correlation_id)
     proposal_rel = Path(MEGAMIND_DIR) / "proposals" / f"research-ingest-{result_id}.json"
     proposal = {
-        "schema": "megamind/ingest-proposal/v1",
+        "schema": INGEST_PROPOSAL_SCHEMA_V2,
         "proposal_id": result_id,
         "correlation_id": nomination.correlation_id,
         "wiki": nomination.wiki,
@@ -681,11 +876,6 @@ def ingest_research_result(
     }
     path = resolve_contained(root, proposal_rel)
     if path.exists():
-        # The returned document points at this file, so it may never claim an
-        # identity or a citation the file does not carry: divergence refuses, it
-        # never wins. Correlation alone keys the file, so the whole immutable
-        # nomination identity is bound here, not the eligible sources alone; a
-        # replay that renames the wiki or the topic is a different nomination.
         try:
             stored = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -717,9 +907,9 @@ def ingest_research_result(
             root,
             "ingest",
             "",
-            "research result accepted as an immutable-source proposal",
+            "research result accepted as a v2 immutable-source proposal",
             pages=[],
-            sources=[x["origin"] for x in eligible],
+            sources=[str(x["origin"]) for x in eligible],
             confidence="unknown",
             outcome="proposed",
             audit=f"research-ingest-{result_id}",
@@ -731,6 +921,7 @@ def ingest_research_result(
         ineligible,
         proposal_rel.as_posix(),
         "",
+        schema,
     )
 
 

@@ -36,6 +36,8 @@ from .catalog import (
     visible_rows,
 )
 from .confidence import (
+    CLEAN_CORRECTION,
+    CORRECTION_STATUSES,
     LIFECYCLE_CAP,
     RELIANCE_FLOOR,
     SOURCE_QUALITIES,
@@ -73,7 +75,6 @@ from .evolve import (
 )
 from .fsops import PathEscapeError
 from .gardening import (
-    RESULT_SCHEMA,
     WAVE_SCHEMA,
     CapacityInput,
     GapRecord,
@@ -152,6 +153,8 @@ ROUTE_FIELDS_ALL = [
 DIFF_LINE_LIMIT = 60
 SECTION_ITEM_LIMIT = 20
 FINDINGS_LIMIT = 50
+# The exact key set of one --source-json evidence object.
+_SOURCE_JSON_FIELDS = {"quality", "origin", "origin_id", "correction_status", "eligible"}
 
 # The key set of megamind/evolve-result/v1, in render order, with the empty
 # value each key carries in a state it does not describe. Tuples mark list
@@ -874,6 +877,14 @@ def _confidence_doc(kind: str, inputs: Doc, result: Confidence) -> tuple[Doc, in
 
 
 def _parse_source_spec(spec: str, eligible: bool) -> Source:
+    """Parse the shorthand ``<quality>:<origin>``.
+
+    Everything after the first colon is the origin, so a display string that
+    contains ``::`` (an IPv6 literal, ``std::vector``, ``Space::Page``) stays
+    one opaque origin. The shorthand is deliberately restrictive: it can state
+    no independence and no correction posture, so it can never corroborate.
+    Use ``--source-json`` to declare those derived facts explicitly.
+    """
     quality, separator, origin = spec.partition(":")
     if not separator or not origin.strip() or not quality.strip():
         raise UsageError(f"source must be <quality>:<origin>, got: {spec!r}")
@@ -885,15 +896,59 @@ def _parse_source_spec(spec: str, eligible: bool) -> Source:
     return Source(quality=quality, origin=origin.strip(), eligible=eligible)
 
 
+def _parse_source_json(raw: str) -> Source:
+    """Decode one typed evidence source from an explicit JSON object.
+
+    Independence and correction posture are named fields here and nowhere
+    else: no separator inside the free-form origin can be mistaken for either,
+    so a display string can never be promoted into a derived fact.
+    """
+    data = _json_object(raw, "--source-json")
+    if not set(data) <= _SOURCE_JSON_FIELDS:
+        raise UsageError(
+            "--source-json contains unknown field(s); allowed: "
+            f"{', '.join(sorted(_SOURCE_JSON_FIELDS))}"
+        )
+    quality = data.get("quality")
+    if not isinstance(quality, str) or quality not in SOURCE_QUALITIES:
+        raise UsageError(f"--source-json quality must be one of {', '.join(SOURCE_QUALITIES)}")
+    origin = data.get("origin")
+    if not isinstance(origin, str) or not origin.strip():
+        raise UsageError("--source-json origin must be a non-empty string")
+    origin_id = data.get("origin_id", "")
+    if not isinstance(origin_id, str) or (origin_id and not origin_id.strip()):
+        raise UsageError(
+            "--source-json origin_id must be the derived origin identity; omit it "
+            "when independence is unknown"
+        )
+    status = data.get("correction_status", CLEAN_CORRECTION)
+    if not isinstance(status, str) or status not in CORRECTION_STATUSES:
+        raise UsageError(
+            f"--source-json correction_status must be one of {', '.join(CORRECTION_STATUSES)}"
+        )
+    eligible = data.get("eligible", True)
+    if not isinstance(eligible, bool):
+        raise UsageError("--source-json eligible must be true or false")
+    return Source(
+        quality=quality,
+        origin=origin.strip(),
+        eligible=eligible,
+        origin_id=origin_id.strip(),
+        correction_status=status,
+    )
+
+
 def cmd_assess_claim(
     sources: list[str],
     ineligible_sources: list[str],
+    source_json: list[str],
     lifecycle: str,
     freshness: str,
     contradicted: bool,
 ) -> tuple[Doc, int]:
     parsed = [_parse_source_spec(spec, True) for spec in sources]
     parsed += [_parse_source_spec(spec, False) for spec in ineligible_sources]
+    parsed += [_parse_source_json(raw) for raw in source_json]
     result = claim_confidence(
         parsed,
         lifecycle="" if lifecycle == "unknown" else lifecycle,
@@ -903,6 +958,7 @@ def cmd_assess_claim(
     inputs: Doc = {
         "sources": sources,
         "ineligible_sources": ineligible_sources,
+        "source_json": source_json,
         "lifecycle": lifecycle,
         "freshness": freshness,
         "contradicted": contradicted,
@@ -1095,11 +1151,11 @@ def cmd_research_result(args: argparse.Namespace, root: Path) -> tuple[Doc, int]
     )
     result = ingest_research_result(root, nomination, result_data)
     return {
-        "schema_version": RESULT_SCHEMA,
+        "schema_version": result.schema,
         **result.to_data(),
         "help": _help(
-            "Review the immutable-source ingest proposal; Megamind does not "
-            "fetch or publish the source"
+            "Review the v2 immutable-source proposal; v1 is a restrictive legacy "
+            "nomination, and Megamind does not fetch or publish the source"
         ),
     }, 0
 
@@ -1716,7 +1772,15 @@ def build_parser() -> AxiParser:
         epilog=(
             f"examples:\n"
             f"  {EXECUTABLE} assess claim --source primary:release-notes "
-            "--source primary:changelog --lifecycle active --freshness fresh\n"
+            "--lifecycle active --freshness fresh\n"
+            f"  {EXECUTABLE} assess claim "
+            '--source-json \'{"quality":"primary","origin":"release notes",'
+            '"origin_id":"vendor-a"}\' '
+            '--source-json \'{"quality":"primary","origin":"changelog",'
+            '"origin_id":"vendor-b"}\' --lifecycle active --freshness fresh\n'
+            f"  {EXECUTABLE} assess claim "
+            '--source-json \'{"quality":"primary","origin":"study",'
+            '"origin_id":"doi:10.1000/xyz","correction_status":"retracted"}\'\n'
             f"  {EXECUTABLE} assess answer --claim 0.9 --claim 0.6\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1732,7 +1796,12 @@ def build_parser() -> AxiParser:
         action="append",
         default=[],
         metavar="QUALITY:ORIGIN",
-        help=f"eligible source ({'|'.join(SOURCE_QUALITIES)}); repeat per source",
+        help=(
+            f"eligible source ({'|'.join(SOURCE_QUALITIES)}); repeat per source. "
+            "The origin is display-only, so this shorthand states unknown "
+            "independence and never corroborates; use --source-json to declare "
+            "a derived origin_id or a correction status"
+        ),
     )
     p_claim.add_argument(
         "--ineligible-source",
@@ -1740,6 +1809,22 @@ def build_parser() -> AxiParser:
         default=[],
         metavar="QUALITY:ORIGIN",
         help="source the consuming context may not use; it counts for nothing",
+    )
+    p_claim.add_argument(
+        "--source-json",
+        action="append",
+        default=[],
+        metavar="JSON",
+        help=(
+            "one source as a JSON object with quality, origin, and the derived "
+            "facts: origin_id is the independently derived identity that alone "
+            "corroborates (sources sharing one count once; omit it and "
+            "independence is unknown, which never corroborates), "
+            f"correction_status is one of {', '.join(CORRECTION_STATUSES)} "
+            f"(default {CLEAN_CORRECTION}) and anything but clean removes the "
+            "source from support, and eligible false counts for nothing; "
+            "repeat per source"
+        ),
     )
     p_claim.add_argument(
         "--lifecycle",
@@ -1828,7 +1913,10 @@ def build_parser() -> AxiParser:
     p_wave.add_argument("--captain-work", action="store_true")
     p_wave.add_argument("--today", default=argparse.SUPPRESS)
 
-    p_result = sub.add_parser("research-result", help="ingest a host research result as a proposal")
+    p_result = sub.add_parser(
+        "research-result",
+        help="ingest v2 host facts as a proposal; v1 remains restrictive legacy input",
+    )
     _common_flags(p_result)
     p_result.add_argument("--nomination-json", required=True)
     p_result.add_argument("--result-json", required=True)
@@ -2210,6 +2298,7 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             return cmd_assess_claim(
                 args.source,
                 args.ineligible_source,
+                args.source_json,
                 args.lifecycle,
                 args.freshness,
                 args.contradicted,

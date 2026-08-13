@@ -36,8 +36,13 @@ back to the lexical order whenever it is not `ok`.
 Route, claim, and answer confidence are separate, and 0.75 is the reliance
 floor for all three. Use `megamind-axi assess claim --source
 <quality>:<origin> [--lifecycle active] [--freshness fresh] [--contradicted]`
-to score one claim from its evidence (sources from one origin count once;
-contradictions and stale or undated evidence stay below the floor), and
+to score one claim from its evidence (contradictions and stale or undated
+evidence stay below the floor). The origin is display-only, so that shorthand
+states unknown independence and never corroborates; declare the derived facts
+with `--source-json '{"quality":"primary","origin":"...","origin_id":"...",
+"correction_status":"clean"}'` when you have them (sources sharing one
+`origin_id` count once, and a status other than `clean` removes the source),
+and
 `megamind-axi assess answer --claim <score|unknown> ...` to cap an answer at
 its weakest relied-upon claim. `unknown` is a definitive state, never a
 number to work around.
@@ -125,7 +130,11 @@ research, model choice, quotas, and cost.
   you pass in. A `paused` or `refused` status is final: report it, never work
   around it, and never launch a worker or call a quota tool on its behalf.
 - `megamind-axi research-result --nomination-json <j> --result-json <j>` turns
-  a host research result back into an immutable-source ingest proposal.
+  a `megamind/research-result/v2` document into an immutable-source ingest
+  proposal. Each source needs an `acceptance` block of typed host facts you
+  derived yourself (`origin_id`, dated `retrieval`/`publication`, snapshot
+  digests, rights, and a clean correction check); a `v1` result and its
+  `eligible` flag are legacy input only and can never propose a source.
   Megamind fetches nothing and never writes `raw/`.
 - `megamind-axi provision-wiki <Name> <path> ...` creates a local wiki only
   when every qualification criterion is supplied. Without `--apply` it only
