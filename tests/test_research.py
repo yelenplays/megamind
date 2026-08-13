@@ -18,6 +18,7 @@ from megamind.evidence import (
     unresolved_contradictions,
 )
 from megamind.fsops import content_hash
+from megamind.policy import ResearchTier
 from megamind.registry import ResearchPolicy, load_registry, save_registry
 from megamind.research import (
     MappingResolver,
@@ -92,6 +93,26 @@ def test_research_store_rejects_unknown_kinds_consistently(tmp_path: Path) -> No
 
 def test_research_store_refuses_policyless_plan_persistence(tmp_path: Path) -> None:
     root = build_vault(tmp_path)
+    store = ResearchStore(root)
+    plan = make_plan(
+        {
+            "schema": "megamind/research-plan/v1",
+            "wiki": "ProductWiki",
+            "gap_id": "gap-1",
+            "question": "Synthetic question",
+            "policy_digest": "",
+            "card_digest": "",
+            "access_digest": "",
+        }
+    )
+    assert isinstance(plan, dict)
+    with pytest.raises(ResearchError, match="explicit wiki research policy"):
+        store.put("plans", plan)
+    assert not (root / ".megamind" / "research").exists()
+
+
+def test_research_store_refuses_denied_policy_persistence(tmp_path: Path) -> None:
+    root = _research_vault(tmp_path, enabled=False)
     store = ResearchStore(root)
     plan = make_plan(
         {
@@ -497,11 +518,19 @@ def _research_vault(tmp_path: Path, *, enabled: bool = True) -> Path:
     entry = registry.wiki_by_name("ProductWiki")
     assert entry is not None
     entry.research_policy = ResearchPolicy(
-        enabled=enabled,
-        claim_types=["general"],
-        research_mode="approval" if enabled else "off",
+        tiers=(
+            ResearchTier(
+                1,
+                "synthetic authority",
+                "primary",
+                ({"kind": "host", "host": "synthetic.example"},),
+                ("fact",),
+            ),
+        )
+        if enabled
+        else (),
+        research="approval" if enabled else "off",
         max_sources_per_cycle=2,
-        digest="synthetic-policy-digest",
     )
     save_registry(root, registry)
     return root
@@ -1286,6 +1315,7 @@ def test_permission_check_denies_when_the_card_does_not_authorize_research(
     assert code == 0
     assert doc["status"] == "policy-denied"
     assert doc["authority"]["authorized"] is False
+    assert not (root / ".megamind" / "research").exists()
 
 
 def test_permission_check_replay_is_a_no_op(

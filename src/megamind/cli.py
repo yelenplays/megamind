@@ -1496,9 +1496,11 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         authorized = bool(policy.permitted and raw.get("policy_authorized") is True)
         attempt_id = content_hash(json.dumps({"job_id": job_id, "plan_id": plan["plan_id"], "attempt": 1}, sort_keys=True, separators=(",", ":")))
         job = validate_job({"schema": JOB_SCHEMA, "job_id": job_id, "plan_id": plan["plan_id"], "gap_id": plan["gap_id"], "state": "planned" if authorized else "policy-denied", "attempt": 1, "events": []})
+        legacy_job = {**job, "attempt_id": attempt_id}
+        if not authorized:
+            return _research_doc(JOB_SCHEMA, {"status": job["state"], "job": legacy_job, "authority": {"authorized": policy.permitted}}, "Permission is derived from the wiki policy"), 0
         store.put("plans", plan)
         store.put("jobs", job)
-        legacy_job = {**job, "attempt_id": attempt_id}
         return _research_doc(JOB_SCHEMA, {"status": job["state"], "job": legacy_job, "authority": {"authorized": policy.permitted}}, "Permission is derived from the wiki policy"), 0
     if action == "outcome":
         if not isinstance(raw, Mapping):

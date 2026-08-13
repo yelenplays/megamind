@@ -586,7 +586,11 @@ class ResearchStore:
                 wikis=[card],
             )
         entry = registry.wiki_by_name(wiki)
-        if entry is None or entry.research_policy is None:
+        if (
+            entry is None
+            or entry.research_policy is None
+            or not entry.research_policy.permitted
+        ):
             raise ResearchError("research state requires an explicit wiki research policy")
 
     def _admit_policy(
