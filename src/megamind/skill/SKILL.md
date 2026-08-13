@@ -111,7 +111,7 @@ fleet catalog is a generated projection of those cards.
   returned selected load path only on `status: authorized`. Never substitute a
   rephrased request, handcraft a path, or use selection to override filtered,
   provisional, pointer, broken, stale, or model-incompatible knowledge.
-- For the picker\'s `Different existing wiki` choice, use the separate
+- For the picker's `Different existing wiki` choice, use the separate
   `megamind-axi select-existing --request "<request>" --model-class local|cloud
   --owner-id <owner> --session-id <session> --today <date>` list operation.
   Choose only a name it returns, then pass its one-time `--selection-id` to
