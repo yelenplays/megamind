@@ -1447,13 +1447,7 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         return _excluded_research_workflow(action, args.job_id)
     if not args.input:
         raise UsageError(f"research {action} requires --input FILE")
-    if action in {
-        "record-artifact",
-        "record-correction",
-        "record-quotations",
-        "record-claims",
-        "reconcile",
-    }:
+    if action in {"record-artifact", "record-correction"}:
         EvidenceStore(root).recover()
     raw = _read_json_file(args.input, "--input")
     if action == "permission-check":

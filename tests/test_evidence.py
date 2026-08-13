@@ -1700,6 +1700,65 @@ def test_reconcile_commits_nothing_when_a_claim_is_unwritable(
     assert not (root / MEGAMIND_DIR / "evidence" / "contradictions").exists()
 
 
+def test_reconcile_retries_an_interrupted_batch_through_axi(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = governed_vault(tmp_path)
+    payload = write_json(
+        tmp_path / "in" / "claims.json",
+        {
+            "claims": [
+                proposed_claim("the synthetic fact is A"),
+                proposed_claim("the synthetic fact is B"),
+            ]
+        },
+    )
+    original_write = evidence_module.atomic_write
+    calls = 0
+
+    def fail_second_target(
+        root: Path, target: object, content: str, *, durable: bool = False
+    ) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise OSError("synthetic disk failure")
+        return original_write(root, target, content, durable=durable)
+
+    monkeypatch.setattr(evidence_module, "atomic_write", fail_second_target)
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "--today",
+        "2026-08-13",
+        "research",
+        "reconcile",
+        "--input",
+        payload,
+    )
+    assert code == 1
+    assert doc["code"] == "io_error"
+    assert list((root / MEGAMIND_DIR / "evidence" / "transactions").glob("*.json"))
+
+    monkeypatch.setattr(evidence_module, "atomic_write", original_write)
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "--today",
+        "2026-08-13",
+        "research",
+        "reconcile",
+        "--input",
+        payload,
+    )
+    assert code == 0
+    assert len(doc["claims"]) == 2
+    assert len(doc["contradictions"]) == 1
+    assert not list((root / MEGAMIND_DIR / "evidence" / "transactions").glob("*.json"))
+
+
 def test_put_all_retries_a_partial_transaction_after_a_write_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
