@@ -1255,12 +1255,20 @@ class EvidenceStore:
                 ):
                     raise EvidenceError("evidence transaction journal is invalid")
                 restores.append((target, item["previous"]))
+            restored_paths: list[str] = []
             for target, previous in reversed(restores):
+                backup_existing(self.root, target, durable=True)
                 if previous is None:
                     remove_contained(self.root, target, durable=True)
                 else:
                     atomic_write(self.root, target, previous, durable=True)
+                restored_paths.append(target.as_posix())
             remove_contained(self.root, journal.relative_to(self.root.resolve()), durable=True)
+            append_audit(
+                self.root,
+                "evidence-transaction-recovery",
+                {"transaction_id": str(payload["transaction_id"]), "paths": restored_paths},
+            )
 
     def recover(self) -> None:
         self._recover_transactions()

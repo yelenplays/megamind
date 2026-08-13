@@ -787,9 +787,15 @@ class ResearchStore:
             raise ReplayConflict("divergent replay for the current state")
         event = {"schema": JOB_SCHEMA, **payload, "event_id": event_id, "updated": today or ""}
         events = self._legacy_events()
+        backup_existing(self.root, LEGACY_JOBS_PATH)
         atomic_write(
             self.root, LEGACY_JOBS_PATH,
             "".join(json.dumps(item, sort_keys=True) + "\n" for item in [*events, event]),
+        )
+        append_audit(
+            self.root,
+            "research-transition",
+            {"job_id": job_id, "attempt_id": attempt_id, "state": state, "event_id": event_id},
         )
         return LegacyJob(job_id, attempt_id, state, plan_id, gap_id, policy_digest, card_digest, access_digest, event_id, reason, tuple(effective_artifacts), tuple(effective_contradictions))
 
@@ -806,6 +812,10 @@ class ResearchStore:
         rel = Path(MEGAMIND_DIR) / "research" / "packets" / f"{normalized['packet_id']}.json"
         path = resolve_contained(self.root, rel)
         text = json.dumps(normalized, indent=2, sort_keys=True) + "\n"
-        if path.is_file() and path.read_text(encoding="utf-8") != text:
-            raise ResearchError("research artifact is immutable")
-        return atomic_write(self.root, rel, text)
+        if path.is_file():
+            if path.read_text(encoding="utf-8") != text:
+                raise ResearchError("research artifact is immutable")
+            return path
+        result = atomic_write(self.root, rel, text)
+        append_audit(self.root, "research-packet", {"packet_id": str(normalized["packet_id"])})
+        return result
