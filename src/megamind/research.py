@@ -24,6 +24,8 @@ from .fsops import (
     resolve_contained,
 )
 from .confidence import RELIANCE_FLOOR, Confidence, answer_confidence
+from .card import CARD_PATH, CardError, load_wiki_card
+from .registry import Budgets, CURRENT_VERSION, Registry, RegistryNotInitialized, load_registry
 
 LEGACY_JOBS_PATH = Path(MEGAMIND_DIR) / "research" / "jobs.jsonl"
 LEGACY_TRANSITIONS: Mapping[str, frozenset[str]] = MappingProxyType(
@@ -568,9 +570,43 @@ class ResearchStore:
     def _path(self, kind: str, identifier: str) -> Path:
         return Path(MEGAMIND_DIR) / "research" / kind / f"{identifier}{self._spec(kind).suffix}"
 
-    def put(self, kind: str, data: Mapping[str, Any]) -> Path:
+    def _policy_for_wiki(self, wiki: str) -> None:
+        try:
+            registry = load_registry(self.root)
+        except RegistryNotInitialized:
+            if not (self.root / CARD_PATH).is_file():
+                raise ResearchError("research state requires an explicit wiki research policy")
+            try:
+                card = load_wiki_card(self.root)
+            except CardError as error:
+                raise ResearchError("research state requires an explicit wiki research policy") from error
+            registry = Registry(
+                version=CURRENT_VERSION,
+                budgets=Budgets(),
+                wikis=[card],
+            )
+        entry = registry.wiki_by_name(wiki)
+        if entry is None or entry.research_policy is None:
+            raise ResearchError("research state requires an explicit wiki research policy")
+
+    def _admit_policy(
+        self, kind: str, canonical: Mapping[str, Any], candidate_wiki: str | None
+    ) -> None:
+        if kind == "plans":
+            self._policy_for_wiki(str(canonical["wiki"]))
+            return
+        if kind == "candidates":
+            if not candidate_wiki:
+                raise ResearchError("candidate state requires an explicit wiki research policy")
+            self._policy_for_wiki(candidate_wiki)
+            return
+        plan = self.get("plans", str(canonical["plan_id"]))
+        self._policy_for_wiki(str(plan["wiki"]))
+
+    def put(self, kind: str, data: Mapping[str, Any], *, wiki: str | None = None) -> Path:
         spec = self._spec(kind)
         canonical = spec.validator(data)
+        self._admit_policy(kind, canonical, wiki)
         identifier = str(canonical[spec.identifier])
         rel = self._path(kind, identifier)
         path = resolve_contained(self.root, rel)

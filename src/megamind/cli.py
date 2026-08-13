@@ -1589,6 +1589,7 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             if job["state"] != "planned":
                 raise ResearchError("legacy discovery requires a planned job")
             policy = _stored_plan_policy(store, registry, str(job["plan_id"]))
+            candidate_wiki = str(store.get("plans", str(job["plan_id"]))["wiki"])
             values = [
                 {
                     "candidate_id": content_hash(json.dumps({"origin": item, "query_hash": ""}, sort_keys=True, separators=(",", ":"))),
@@ -1603,6 +1604,7 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             ]
         else:
             policy = _admitting_research_policy(registry, wiki)
+            candidate_wiki = wiki
         candidates = [
             validate_candidate({"schema": CANDIDATE_SCHEMA, **dict(item)})
             for item in values
@@ -1616,7 +1618,9 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
                 f"{policy.max_sources_per_cycle} sources per cycle"
             )
         paths = [
-            store.put("candidates", candidate).relative_to(root.resolve()).as_posix()
+            store.put("candidates", candidate, wiki=candidate_wiki)
+            .relative_to(root.resolve())
+            .as_posix()
             for candidate in candidates
         ]
         if legacy_receipt:

@@ -90,6 +90,26 @@ def test_research_store_rejects_unknown_kinds_consistently(tmp_path: Path) -> No
             operation()
 
 
+def test_research_store_refuses_policyless_plan_persistence(tmp_path: Path) -> None:
+    root = build_vault(tmp_path)
+    store = ResearchStore(root)
+    plan = make_plan(
+        {
+            "schema": "megamind/research-plan/v1",
+            "wiki": "ProductWiki",
+            "gap_id": "gap-1",
+            "question": "Synthetic question",
+            "policy_digest": "",
+            "card_digest": "",
+            "access_digest": "",
+        }
+    )
+    assert isinstance(plan, dict)
+    with pytest.raises(ResearchError, match="explicit wiki research policy"):
+        store.put("plans", plan)
+    assert not (root / ".megamind" / "research").exists()
+
+
 def test_research_drift_requires_replan(tmp_path: Path) -> None:
     plan = _plan()
     store = ResearchStore(tmp_path)
