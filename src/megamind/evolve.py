@@ -31,7 +31,6 @@ from .fsops import (
 )
 from .links import encode_link_target, extract_links, link_target_path
 from .models import Document, parse_document
-from .research import ResearchError, packet_content_id
 from .registry import (
     REGISTRY_PATH,
     ROUTER_FILENAME,
@@ -41,6 +40,7 @@ from .registry import (
     generate_router,
     serialize_registry,
 )
+from .research import ResearchError, packet_content_id
 
 PROPOSAL_MARKER = "<!-- megamind:proposal:{id} -->"
 EVOLVE_TRANSACTION_SCHEMA = "megamind/evolve-rollback/v1"

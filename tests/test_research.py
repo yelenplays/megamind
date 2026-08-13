@@ -17,6 +17,7 @@ from megamind.evidence import (
     store_contradiction,
     unresolved_contradictions,
 )
+from megamind.fsops import content_hash
 from megamind.registry import ResearchPolicy, load_registry, save_registry
 from megamind.research import (
     MappingResolver,
@@ -27,7 +28,6 @@ from megamind.research import (
     make_packet,
     make_plan,
 )
-from megamind.fsops import content_hash
 
 
 def _plan() -> object:
@@ -138,9 +138,7 @@ def test_research_journal_refuses_a_self_hashed_invalid_transition(tmp_path: Pat
         "event_id": content_hash(json.dumps(payload, sort_keys=True, separators=(",", ":"))),
         "updated": "2026-01-01",
     }
-    journal.write_text(
-        json.dumps(first) + "\n" + json.dumps(forged) + "\n", encoding="utf-8"
-    )
+    journal.write_text(json.dumps(first) + "\n" + json.dumps(forged) + "\n", encoding="utf-8")
 
     with pytest.raises(ResearchError, match="invalid research job journal transition"):
         store.jobs()
@@ -344,7 +342,9 @@ def test_journal_refuses_a_resumed_attempt_with_prior_artifacts(tmp_path: Path) 
         "updated": "2026-01-01",
     }
     journal = tmp_path / ".megamind" / "research" / "jobs.jsonl"
-    journal.write_text(journal.read_text(encoding="utf-8") + json.dumps(event) + "\n", encoding="utf-8")
+    journal.write_text(
+        journal.read_text(encoding="utf-8") + json.dumps(event) + "\n", encoding="utf-8"
+    )
 
     with pytest.raises(ResearchError, match="invalid research job journal transition"):
         store.jobs()
@@ -966,7 +966,13 @@ def test_unresolved_contradictions_refuses_a_forged_resolution(
         MappingResolver({"claim": {claim_id}}),
     )
     store_contradiction(root, contradiction)
-    path = root / ".megamind" / "research" / "contradictions" / f"{contradiction.contradiction_id}.json"
+    path = (
+        root
+        / ".megamind"
+        / "research"
+        / "contradictions"
+        / f"{contradiction.contradiction_id}.json"
+    )
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["resolution"] = "scope_disjoint"
     path.write_text(json.dumps(raw) + "\n", encoding="utf-8")

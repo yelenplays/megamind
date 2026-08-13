@@ -509,14 +509,13 @@ def unresolved_contradictions(root: Path, identifiers: Iterable[str]) -> list[st
             raise EvidenceAcceptanceError("frozen contradiction artifact is missing")
         raw = _read_document(path, CONTRADICTION_SCHEMA)
         contradiction = make_contradiction(
-            {
-                key: value
-                for key, value in raw.items()
-                if key not in {"schema", "contradiction_id"}
-            },
+            {key: value for key, value in raw.items() if key not in {"schema", "contradiction_id"}},
             MappingResolver({"claim": frozen_ids(root, "claim")}),
         )
-        if raw.get("contradiction_id") != identifier or contradiction.contradiction_id != identifier:
+        if (
+            raw.get("contradiction_id") != identifier
+            or contradiction.contradiction_id != identifier
+        ):
             raise EvidenceAcceptanceError("frozen contradiction does not match its content")
         if contradiction.resolution == "unresolved":
             unresolved.append(identifier)

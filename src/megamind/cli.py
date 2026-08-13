@@ -1552,7 +1552,9 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
             {claim.claim_id for claim in claims}
             | {contradiction.contradiction_id for contradiction in contradictions}
         )
-        contradiction_ids = sorted(contradiction.contradiction_id for contradiction in contradictions)
+        contradiction_ids = sorted(
+            contradiction.contradiction_id for contradiction in contradictions
+        )
         if job.state in {"accepting", "extracting"} and (
             list(job.artifact_ids) != artifact_ids
             or list(job.contradiction_ids) != contradiction_ids

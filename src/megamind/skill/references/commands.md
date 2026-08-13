@@ -287,6 +287,27 @@ any part of the nomination identity - wiki, topic, or the accepted sources -
 refuses. Megamind performs no network or external action and never writes
 `raw/`.
 
+## megamind-axi research ACTION [--input JSON] [--job-id ID]
+
+Maintains Slice 1's local, deterministic research state. `plan` creates a
+content-addressed plan and durable job; `permission-check` binds the plan to
+the current card-derived research policy and access facts. A host receipt can
+withhold a card-authorized cycle, never authorize a denied one. `record-discovery`,
+`record-artifact`, and `record-claims` validate and freeze bounded discovery,
+evidence, and claim facts. `reconcile` advances a job to `packet-ready` or a
+terminal contradiction state, and `packet` compiles its frozen records into a
+normal Markdown proposal for the existing explicit `evolve` approval path.
+
+`status` lists durable jobs (optionally narrowed by `--job-id`); `cancel`
+retains all artifacts and `resume` starts a fresh attempt that must pass
+re-admission. `outcome` freezes an immutable terminal outcome. Commands that
+submit facts use `--input` with a JSON file; `cancel`, `resume`, and
+`reconcile` require `--job-id`. Exact replay is a no-op, while conflicting
+replay, terminal mutation, or policy/card/access drift is refused. Megamind
+does not fetch, schedule, or perform host orchestration. The record formats and
+transition details are defined in the deterministic research-state section of
+the repository's `docs/schemas.md`.
+
 ## megamind-axi provision-wiki NAME PATH [criteria flags]
 
 Creates a local provisional wiki only when every domain, demand, scope, owner,

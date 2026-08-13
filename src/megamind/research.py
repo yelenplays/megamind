@@ -17,7 +17,7 @@ the receipt.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
@@ -909,7 +909,7 @@ def _validated_event(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
-def _validate_event_history(events: list[Mapping[str, Any]]) -> None:
+def _validate_event_history(events: Sequence[Mapping[str, Any]]) -> None:
     latest: dict[str, Mapping[str, Any]] = {}
     for event in events:
         job_id = str(event["job_id"])
@@ -1098,21 +1098,25 @@ def packet_content_id(packet: Mapping[str, Any]) -> str:
         raise ResearchError("packet answerability is invalid")
     if answerability.get("verdict") not in {"supported", "insufficient", "contradicted"}:
         raise ResearchError("packet answerability is invalid")
-    if any(
-        isinstance(answerability.get(name), bool)
-        or not isinstance(answerability.get(name), int)
-        or answerability[name] < 0
-        for name in (
-            "claims",
-            "unknown_claims",
-            "below_floor_claims",
-            "unresolved_contradictions",
+    if (
+        any(
+            isinstance(answerability.get(name), bool)
+            or not isinstance(answerability.get(name), int)
+            or answerability[name] < 0
+            for name in (
+                "claims",
+                "unknown_claims",
+                "below_floor_claims",
+                "unresolved_contradictions",
+            )
         )
-    ) or isinstance(answerability.get("reliance_floor"), bool) or not isinstance(
-        answerability.get("reliance_floor"), (int, float)
+        or isinstance(answerability.get("reliance_floor"), bool)
+        or not isinstance(answerability.get("reliance_floor"), (int, float))
     ):
         raise ResearchError("packet answerability is invalid")
-    return _hash_body({key: value for key, value in packet.items() if key not in {"schema", "packet_id"}})
+    return _hash_body(
+        {key: value for key, value in packet.items() if key not in {"schema", "packet_id"}}
+    )
 
 
 def make_packet(
