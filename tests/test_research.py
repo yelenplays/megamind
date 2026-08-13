@@ -79,6 +79,17 @@ def test_research_transition_replay_is_noop_and_divergence_refused(tmp_path: Pat
         )
 
 
+def test_research_store_rejects_unknown_kinds_consistently(tmp_path: Path) -> None:
+    store = ResearchStore(tmp_path)
+    for operation in (
+        lambda: store.put("typo", {}),
+        lambda: store.get("typo", "record"),
+        lambda: store.scan("typo"),
+    ):
+        with pytest.raises(ResearchError, match="unknown research store kind"):
+            operation()
+
+
 def test_research_drift_requires_replan(tmp_path: Path) -> None:
     plan = _plan()
     store = ResearchStore(tmp_path)

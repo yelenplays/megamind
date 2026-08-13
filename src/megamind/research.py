@@ -8,7 +8,7 @@ or turn a packet into an answer.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -48,18 +48,6 @@ JOB_SCHEMA = "megamind/research-job/v1"
 PACKET_SCHEMA = "megamind/research-packet/v1"
 OUTCOME_SCHEMA = "megamind/research-outcome/v1"
 CANDIDATE_SCHEMA = "megamind/source-candidate/v1"
-
-# A job is lifecycle state and a candidate is a discovery observation: their
-# ids cover only the identity they are keyed by, so the remaining fields are
-# the very things a later stage advances.  Plans, packets, and outcomes hash
-# their whole body and therefore stay byte-immutable.
-MUTABLE_FIELDS: dict[str, frozenset[str]] = {
-    "plans": frozenset(),
-    "jobs": frozenset({"state", "attempt", "events"}),
-    "packets": frozenset(),
-    "outcomes": frozenset(),
-    "candidates": frozenset({"found_by", "rank", "status", "reason"}),
-}
 
 # One stored record per entry: its identifier, the validated record when it
 # reads, and the problem that stopped it when it does not.
@@ -541,45 +529,58 @@ def validate_outcome(raw: object) -> dict[str, Any]:
     return {"schema": OUTCOME_SCHEMA, "outcome_id": expected, **body}
 
 
+@dataclass(frozen=True)
+class _StoreSpec:
+    identifier: str
+    suffix: str
+    mutable: frozenset[str]
+    validator: Callable[[object], dict[str, Any]]
+
+
+STORE_SPECS: Mapping[str, _StoreSpec] = MappingProxyType(
+    {
+        "plans": _StoreSpec("plan_id", ".json", frozenset(), _make_receipt_plan),
+        "jobs": _StoreSpec("job_id", ".jsonl", frozenset({"state", "attempt", "events"}), validate_job),
+        "packets": _StoreSpec("packet_id", ".json", frozenset(), validate_packet),
+        "outcomes": _StoreSpec("outcome_id", ".json", frozenset(), validate_outcome),
+        "candidates": _StoreSpec(
+            "candidate_id",
+            ".json",
+            frozenset({"found_by", "rank", "status", "reason"}),
+            validate_candidate,
+        ),
+    }
+)
+
+
 class ResearchStore:
     """Small content-addressed local store. No worker or network behavior."""
 
     def __init__(self, root: Path):
         self.root = root
 
+    def _spec(self, kind: str) -> _StoreSpec:
+        try:
+            return STORE_SPECS[kind]
+        except KeyError as error:
+            raise ResearchError("unknown research store kind") from error
+
     def _path(self, kind: str, identifier: str) -> Path:
-        if kind not in {"plans", "jobs", "packets", "outcomes", "candidates"}:
-            raise ResearchError("unknown research store kind")
-        suffix = ".jsonl" if kind == "jobs" else ".json"
-        return Path(MEGAMIND_DIR) / "research" / kind / f"{identifier}{suffix}"
+        return Path(MEGAMIND_DIR) / "research" / kind / f"{identifier}{self._spec(kind).suffix}"
 
     def put(self, kind: str, data: Mapping[str, Any]) -> Path:
-        validators = {
-            "plans": _make_receipt_plan,
-            "jobs": validate_job,
-            "packets": validate_packet,
-            "outcomes": validate_outcome,
-            "candidates": validate_candidate,
-        }
-        canonical = validators[kind](data)
-        id_key = {
-            "plans": "plan_id",
-            "jobs": "job_id",
-            "packets": "packet_id",
-            "outcomes": "outcome_id",
-            "candidates": "candidate_id",
-        }[kind]
-        identifier = str(canonical[id_key])
+        spec = self._spec(kind)
+        canonical = spec.validator(data)
+        identifier = str(canonical[spec.identifier])
         rel = self._path(kind, identifier)
         path = resolve_contained(self.root, rel)
         text = json.dumps(canonical, sort_keys=True, indent=2) + "\n"
         if path.is_file():
-            mutable = MUTABLE_FIELDS[kind]
             try:
                 existing = json.loads(path.read_text(encoding="utf-8"))
             except json.JSONDecodeError as error:
                 raise ResearchError("stored research record is not valid JSON") from error
-            if identity_bytes(existing, mutable) != identity_bytes(canonical, mutable):
+            if identity_bytes(existing, spec.mutable) != identity_bytes(canonical, spec.mutable):
                 raise ResearchError("content-addressed research record has different bytes")
             backup_existing(self.root, rel)
         atomic_write(self.root, rel, text)
@@ -587,6 +588,7 @@ class ResearchStore:
         return path
 
     def get(self, kind: str, identifier: str) -> dict[str, Any]:
+        spec = self._spec(kind)
         path = resolve_contained(self.root, self._path(kind, identifier))
         if not path.is_file():
             raise ResearchError("research record not found")
@@ -594,23 +596,19 @@ class ResearchStore:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as error:
             raise ResearchError("research record is not valid JSON") from error
-        return {
-            "plans": _make_receipt_plan,
-            "jobs": validate_job,
-            "packets": validate_packet,
-            "outcomes": validate_outcome,
-            "candidates": validate_candidate,
-        }[kind](raw)
+        return spec.validator(raw)
 
     def _identifiers(self, kind: str) -> list[str]:
+        spec = self._spec(kind)
         directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "research" / kind)
         if not directory.is_dir():
             return []
-        pattern = "*.jsonl" if kind == "jobs" else "*.json"
+        pattern = f"*{spec.suffix}"
         return [path.stem for path in sorted(directory.glob(pattern))]
 
     def scan(self, kind: str) -> ScanResult:
         """List every record, reporting rather than raising on a bad one."""
+        self._spec(kind)
         results: ScanResult = []
         for identifier in self._identifiers(kind):
             try:
