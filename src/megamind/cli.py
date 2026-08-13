@@ -832,6 +832,9 @@ def cmd_review(root: Path, registry: Registry, today: date | None, full: bool) -
         "superseded_still_linked": list(report.superseded_still_linked),
         "dead_links": list(report.dead_links),
         "promotion_candidates": list(report.promotion_candidates),
+        "research_packets": list(report.research_packets),
+        "pending_source_rights": list(report.pending_source_rights),
+        "contradictions": list(report.contradictions),
     }
     for key, items in sections.items():
         if items:
