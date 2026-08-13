@@ -46,7 +46,7 @@ model are non-negotiable at every stage.
   quiet no-match
 - Claim and answer confidence rubrics (`megamind.confidence`, exposed as
   `megamind-axi assess claim|answer`): source quality by authority order,
-  corroboration by independent origin only, freshness and lifecycle caps,
+  corroboration by derived origin identity only, freshness and lifecycle caps,
   contradictions frozen below the floor, `unknown` first-class and never
   fabricated; pinned by calibration fixtures
 - Optional local semantic reranking (`--semantic`): a char-ngram backend

@@ -278,7 +278,8 @@ worker.
 `megamind/research-result/v1` remains readable as a restrictive legacy
 nomination. Its caller-supplied `eligible` flag is not evidence and cannot
 create an ingest proposal, infer quality or rights, or authorize a future
-apply. A v2 result is the only result that can propose a source. Each v2
+apply. A v2 result is the only result that can propose a source. Either
+version bounds one result to 20 sources and refuses a longer list. Each v2
 source carries an `acceptance` block with required host-supplied typed facts:
 
 ```json
