@@ -1330,6 +1330,27 @@ def _research_policy(registry: Registry, wiki: str) -> ResearchPolicy | None:
     return entry.research_policy
 
 
+def _required_research_policy(registry: Registry, wiki: str) -> ResearchPolicy:
+    policy = _research_policy(registry, wiki)
+    if policy is None:
+        raise ResearchError("research state requires an explicit wiki research policy")
+    return policy
+
+
+def _admitting_research_policy(registry: Registry, wiki: str) -> ResearchPolicy:
+    policy = _required_research_policy(registry, wiki)
+    if not policy.permitted:
+        raise ResearchError("wiki research policy denies stateful research")
+    return policy
+
+
+def _stored_plan_policy(
+    store: ResearchStore, registry: Registry, plan_id: str
+) -> ResearchPolicy:
+    plan = store.get("plans", plan_id)
+    return _admitting_research_policy(registry, str(plan["wiki"]))
+
+
 def _valid_records(root: Path, kind: str) -> list[dict[str, Any]]:
     """Every readable record of one kind; unreadable ones are doctor's business."""
     return [record for _, record, _ in EvidenceStore(root).scan(kind) if record is not None]
@@ -1458,7 +1479,7 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             raise ResearchError("permission-check plan wiki is required")
         if wiki and wiki != plan_wiki:
             raise UsageError("--wiki must match the permission-check plan wiki")
-        policy = _research_policy(registry, plan_wiki)
+        policy = _required_research_policy(registry, plan_wiki)
         candidate = dict(raw)
         candidate.pop("policy_authorized", None)
         candidate.pop("schema", None)
@@ -1472,13 +1493,13 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         if not isinstance(plan, dict):
             raise ResearchError("legacy permission-check plan is invalid")
         job_id = content_hash(json.dumps({"plan_id": plan["plan_id"], "gap_id": plan["gap_id"]}, sort_keys=True, separators=(",", ":")))
-        authorized = bool(policy is not None and raw.get("policy_authorized") is True)
+        authorized = bool(policy.permitted and raw.get("policy_authorized") is True)
         attempt_id = content_hash(json.dumps({"job_id": job_id, "plan_id": plan["plan_id"], "attempt": 1}, sort_keys=True, separators=(",", ":")))
         job = validate_job({"schema": JOB_SCHEMA, "job_id": job_id, "plan_id": plan["plan_id"], "gap_id": plan["gap_id"], "state": "planned" if authorized else "policy-denied", "attempt": 1, "events": []})
         store.put("plans", plan)
         store.put("jobs", job)
         legacy_job = {**job, "attempt_id": attempt_id}
-        return _research_doc(JOB_SCHEMA, {"status": job["state"], "job": legacy_job, "authority": {"authorized": policy is not None}}, "Permission is derived from the wiki policy"), 0
+        return _research_doc(JOB_SCHEMA, {"status": job["state"], "job": legacy_job, "authority": {"authorized": policy.permitted}}, "Permission is derived from the wiki policy"), 0
     if action == "outcome":
         if not isinstance(raw, Mapping):
             raise ResearchError("outcome input must be an object")
@@ -1504,11 +1525,18 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
                 "today": today,
             }
         )
+        _stored_plan_policy(store, registry, str(outcome["plan_id"]))
         path = store.put("outcomes", outcome)
         legacy_outcome = {**outcome, "attempt_id": raw.get("attempt_id", ""), "state": legacy_state, "reason": raw.get("reason", "")}
         return _research_doc(OUTCOME_SCHEMA, {"status": legacy_state, "outcome": legacy_outcome, "path": path.relative_to(root.resolve()).as_posix()}, "Outcomes are immutable local receipts"), 0
     if action == "plan":
         plan = make_plan(raw)
+        if not isinstance(plan, Mapping):
+            raise ResearchError("research plan must be a current receipt")
+        plan_wiki = str(plan["wiki"])
+        if wiki and wiki != plan_wiki:
+            raise UsageError("--wiki must match the research plan wiki")
+        _admitting_research_policy(registry, plan_wiki)
         path = store.put("plans", plan)
         job_id = content_hash(
             json.dumps(
@@ -1560,6 +1588,7 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             job = store.get("jobs", job_id)
             if job["state"] != "planned":
                 raise ResearchError("legacy discovery requires a planned job")
+            policy = _stored_plan_policy(store, registry, str(job["plan_id"]))
             values = [
                 {
                     "candidate_id": content_hash(json.dumps({"origin": item, "query_hash": ""}, sort_keys=True, separators=(",", ":"))),
@@ -1572,6 +1601,8 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
                 }
                 for index, item in enumerate(values)
             ]
+        else:
+            policy = _admitting_research_policy(registry, wiki)
         candidates = [
             validate_candidate({"schema": CANDIDATE_SCHEMA, **dict(item)})
             for item in values
@@ -1828,6 +1859,7 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             claims=_known_records(root, "claims"),
             contradictions=_known_records(root, "contradictions"),
         )
+        _stored_plan_policy(store, registry, str(packet["plan_id"]))
         path = store.put("packets", packet)
         return _research_doc(
             PACKET_SCHEMA,
@@ -1844,6 +1876,7 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         plan = store.get("plans", str(job["plan_id"]))
         if str(plan["gap_id"]) != str(job["gap_id"]):
             raise ResearchError("stored research job and plan have different gap ids")
+        _admitting_research_policy(registry, str(plan["wiki"]))
         job["state"] = "cancelled"
         job["events"] = [*job["events"], {"event": "cancelled"}]
         return _research_doc(

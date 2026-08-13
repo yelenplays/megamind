@@ -487,6 +487,55 @@ def _research_vault(tmp_path: Path, *, enabled: bool = True) -> Path:
     return root
 
 
+def test_policy_absence_refuses_stateful_research_receipts_without_writes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = build_vault(tmp_path)
+    plan = _write(root, "plan.json", {**PLAN_INPUT, "policy_authorized": True})
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "permission-check",
+        "--input",
+        plan,
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 1
+    assert doc["code"] == "research_invalid"
+
+    candidate = {
+        "schema": "megamind/source-candidate/v1",
+        "origin": "https://synthetic.test/source",
+        "found_by": "host",
+        "query_hash": "",
+        "rank": 0,
+        "status": "discovered",
+        "reason": "",
+    }
+    candidate["candidate_id"] = content_hash(
+        json.dumps(
+            {"origin": candidate["origin"], "query_hash": candidate["query_hash"]},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "record-discovery",
+        "--wiki",
+        "ProductWiki",
+        "--input",
+        _write(root, "candidate.json", {"candidates": [candidate]}),
+    )
+    assert code == 1
+    assert doc["code"] == "research_invalid"
+    assert not (root / ".megamind" / "research").exists()
+
+
 def _run(capsys: pytest.CaptureFixture[str], root: Path, *argv: str) -> tuple[int, dict[str, Any]]:
     code = main(["--format", "json", "--root", str(root), *argv])
     return code, json.loads(capsys.readouterr().out)
