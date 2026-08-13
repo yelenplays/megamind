@@ -8,7 +8,8 @@ or turn a packet into an answer.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,9 @@ from .fsops import (
     identity_bytes,
     resolve_contained,
 )
+from .confidence import RELIANCE_FLOOR, Confidence, answer_confidence
+
+LEGACY_JOBS_PATH = Path(MEGAMIND_DIR) / "research" / "jobs.jsonl"
 
 PLAN_SCHEMA = "megamind/research-plan/v1"
 JOB_SCHEMA = "megamind/research-job/v1"
@@ -45,6 +49,51 @@ ScanResult = list[tuple[str, dict[str, Any] | None, str]]
 
 class ResearchError(ValueError):
     code = "research_invalid"
+
+
+class ReplayConflict(ResearchError):
+    code = "research_replay_conflict"
+
+
+class ResearchDrift(ResearchError):
+    code = "research_replan_required"
+
+
+class MappingResolver:
+    def __init__(self, values: Mapping[str, set[str]]):
+        self.values = values
+
+    def resolve(self, kind: str, identifier: str) -> bool:
+        return identifier in self.values.get(kind, set())
+
+
+@dataclass(frozen=True)
+class LegacyPlan:
+    plan_id: str
+    job_id: str
+    wiki: str
+    gap_id: str
+    question: str
+    policy_digest: str
+    card_digest: str
+    access_digest: str
+    ceilings: dict[str, int]
+
+
+@dataclass(frozen=True)
+class LegacyJob:
+    job_id: str
+    attempt_id: str
+    state: str
+    plan_id: str
+    gap_id: str
+    policy_digest: str
+    card_digest: str
+    access_digest: str
+    event_id: str
+    reason: str = ""
+    artifact_ids: tuple[str, ...] = ()
+    contradiction_ids: tuple[str, ...] = ()
 
 
 def _map(label: str, value: object) -> dict[str, Any]:
@@ -166,10 +215,43 @@ def validate_plan(raw: object) -> dict[str, Any]:
     return {"schema": PLAN_SCHEMA, "plan_id": expected, **body}
 
 
-def make_plan(raw: object) -> dict[str, Any]:
+def _make_receipt_plan(raw: object) -> dict[str, Any]:
     data = _map("research plan", raw)
     data.setdefault("schema", PLAN_SCHEMA)
     return validate_plan(data)
+
+
+def _legacy_plan(raw: Mapping[str, Any]) -> LegacyPlan:
+    required = ("wiki", "gap_id", "question", "policy_digest", "card_digest", "access_digest")
+    if any(not isinstance(raw.get(key), str) or not raw[key] for key in required):
+        raise ResearchError("wiki must be a non-empty string")
+    ceilings = raw.get("ceilings")
+    if not isinstance(ceilings, Mapping) or not ceilings or any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in ceilings.values()
+    ):
+        raise ResearchError("ceilings must contain non-negative integer limits")
+    body = {
+        "wiki": raw["wiki"],
+        "gap_id": raw["gap_id"],
+        "question": raw["question"],
+        "policy_digest": raw["policy_digest"],
+        "card_digest": raw["card_digest"],
+        "access_digest": raw["access_digest"],
+        "ceilings": dict(sorted((str(key), value) for key, value in ceilings.items())),
+    }
+    job_id = content_hash(json.dumps({key: body[key] for key in ("wiki", "gap_id", "question")}, sort_keys=True, separators=(",", ":")))
+    plan_id = content_hash(json.dumps({"job_id": job_id, **body}, sort_keys=True, separators=(",", ":")))
+    if raw.get("plan_id") not in (None, plan_id):
+        raise ReplayConflict("plan_id does not match the plan body")
+    return LegacyPlan(plan_id, job_id, str(body["wiki"]), str(body["gap_id"]), str(body["question"]), str(body["policy_digest"]), str(body["card_digest"]), str(body["access_digest"]), dict(body["ceilings"]))
+
+
+def make_plan(raw: object, *, today: str | None = None) -> dict[str, Any] | LegacyPlan:
+    data = _map("research plan", raw)
+    if "ceilings" in data:
+        return _legacy_plan(data)
+    return _make_receipt_plan(data)
 
 
 def validate_candidate(raw: object) -> dict[str, Any]:
@@ -355,6 +437,58 @@ def packet_content_id(packet: Mapping[str, Any]) -> str:
     return str(validate_packet(packet)["packet_id"])
 
 
+def make_packet(
+    packet: Mapping[str, Any], resolver: Any | None = None
+) -> dict[str, Any]:
+    if "claims" not in packet and "claim_ids" in packet:
+        return validate_packet(packet)
+    claims = packet.get("claims", [])
+    contradictions = packet.get("contradictions", [])
+    if not isinstance(claims, list) or not all(isinstance(item, str) for item in claims):
+        raise ResearchError("packet claims must be opaque references")
+    if not isinstance(contradictions, list) or not all(isinstance(item, str) for item in contradictions):
+        raise ResearchError("packet contradictions must be opaque references")
+    if (claims or contradictions) and resolver is None:
+        raise ResearchError("packet claim and contradiction references require a resolver")
+    if resolver is not None:
+        if any(not resolver.resolve("claim", item) for item in claims):
+            raise ResearchError("packet contains an unresolved claim reference")
+        if any(not resolver.resolve("contradiction", item) for item in contradictions):
+            raise ResearchError("packet contains an unresolved contradiction reference")
+    scores = [resolver.claim_confidence(item) for item in claims] if resolver is not None else []
+    confidence = answer_confidence(
+        [Confidence(float(value)) if isinstance(value, (int, float)) and not isinstance(value, bool) else Confidence(None) for value in scores]
+    ).render()
+    unresolved = [
+        item for item in contradictions if resolver is not None and resolver.contradiction_is_unresolved(item)
+    ]
+    below = sum(
+        1 for value in scores if isinstance(value, (int, float)) and not isinstance(value, bool) and value < RELIANCE_FLOOR
+    )
+    answerability = {
+        "verdict": "contradicted" if unresolved else "supported" if scores and not below and confidence != "unknown" else "insufficient",
+        "claims": len(scores),
+        "unknown_claims": sum(1 for value in scores if value == "unknown"),
+        "below_floor_claims": below,
+        "unresolved_contradictions": len(unresolved),
+        "reliance_floor": RELIANCE_FLOOR,
+    }
+    body = {
+        "job_id": _str("packet job_id", packet.get("job_id")),
+        "attempt_id": _str("packet attempt_id", packet.get("attempt_id")),
+        "claims": claims,
+        "contradictions": contradictions,
+        "interpretation": _str("packet interpretation", packet.get("interpretation", ""), required=False),
+        "confidence": confidence,
+        "answerability": answerability,
+        "provenance": [],
+    }
+    packet_id = content_hash(json.dumps(body, sort_keys=True, separators=(",", ":")))
+    if packet.get("packet_id") not in (None, packet_id):
+        raise ReplayConflict("packet_id does not match content")
+    return {"schema": PACKET_SCHEMA, "packet_id": packet_id, **body}
+
+
 def validate_outcome(raw: object) -> dict[str, Any]:
     data = _map("research outcome", raw)
     allowed = {
@@ -402,7 +536,7 @@ class ResearchStore:
 
     def put(self, kind: str, data: Mapping[str, Any]) -> Path:
         validators = {
-            "plans": make_plan,
+            "plans": _make_receipt_plan,
             "jobs": validate_job,
             "packets": validate_packet,
             "outcomes": validate_outcome,
@@ -440,7 +574,7 @@ class ResearchStore:
         except json.JSONDecodeError as error:
             raise ResearchError("research record is not valid JSON") from error
         return {
-            "plans": make_plan,
+            "plans": _make_receipt_plan,
             "jobs": validate_job,
             "packets": validate_packet,
             "outcomes": validate_outcome,
@@ -463,3 +597,136 @@ class ResearchStore:
             except (ResearchError, OSError, UnicodeDecodeError) as error:
                 results.append((identifier, None, str(error)))
         return results
+
+    def _legacy_events(self) -> list[dict[str, Any]]:
+        path = resolve_contained(self.root, LEGACY_JOBS_PATH)
+        if not path.is_file():
+            return []
+        events: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ResearchError("invalid research job journal entry") from error
+            if not isinstance(value, dict):
+                raise ResearchError("invalid research job journal entry")
+            fields = {
+                "schema", "job_id", "attempt_id", "state", "plan_id", "gap_id",
+                "policy_digest", "card_digest", "access_digest", "event_id", "reason",
+                "artifact_ids", "contradiction_ids", "updated",
+            }
+            if set(value) != fields or value.get("schema") != JOB_SCHEMA:
+                raise ResearchError("invalid research job journal entry")
+            payload = {key: value[key] for key in fields - {"schema", "event_id", "updated"}}
+            if value.get("event_id") != content_hash(json.dumps(payload, sort_keys=True, separators=(",", ":"))):
+                raise ResearchError("invalid research job journal entry")
+            events.append(value)
+        return events
+
+    def jobs(self) -> list[LegacyJob]:
+        latest: dict[str, LegacyJob] = {}
+        for event in self._legacy_events():
+            latest[str(event["job_id"])] = LegacyJob(
+                str(event["job_id"]), str(event["attempt_id"]), str(event["state"]),
+                str(event["plan_id"]), str(event["gap_id"]), str(event["policy_digest"]),
+                str(event["card_digest"]), str(event["access_digest"]), str(event["event_id"]),
+                str(event["reason"]), tuple(event["artifact_ids"]), tuple(event["contradiction_ids"]),
+            )
+        return [latest[key] for key in sorted(latest)]
+
+    def _legacy_job(self, job_id: str) -> LegacyJob | None:
+        return next((job for job in self.jobs() if job.job_id == job_id), None)
+
+    def start(self, plan: LegacyPlan, *, today: str | None = None) -> LegacyJob:
+        current = self._legacy_job(plan.job_id)
+        if current is not None:
+            self.assert_no_drift(
+                current,
+                policy_digest=plan.policy_digest,
+                card_digest=plan.card_digest,
+                access_digest=plan.access_digest,
+            )
+            if current.plan_id != plan.plan_id:
+                raise ResearchDrift("plan or bound policy/card/access digest drift requires replan")
+            return current
+        attempt_id = content_hash(json.dumps({"job_id": plan.job_id, "plan_id": plan.plan_id, "attempt": 1}, sort_keys=True, separators=(",", ":")))
+        return self.transition(
+            plan.job_id, "gap-open", plan_id=plan.plan_id, gap_id=plan.gap_id,
+            attempt_id=attempt_id, policy_digest=plan.policy_digest, card_digest=plan.card_digest,
+            access_digest=plan.access_digest, today=today,
+        )
+
+    def transition(
+        self,
+        job_id: str,
+        state: str,
+        *,
+        plan_id: str,
+        gap_id: str,
+        attempt_id: str,
+        reason: str = "",
+        artifact_ids: list[str] | None = None,
+        contradiction_ids: list[str] | None = None,
+        policy_digest: str = "",
+        card_digest: str = "",
+        access_digest: str = "",
+        today: str | None = None,
+        expected_state: str | None = None,
+    ) -> LegacyJob:
+        edges = {
+            "gap-open": {"permission-check", "cancelled"},
+            "permission-check": {"planned", "cancelled", "policy-denied", "approval-required"},
+            "planned": {"discovering", "cancelled"},
+            "discovering": {"retrieving", "cancelled", "budget-exhausted"},
+            "retrieving": {"accepting", "cancelled", "budget-exhausted"},
+            "accepting": {"extracting", "packet-ready", "cancelled"},
+            "extracting": {"reconciling", "cancelled"},
+            "reconciling": {"packet-ready", "cancelled", "unresolved-contradiction"},
+        }
+        current = self._legacy_job(job_id)
+        if current is not None:
+            if expected_state and current.state != expected_state:
+                raise ResearchError(f"expected {expected_state}, found {current.state}")
+            if current.plan_id != plan_id or current.gap_id != gap_id or current.attempt_id != attempt_id:
+                raise ReplayConflict("attempt identity does not match current job")
+            policy_digest = policy_digest or current.policy_digest
+            card_digest = card_digest or current.card_digest
+            access_digest = access_digest or current.access_digest
+            effective_artifacts = sorted(set(artifact_ids if artifact_ids is not None else current.artifact_ids))
+            effective_contradictions = sorted(set(contradiction_ids if contradiction_ids is not None else current.contradiction_ids))
+            if current.state == "accepting" and (
+                effective_artifacts != sorted(current.artifact_ids)
+                or effective_contradictions != sorted(current.contradiction_ids)
+            ):
+                raise ReplayConflict("accepted artifact set is immutable")
+            if state != current.state and state not in edges.get(current.state, set()):
+                raise ResearchError(f"cannot transition {current.state} to {state}")
+        else:
+            effective_artifacts = sorted(set(artifact_ids or []))
+            effective_contradictions = sorted(set(contradiction_ids or []))
+        payload = {
+            "job_id": job_id, "attempt_id": attempt_id, "state": state, "plan_id": plan_id,
+            "gap_id": gap_id, "policy_digest": policy_digest, "card_digest": card_digest,
+            "access_digest": access_digest, "reason": reason, "artifact_ids": effective_artifacts,
+            "contradiction_ids": effective_contradictions,
+        }
+        event_id = content_hash(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        if current is not None and current.event_id == event_id:
+            return current
+        if current is not None and current.state == state:
+            raise ReplayConflict("divergent replay for the current state")
+        event = {"schema": JOB_SCHEMA, **payload, "event_id": event_id, "updated": today or ""}
+        events = self._legacy_events()
+        atomic_write(
+            self.root, LEGACY_JOBS_PATH,
+            "".join(json.dumps(item, sort_keys=True) + "\n" for item in [*events, event]),
+        )
+        return LegacyJob(job_id, attempt_id, state, plan_id, gap_id, policy_digest, card_digest, access_digest, event_id, reason, tuple(effective_artifacts), tuple(effective_contradictions))
+
+    def assert_no_drift(
+        self, job: LegacyJob, *, policy_digest: str, card_digest: str, access_digest: str
+    ) -> None:
+        if (job.policy_digest, job.card_digest, job.access_digest) != (
+            policy_digest, card_digest, access_digest,
+        ):
+            raise ResearchDrift("policy, card, access, or plan drift requires replan")
