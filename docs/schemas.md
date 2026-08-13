@@ -648,6 +648,24 @@ superseded_by: path.md    # required when status is superseded
 ---
 ```
 
+## Deterministic research state (`.megamind/research/`)
+
+Slice 1 research uses strict JSON documents: `megamind/research-plan/v1` is
+content-addressed and binds the gap, question, capability flags, hard budget
+ceilings, policy/card/access digests, and change envelope. The append-only
+`research/jobs.jsonl` journal stores `megamind/research-job/v1` transition
+facts. `research/packets/<id>.json` and `research/outcomes/<id>.json` are
+immutable `megamind/research-packet/v1` and `megamind/research-outcome/v1`
+artifacts. IDs are opaque references; packet validation uses narrow resolver
+interfaces and never treats a packet as admitted answer evidence. Cancellation
+retains artifacts, replaying the same event is a no-op, and divergent replay,
+terminal mutation, or policy/card/access drift is refused.
+
+`research packet --input packet.json` compiles a packet to the existing normal
+`.megamind/proposals/<id>.md` shape. `evolve` validates the packet reference
+inside its existing write-ahead transaction; apply remains one explicit
+approval per cycle. Core has no network or host orchestration.
+
 ## Proposal (`.megamind/proposals/<id>.md`)
 
 Written by `capture`: `megamind: proposal`, `id` (content hash, equals the

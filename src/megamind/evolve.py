@@ -132,6 +132,41 @@ def _load_proposal(root: Path, ref: str) -> tuple[str, Document]:
     return proposal_id, document
 
 
+def _validate_research_provenance(root: Path, document: Document) -> None:
+    """Validate packet provenance at the existing evolve boundary.
+
+    Packet and claim identifiers stay opaque.  Evolve only checks that the
+    immutable packet named by a proposal exists and is well formed; it never
+    reimplements evidence-record acceptance.
+    """
+    refs = document.frontmatter.get("provenance", [])
+    if not isinstance(refs, list):
+        return
+    packet_ids = [
+        item.split(" ", 1)[1]
+        for item in refs
+        if isinstance(item, str) and item.startswith("research-packet ")
+    ]
+    if not packet_ids:
+        return
+    for packet_id in packet_ids:
+        packet_path = resolve_contained(
+            root, Path(MEGAMIND_DIR) / "research" / "packets" / f"{packet_id}.json"
+        )
+        if not packet_path.is_file():
+            raise EvolveError(f"research packet reference is missing: {packet_id}")
+        try:
+            packet = json.loads(packet_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise EvolveError("research packet reference is unreadable") from error
+        if (
+            not isinstance(packet, dict)
+            or packet.get("schema") != "megamind/research-packet/v1"
+            or packet.get("packet_id") != packet_id
+        ):
+            raise EvolveError("research packet reference is invalid")
+
+
 def _first_heading(body: str) -> str:
     for line in body.splitlines():
         stripped = line.strip()
@@ -401,6 +436,7 @@ def plan(
 ) -> EvolutionPlan:
     """Compute a deterministic evolution plan. Read-only."""
     proposal_id, document = _load_proposal(root, proposal_ref)
+    _validate_research_provenance(root, document)
     notes: list[str] = []
     if str(document.frontmatter.get("status")) == "applied":
         return EvolutionPlan(

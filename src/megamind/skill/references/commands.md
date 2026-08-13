@@ -442,5 +442,7 @@ never makes network calls or edits shell/provider config.
 `init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
 `garden_invalid`, `gap_not_found`, `gap_transition_invalid`,
 `provision_recovery_required`, `selection_invalid`, `evaluation_invalid`,
-`rollout_invalid`), a sanitized `message`, and `help[]` with corrective
+`rollout_invalid`, `research_invalid`, `research_not_found`,
+`research_transition_invalid`, `research_replay_conflict`, `research_replan_required`,
+`research_immutable`, `evidence_acceptance_invalid`), a sanitized `message`, and `help[]` with corrective
 commands.

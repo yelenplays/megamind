@@ -8,6 +8,7 @@ reports findings with severities; any error makes the command exit non-zero.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -28,6 +29,7 @@ from .registry import (
     generate_router,
     load_registry,
 )
+from .research import ResearchError, ResearchStore
 
 PROPOSAL_STATUSES = ("proposed", "applied", "rejected")
 
@@ -278,6 +280,61 @@ def _check_access_policy(registry: Registry, findings: list[Finding]) -> None:
             findings.append(entry)
 
 
+def _check_research_state(root: Path, findings: list[Finding]) -> None:
+    """Validate research journals and immutable artifact identity without loading source bodies."""
+    try:
+        store = ResearchStore(root)
+        jobs = store.jobs()
+    except (ResearchError, OSError) as error:
+        findings.append(_error("research", ".megamind/research/jobs.jsonl", str(error)))
+        return
+    for job in jobs:
+        if not job.job_id or not job.attempt_id:
+            findings.append(
+                _error("research", ".megamind/research/jobs.jsonl", "job lacks identity")
+            )
+        if not job.policy_digest or not job.card_digest or not job.access_digest:
+            findings.append(
+                _error(
+                    "research",
+                    ".megamind/research/jobs.jsonl",
+                    f"job {job.job_id} lacks bound policy/card/access digests",
+                )
+            )
+    for directory in ("packets", "outcomes", "evidence"):
+        path = root / ".megamind" / "research" / directory
+        if not path.is_dir():
+            continue
+        for artifact in sorted(path.glob("*.json")):
+            try:
+                value = artifact.read_text(encoding="utf-8")
+                if not value.endswith("\n"):
+                    findings.append(
+                        _error(
+                            "research",
+                            artifact.relative_to(root).as_posix(),
+                            "research artifact lacks trailing newline",
+                        )
+                    )
+                parsed = json.loads(value)
+                if not isinstance(parsed, dict) or not parsed.get("schema"):
+                    findings.append(
+                        _error(
+                            "research",
+                            artifact.relative_to(root).as_posix(),
+                            "research artifact is not a typed document",
+                        )
+                    )
+            except (OSError, ValueError) as error:
+                findings.append(
+                    _error(
+                        "research",
+                        artifact.relative_to(root).as_posix(),
+                        f"research artifact is unreadable: {error}",
+                    )
+                )
+
+
 def _check_gap_journal(root: Path, findings: list[Finding]) -> None:
     """The gap journal lives at whatever root the gap commands were given, so
     both root shapes have to validate it."""
@@ -304,6 +361,7 @@ def run_doctor(root: Path) -> list[Finding]:
                     _error("canonical-root", required, "required canonical directory is missing")
                 )
         _check_gap_journal(root, findings)
+        _check_research_state(root, findings)
         if not card.name:
             findings.append(
                 _error("card", f"{MEGAMIND_DIR}/wiki-card.json", "card has no wiki name")
@@ -320,6 +378,7 @@ def run_doctor(root: Path) -> list[Finding]:
     _check_proposals(root, findings)
     _check_symlinks(root, findings)
     _check_gap_journal(root, findings)
+    _check_research_state(root, findings)
     findings.sort(key=lambda f: (f.severity != "error", f.check, f.path, f.message))
     return findings
 
