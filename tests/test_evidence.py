@@ -253,11 +253,14 @@ def test_research_policy_matchers_are_discriminated_and_restrictive(
     forged = ResearchPolicy(
         tiers=(ResearchTier(1, "authority", "primary", (matcher,)),), research="approval"
     )
-    assert tier_for_facts(
-        forged,
-        {"publisher": "Authority", "document_type": "official-guidance", "tier": 1},
-        "fact",
-    ) is None
+    assert (
+        tier_for_facts(
+            forged,
+            {"publisher": "Authority", "document_type": "official-guidance", "tier": 1},
+            "fact",
+        )
+        is None
+    )
 
 
 def test_empty_and_out_of_range_quotation_spans_are_refused() -> None:
@@ -1248,9 +1251,7 @@ def test_evidence_store_requires_a_single_append_only_correction_chain(tmp_path:
     with pytest.raises(EvidenceError, match="exactly one initial"):
         store.put("corrections", correction_notice(evidence_id, "retracted", "2026-08-14"))
 
-    second = correction_notice(
-        evidence_id, "retracted", "2026-08-14", str(first["notice_id"])
-    )
+    second = correction_notice(evidence_id, "retracted", "2026-08-14", str(first["notice_id"]))
     store.put("corrections", second)
 
 

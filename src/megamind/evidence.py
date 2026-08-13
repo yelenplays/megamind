@@ -482,9 +482,7 @@ def correction_head(
     return heads[0] if len(heads) == 1 else None
 
 
-def validate_correction_chain(
-    evidence_id: str, notices: Mapping[str, Mapping[str, Any]]
-) -> None:
+def validate_correction_chain(evidence_id: str, notices: Mapping[str, Mapping[str, Any]]) -> None:
     chain = [notice for notice in notices.values() if str(notice["evidence_id"]) == evidence_id]
     roots = [notice for notice in chain if not notice["supersedes"]]
     if len(roots) != 1:
@@ -1249,7 +1247,9 @@ class EvidenceStore:
             notice = validate_correction_notice(data)
             evidence_id = str(notice["evidence_id"])
             if evidence_id not in records["evidence"]:
-                raise EvidenceError(f"correction notice references an unknown evidence record: {evidence_id}")
+                raise EvidenceError(
+                    f"correction notice references an unknown evidence record: {evidence_id}"
+                )
             validate_correction_chain(evidence_id, records["corrections"])
             return notice
         return _validate(kind, data)

@@ -115,7 +115,9 @@ def test_review_leaves_an_interrupted_evidence_transaction_untouched(vault: Path
     registry = load_registry(vault)
     rel = Path(MEGAMIND_DIR) / "evidence" / "claims" / "interrupted.json"
     items = [{"path": rel.as_posix(), "previous": None}]
-    transaction_id = content_hash(json.dumps({"items": items}, sort_keys=True, separators=(",", ":")))
+    transaction_id = content_hash(
+        json.dumps({"items": items}, sort_keys=True, separators=(",", ":"))
+    )
     journal = vault / MEGAMIND_DIR / "evidence" / "transactions" / f"{transaction_id}.json"
     journal.parent.mkdir(parents=True)
     journal.write_text(
