@@ -86,25 +86,6 @@ class Freshness:
 
 
 @dataclass
-class ResearchPolicy:
-    """Versioned per-wiki research policy.
-
-    An empty policy is deliberately denied.  The host may suggest policy facts,
-    but only this typed card field can authorize a research cycle.
-    """
-
-    enabled: bool = False
-    tiers: dict[str, str] = field(default_factory=dict)
-    claim_types: list[str] = field(default_factory=list)
-    sole_support: bool = False
-    quote_ceiling_chars: int = 0
-    research_mode: str = "off"
-    apply_mode: str = "approval"
-    max_sources_per_cycle: int = 0
-    digest: str = ""
-
-
-@dataclass
 class ContextBudget:
     """Optional per-wiki overrides of the registry context budgets."""
 
@@ -288,55 +269,6 @@ def _source_policy_from_json(label: str, value: object) -> SourcePolicy:
             f"got: {policy.allowlist_status}"
         )
     return policy
-
-
-def _research_policy_from_json(label: str, value: object) -> ResearchPolicy:
-    data = _require_mapping(label, value)
-    allowed = (
-        "enabled",
-        "tiers",
-        "claim_types",
-        "sole_support",
-        "quote_ceiling_chars",
-        "research_mode",
-        "apply_mode",
-        "max_sources_per_cycle",
-        "digest",
-    )
-    _reject_unknown(label, data, allowed)
-    enabled = data.get("enabled", False)
-    sole_support = data.get("sole_support", False)
-    if not isinstance(enabled, bool) or not isinstance(sole_support, bool):
-        raise RegistryError(f"{label} enabled and sole_support must be booleans")
-    tiers_raw = data.get("tiers", {})
-    tiers = _require_mapping(f"{label} tiers", tiers_raw)
-    if not all(isinstance(k, str) and isinstance(v, str) for k, v in tiers.items()):
-        raise RegistryError(f"{label} tiers must map strings to strings")
-    claim_types = _require_str_list(f"{label} claim_types", data.get("claim_types", []))
-    quote_ceiling = _require_int(f"{label} quote_ceiling_chars", data.get("quote_ceiling_chars", 0))
-    max_sources = _require_int(
-        f"{label} max_sources_per_cycle", data.get("max_sources_per_cycle", 0)
-    )
-    if quote_ceiling < 0 or max_sources < 0:
-        raise RegistryError(f"{label} numeric ceilings must be non-negative")
-    research_mode = _require_str(f"{label} research_mode", data.get("research_mode", "off"))
-    apply_mode = _require_str(f"{label} apply_mode", data.get("apply_mode", "approval"))
-    if research_mode not in {"off", "approval", "standing"} or apply_mode not in {
-        "approval",
-        "standing",
-    }:
-        raise RegistryError(f"{label} has an invalid mode")
-    return ResearchPolicy(
-        enabled,
-        {key: str(value) for key, value in tiers.items()},
-        claim_types,
-        sole_support,
-        quote_ceiling,
-        research_mode,
-        apply_mode,
-        max_sources,
-        _require_str(f"{label} digest", data.get("digest", "")),
-    )
 
 
 def _freshness_from_json(label: str, value: object) -> Freshness:
@@ -535,17 +467,6 @@ def validate_registry(registry: Registry) -> None:
     seen: set[str] = set()
     for position, wiki in enumerate(registry.wikis):
         _validate_wiki_entry(position, wiki, registry.version, seen)
-
-
-def research_policy_allows(wiki: WikiEntry) -> bool:
-    """Return the restrictive research authorization for one card entry."""
-    policy = wiki.research_policy
-    return (
-        policy.enabled
-        and policy.research_mode in {"approval", "standing"}
-        and bool(policy.digest)
-        and policy.max_sources_per_cycle > 0
-    )
 
 
 def registry_file(root: Path) -> Path:

@@ -710,74 +710,12 @@ superseded_by: path.md    # required when status is superseded
 ---
 ```
 
-## Deterministic research state (`.megamind/research/`)
+## Deterministic research state
 
-Slice 1 research uses strict JSON documents: `megamind/research-plan/v1` is
-content-addressed and binds the wiki, gap, question, capability flags, hard
-budget ceilings, policy/card/access digests, and change envelope. The
-append-only `research/jobs.jsonl` journal stores `megamind/research-job/v1`
-transition facts. `research/packets/<id>.json` and `research/outcomes/<id>.json`
-are immutable `megamind/research-packet/v1` and `megamind/research-outcome/v1`
-artifacts, and `research/evidence/`, `research/claims/`, and
-`research/contradictions/` hold the frozen `megamind/evidence-record/v1`,
-`megamind/claim/v1`, and `megamind/contradiction/v1` receipts. IDs are opaque
-references; packet validation uses narrow resolver interfaces and never treats
-a packet as admitted answer evidence. Cancellation retains artifacts, replaying
-the same event is a no-op, and divergent replay, terminal mutation, or
-policy/card/access drift is refused.
-
-Permission is never a host claim. Every plan names one wiki, and the policy,
-card, and access digests are derived from that wiki's validated card research
-policy (`docs/schemas.md` registry v2) and from the access policy layer; a
-submitted digest that contradicts the derived one is card drift and needs a
-replan. `policy_authorized` in a receipt is an observation that can withhold a
-cycle the card allows and can never authorize one the card denies.
-
-A claim's lifecycle, freshness, and confidence are derived from the frozen
-records, never read from the receipt. Slice 1 has no promotion step, so a claim
-extracted from accepted evidence stays `proposed`. A receipt may state a
-lifecycle, but it is an observation that can only narrow: a status whose cap
-sits above the derived `proposed` (`shaky`, `confirmed`, `active`) is
-discarded, only a strictly narrower one (`rejected`, `superseded`) is honored,
-and an unknown status is refused rather than scored above an honest `proposed`.
-
-Retraction and contradiction are handled outside the lifecycle. A retracted
-source is a `rejected` evidence record, and only `accepted` records can carry a
-claim, so a claim citing one is refused at acceptance rather than frozen with a
-weaker lifecycle. A contradiction is the frozen `megamind/contradiction/v1`
-record plus the confidence cap it imposes on the claims it names, and an
-unresolved one drives the job to the terminal `unresolved-contradiction` state;
-none of that promotes a claim to `shaky`.
-
-Freshness stays `unknown` because a passing `dated` gate says a record carries
-a date, not that the date is recent, and this lane freezes no timestamp to
-compare against a freshness policy. Since the derived lifecycle is what the
-claim identifier covers, a forged one changes neither the identifier nor the
-score. One consequence is deliberate: until a later slice can earn a stronger
-lifecycle, a Slice 1 packet reports `insufficient` rather than `supported`.
-
-The host receipt lane walks the transition table one validated step at a time:
-`permission-check` binds the card verdict and reaches `planned`,
-`record-discovery` checks the receipt against the plan ceilings and the card's
-`max_sources_per_cycle` and reaches `retrieving` or terminal `budget-exhausted`,
-`record-artifact` freezes one evidence record, `record-claims` resolves claim
-support against accepted evidence only and reaches `extracting`, and
-`reconcile` reaches `packet-ready` or terminal `unresolved-contradiction`.
-
-`research packet --input packet.json` requires a `packet-ready` job, resolves
-the packet's claim and contradiction references through a narrow resolver over
-the frozen artifacts, and compiles the packet to the existing normal
-`.megamind/proposals/<id>.md` shape. A packet's `confidence` and
-`answerability` are derived from those resolved records, never supplied: the
-confidence is the weakest relied-upon claim and stays `unknown` when any claim
-is unknown, and `answerability` reports `contradicted` when a referenced
-contradiction is unresolved, `insufficient` when there are no claims or the
-derived confidence misses the reliance floor, and `supported` otherwise. A
-receipt that states either field with a value other than the derived one is
-refused, so replaying an emitted packet stays a no-op while a forged score
-cannot be frozen. `evolve` validates the packet reference
-inside its existing write-ahead transaction; apply remains one explicit
-approval per cycle. Core has no network or host orchestration.
+The current research-state and governed evidence schemas are defined in
+[Governed evidence records (Slice 1)](#governed-evidence-records-slice-1).
+Packets are cited synthesis only: they never compile a proposal or become
+answer context.
 
 ## Proposal (`.megamind/proposals/<id>.md`)
 

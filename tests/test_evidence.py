@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-from conftest import build_vault
 import megamind.evidence as evidence_module
+from conftest import build_vault
 from megamind.card import CARD_PATH, load_wiki_card, save_wiki_card
 from megamind.cli import main
 from megamind.evidence import (

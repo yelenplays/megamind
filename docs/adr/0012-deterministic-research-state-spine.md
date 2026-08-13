@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for Slice 1.
+Superseded by [ADR 0014](0014-governed-evidence-record-lane.md).
 
 ## Decision
 
@@ -27,9 +27,7 @@ retains all artifacts. Exact replay is a no-op; divergent replay and terminal
 mutation are refusals. Policy, card, access, or plan digest drift requires a
 new plan and proof.
 
-Packets compile into the existing Markdown proposal shape. The existing
-`evolve` write-ahead transaction validates research packet references, and
-apply remains explicitly approved once per cycle. Research state is inert
+The packet-compilation decision is superseded. Research state remains inert
 control data and never substitutes for fresh route/preflight/admission when an
 answer is requested.
 

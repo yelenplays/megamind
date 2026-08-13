@@ -37,6 +37,7 @@ with a stable `schema_version`:
 | `megamind/gap-transition/v1`, `megamind/gap-attempt/v1` | `gap` mutations |
 | `megamind/research-wave/v1` | `research-wave` |
 | `megamind/research-result/v1` or `v2` | `research-result` (v1 restrictive legacy; v2 typed acceptance) |
+| `megamind/research-plan/v1`, `megamind/research-job/v1`, `megamind/source-candidate/v1`, `megamind/evidence-record/v1`, `megamind/correction-notice/v1`, `megamind/quotation/v1`, `megamind/claim/v1`, `megamind/contradiction/v1`, `megamind/research-packet/v1` | `research` actions |
 | `megamind/provisional-wiki-result/v1` | `provision-wiki` |
 | `megamind/benchmark-result/v1`, `megamind/benchmark-check/v1` | `bench run`, `bench check` |
 | `megamind/evaluation-key/v1` | `experiment keygen` |

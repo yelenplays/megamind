@@ -8,7 +8,6 @@ reports findings with severities; any error makes the command exit non-zero.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -282,61 +281,6 @@ def _check_access_policy(registry: Registry, findings: list[Finding]) -> None:
             findings.append(entry)
 
 
-def _check_research_state(root: Path, findings: list[Finding]) -> None:
-    """Validate research journals and immutable artifact identity without loading source bodies."""
-    try:
-        store = ResearchStore(root)
-        jobs = store.jobs()
-    except (ResearchError, OSError) as error:
-        findings.append(_error("research", ".megamind/research/jobs.jsonl", str(error)))
-        return
-    for job in jobs:
-        if not job.job_id or not job.attempt_id:
-            findings.append(
-                _error("research", ".megamind/research/jobs.jsonl", "job lacks identity")
-            )
-        if not job.policy_digest or not job.card_digest or not job.access_digest:
-            findings.append(
-                _error(
-                    "research",
-                    ".megamind/research/jobs.jsonl",
-                    f"job {job.job_id} lacks bound policy/card/access digests",
-                )
-            )
-    for directory in ("packets", "outcomes", "evidence", "claims", "contradictions"):
-        path = root / ".megamind" / "research" / directory
-        if not path.is_dir():
-            continue
-        for artifact in sorted(path.glob("*.json")):
-            try:
-                value = artifact.read_text(encoding="utf-8")
-                if not value.endswith("\n"):
-                    findings.append(
-                        _error(
-                            "research",
-                            artifact.relative_to(root).as_posix(),
-                            "research artifact lacks trailing newline",
-                        )
-                    )
-                parsed = json.loads(value)
-                if not isinstance(parsed, dict) or not parsed.get("schema"):
-                    findings.append(
-                        _error(
-                            "research",
-                            artifact.relative_to(root).as_posix(),
-                            "research artifact is not a typed document",
-                        )
-                    )
-            except (OSError, ValueError) as error:
-                findings.append(
-                    _error(
-                        "research",
-                        artifact.relative_to(root).as_posix(),
-                        f"research artifact is unreadable: {error}",
-                    )
-                )
-
-
 def _check_gap_journal(root: Path, findings: list[Finding]) -> None:
     """The gap journal lives at whatever root the gap commands were given, so
     both root shapes have to validate it."""
@@ -486,14 +430,14 @@ def _check_research_records(root: Path, findings: list[Finding]) -> None:
     research_records: dict[str, dict[str, dict[str, Any]]] = {}
     for kind in ("plans", "jobs", "packets", "outcomes", "candidates"):
         suffix = "jsonl" if kind == "jobs" else "json"
-        valid: dict[str, dict[str, Any]] = {}
+        research_valid: dict[str, dict[str, Any]] = {}
         for identifier, record, problem in research_store.scan(kind):
             rel = f"{MEGAMIND_DIR}/research/{kind}/{identifier}.{suffix}"
             if record is None:
                 findings.append(_error("research", rel, problem))
                 continue
-            valid[identifier] = record
-        research_records[kind] = valid
+            research_valid[identifier] = record
+        research_records[kind] = research_valid
     for identifier, job in sorted(research_records["jobs"].items()):
         rel = f"{MEGAMIND_DIR}/research/jobs/{identifier}.jsonl"
         plan = research_records["plans"].get(str(job["plan_id"]))

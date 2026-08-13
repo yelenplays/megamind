@@ -1,4 +1,4 @@
-# ADR 0012: governed evidence-record lane
+# ADR 0014: governed evidence-record lane
 
 - Status: accepted
 - Date: 2026-08-13
