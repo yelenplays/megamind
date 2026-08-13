@@ -15,7 +15,9 @@ from typing import Any
 
 from .fsops import (
     MEGAMIND_DIR,
+    append_audit,
     atomic_write,
+    backup_existing,
     content_hash,
     identity_bytes,
     resolve_contained,
@@ -517,7 +519,7 @@ def validate_outcome(raw: object) -> dict[str, Any]:
     if body["status"] not in {"completed", "research-pending", "failed", "cancelled", "deferred"}:
         raise ResearchError("outcome status is invalid")
     expected = _hash_body(OUTCOME_SCHEMA, body)
-    if data.get("outcome_id") != expected:
+    if data.get("outcome_id") not in (None, expected):
         raise ResearchError("outcome_id does not match outcome content")
     return {"schema": OUTCOME_SCHEMA, "outcome_id": expected, **body}
 
@@ -562,7 +564,9 @@ class ResearchStore:
                 raise ResearchError("stored research record is not valid JSON") from error
             if identity_bytes(existing, mutable) != identity_bytes(canonical, mutable):
                 raise ResearchError("content-addressed research record has different bytes")
+            backup_existing(self.root, rel)
         atomic_write(self.root, rel, text)
+        append_audit(self.root, "research-record", {"kind": kind, "record_id": identifier})
         return path
 
     def get(self, kind: str, identifier: str) -> dict[str, Any]:

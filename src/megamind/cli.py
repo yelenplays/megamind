@@ -1540,6 +1540,29 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         )
         if not isinstance(values, list):
             raise UsageError("record-discovery input must be a JSON list or {candidates: []}")
+        legacy_receipt = isinstance(raw, Mapping) and all(
+            isinstance(item, str) for item in values
+        )
+        if legacy_receipt:
+            job_id = raw.get("job_id")
+            attempt_id = raw.get("attempt_id")
+            if not isinstance(job_id, str) or not job_id or not isinstance(attempt_id, str) or not attempt_id:
+                raise ResearchError("legacy discovery receipt requires job_id and attempt_id")
+            job = store.get("jobs", job_id)
+            if job["state"] != "planned":
+                raise ResearchError("legacy discovery requires a planned job")
+            values = [
+                {
+                    "candidate_id": content_hash(json.dumps({"origin": item, "query_hash": ""}, sort_keys=True, separators=(",", ":"))),
+                    "origin": item,
+                    "found_by": "legacy-receipt",
+                    "query_hash": "",
+                    "rank": index,
+                    "status": "discovered",
+                    "reason": "",
+                }
+                for index, item in enumerate(values)
+            ]
         candidates = [
             validate_candidate({"schema": CANDIDATE_SCHEMA, **dict(item)})
             for item in values
@@ -1556,6 +1579,10 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             store.put("candidates", candidate).relative_to(root.resolve()).as_posix()
             for candidate in candidates
         ]
+        if legacy_receipt:
+            job["state"] = "discovering"
+            job["events"] = [{"event": "legacy-discovery"}]
+            store.put("jobs", job)
         return _research_doc(
             CANDIDATE_SCHEMA,
             {"status": "recorded", "candidates": candidates, "paths": paths},
@@ -1782,6 +1809,21 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             "Contradictions remain visible; unresolved claims are never averaged",
         ), 0
     if action == "packet":
+        if isinstance(raw, Mapping) and "claims" in raw:
+            job_id = raw.get("job_id")
+            if not isinstance(job_id, str):
+                raise ResearchError("legacy packet job_id is required")
+            job = store.get("jobs", job_id)
+            raw = {
+                "schema": PACKET_SCHEMA,
+                "plan_id": job["plan_id"],
+                "claim_ids": raw.get("claims", []),
+                "contradiction_ids": raw.get("contradictions", []),
+                "interpretation": raw.get("interpretation", ""),
+                "supported_by": [],
+                "answerability": {},
+                "confidence": "unknown",
+            }
         packet = validate_packet(
             raw,
             claims=_known_records(root, "claims"),

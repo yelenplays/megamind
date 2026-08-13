@@ -28,6 +28,7 @@ from .confidence import (
 )
 from .fsops import (
     MEGAMIND_DIR,
+    append_audit,
     atomic_write,
     backup_existing,
     content_hash,
@@ -1369,7 +1370,10 @@ class EvidenceStore:
             quote_ceiling_chars,
             self._admission_records(((kind, data),)),
         )
+        if resolve_contained(self.root, rel).is_file():
+            backup_existing(self.root, rel, durable=True)
         atomic_write(self.root, rel, text)
+        append_audit(self.root, "evidence-record", {"kind": kind, "record_id": str(data[ID_KEYS[kind]])})
         return resolve_contained(self.root, rel)
 
     def put_all(
@@ -1427,6 +1431,8 @@ class EvidenceStore:
             self._recover_transactions()
             raise
         remove_contained(self.root, journal_rel, durable=True)
+        for rel, canonical, _ in prepared:
+            append_audit(self.root, "evidence-record", {"kind": rel.parent.name, "record_id": str(canonical[ID_KEYS[rel.parent.name]])})
         return [resolve_contained(self.root, rel) for rel, _, _ in prepared]
 
     def get(self, kind: str, identifier: str) -> dict[str, Any]:
