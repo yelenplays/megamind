@@ -1444,6 +1444,12 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
     if action == "permission-check":
         if not isinstance(raw, Mapping):
             raise ResearchError("permission-check input must be an object")
+        plan_wiki = raw.get("wiki")
+        if not isinstance(plan_wiki, str) or not plan_wiki:
+            raise ResearchError("permission-check plan wiki is required")
+        if wiki and wiki != plan_wiki:
+            raise UsageError("--wiki must match the permission-check plan wiki")
+        policy = _research_policy(registry, plan_wiki)
         candidate = dict(raw)
         candidate.pop("policy_authorized", None)
         candidate.pop("schema", None)
@@ -1458,14 +1464,40 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             raise ResearchError("legacy permission-check plan is invalid")
         job_id = content_hash(json.dumps({"plan_id": plan["plan_id"], "gap_id": plan["gap_id"]}, sort_keys=True, separators=(",", ":")))
         authorized = bool(policy is not None and raw.get("policy_authorized") is True)
+        attempt_id = content_hash(json.dumps({"job_id": job_id, "plan_id": plan["plan_id"], "attempt": 1}, sort_keys=True, separators=(",", ":")))
         job = validate_job({"schema": JOB_SCHEMA, "job_id": job_id, "plan_id": plan["plan_id"], "gap_id": plan["gap_id"], "state": "planned" if authorized else "policy-denied", "attempt": 1, "events": []})
         store.put("plans", plan)
         store.put("jobs", job)
-        return _research_doc(JOB_SCHEMA, {"status": job["state"], "job": job, "authority": {"authorized": policy is not None}}, "Permission is derived from the wiki policy"), 0
+        legacy_job = {**job, "attempt_id": attempt_id}
+        return _research_doc(JOB_SCHEMA, {"status": job["state"], "job": legacy_job, "authority": {"authorized": policy is not None}}, "Permission is derived from the wiki policy"), 0
     if action == "outcome":
-        outcome = validate_outcome(raw)
+        if not isinstance(raw, Mapping):
+            raise ResearchError("outcome input must be an object")
+        legacy_state = raw.get("state")
+        if not isinstance(legacy_state, str):
+            raise ResearchError("outcome state is required")
+        status = {
+            "answered": "completed",
+            "answered-with-open-gap": "completed",
+            "cancelled": "cancelled",
+            "budget-exhausted": "failed",
+            "tool-failed": "failed",
+        }.get(legacy_state, "deferred")
+        outcome = validate_outcome(
+            {
+                "schema": OUTCOME_SCHEMA,
+                "job_id": raw.get("job_id"),
+                "plan_id": raw.get("plan_id"),
+                "status": status,
+                "artifact_ids": raw.get("artifact_ids", []),
+                "packet_id": raw.get("packet_id", ""),
+                "failure": raw.get("reason", ""),
+                "today": today,
+            }
+        )
         path = store.put("outcomes", outcome)
-        return _research_doc(OUTCOME_SCHEMA, {"status": outcome["status"], "outcome": outcome, "path": path.relative_to(root.resolve()).as_posix()}, "Outcomes are immutable local receipts"), 0
+        legacy_outcome = {**outcome, "attempt_id": raw.get("attempt_id", ""), "state": legacy_state, "reason": raw.get("reason", "")}
+        return _research_doc(OUTCOME_SCHEMA, {"status": legacy_state, "outcome": legacy_outcome, "path": path.relative_to(root.resolve()).as_posix()}, "Outcomes are immutable local receipts"), 0
     if action == "plan":
         plan = make_plan(raw)
         path = store.put("plans", plan)

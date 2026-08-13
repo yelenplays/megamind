@@ -617,6 +617,31 @@ class ResearchStore:
             }
             if set(value) != fields or value.get("schema") != JOB_SCHEMA:
                 raise ResearchError("invalid research job journal entry")
+            string_fields = {
+                "job_id",
+                "attempt_id",
+                "state",
+                "plan_id",
+                "gap_id",
+                "policy_digest",
+                "card_digest",
+                "access_digest",
+                "event_id",
+                "reason",
+                "updated",
+            }
+            if any(not isinstance(value[field], str) for field in string_fields):
+                raise ResearchError("invalid research job journal entry")
+            if any(not value[field] for field in ("job_id", "attempt_id", "state", "plan_id", "gap_id", "event_id")):
+                raise ResearchError("invalid research job journal entry")
+            for field in ("artifact_ids", "contradiction_ids"):
+                identifiers = value[field]
+                if (
+                    not isinstance(identifiers, list)
+                    or any(not isinstance(identifier, str) or not identifier for identifier in identifiers)
+                    or identifiers != sorted(set(identifiers))
+                ):
+                    raise ResearchError("invalid research job journal entry")
             payload = {key: value[key] for key in fields - {"schema", "event_id", "updated"}}
             if value.get("event_id") != content_hash(json.dumps(payload, sort_keys=True, separators=(",", ":"))):
                 raise ResearchError("invalid research job journal entry")
