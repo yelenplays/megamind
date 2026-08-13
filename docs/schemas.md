@@ -651,17 +651,37 @@ superseded_by: path.md    # required when status is superseded
 ## Deterministic research state (`.megamind/research/`)
 
 Slice 1 research uses strict JSON documents: `megamind/research-plan/v1` is
-content-addressed and binds the gap, question, capability flags, hard budget
-ceilings, policy/card/access digests, and change envelope. The append-only
-`research/jobs.jsonl` journal stores `megamind/research-job/v1` transition
-facts. `research/packets/<id>.json` and `research/outcomes/<id>.json` are
-immutable `megamind/research-packet/v1` and `megamind/research-outcome/v1`
-artifacts. IDs are opaque references; packet validation uses narrow resolver
-interfaces and never treats a packet as admitted answer evidence. Cancellation
-retains artifacts, replaying the same event is a no-op, and divergent replay,
-terminal mutation, or policy/card/access drift is refused.
+content-addressed and binds the wiki, gap, question, capability flags, hard
+budget ceilings, policy/card/access digests, and change envelope. The
+append-only `research/jobs.jsonl` journal stores `megamind/research-job/v1`
+transition facts. `research/packets/<id>.json` and `research/outcomes/<id>.json`
+are immutable `megamind/research-packet/v1` and `megamind/research-outcome/v1`
+artifacts, and `research/evidence/`, `research/claims/`, and
+`research/contradictions/` hold the frozen `megamind/evidence-record/v1`,
+`megamind/claim/v1`, and `megamind/contradiction/v1` receipts. IDs are opaque
+references; packet validation uses narrow resolver interfaces and never treats
+a packet as admitted answer evidence. Cancellation retains artifacts, replaying
+the same event is a no-op, and divergent replay, terminal mutation, or
+policy/card/access drift is refused.
 
-`research packet --input packet.json` compiles a packet to the existing normal
+Permission is never a host claim. Every plan names one wiki, and the policy,
+card, and access digests are derived from that wiki's validated card research
+policy (`docs/schemas.md` registry v2) and from the access policy layer; a
+submitted digest that contradicts the derived one is card drift and needs a
+replan. `policy_authorized` in a receipt is an observation that can withhold a
+cycle the card allows and can never authorize one the card denies.
+
+The host receipt lane walks the transition table one validated step at a time:
+`permission-check` binds the card verdict and reaches `planned`,
+`record-discovery` checks the receipt against the plan ceilings and the card's
+`max_sources_per_cycle` and reaches `retrieving` or terminal `budget-exhausted`,
+`record-artifact` freezes one evidence record, `record-claims` resolves claim
+support against accepted evidence only and reaches `extracting`, and
+`reconcile` reaches `packet-ready` or terminal `unresolved-contradiction`.
+
+`research packet --input packet.json` requires a `packet-ready` job, resolves
+the packet's claim and contradiction references through a narrow resolver over
+the frozen artifacts, and compiles the packet to the existing normal
 `.megamind/proposals/<id>.md` shape. `evolve` validates the packet reference
 inside its existing write-ahead transaction; apply remains one explicit
 approval per cycle. Core has no network or host orchestration.

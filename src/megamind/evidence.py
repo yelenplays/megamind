@@ -8,18 +8,23 @@ results, and keeps claim/quotation/contradiction identifiers opaque.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Protocol
 
 from .confidence import CLEAN_CORRECTION, QUALITY_BASE, Source, claim_confidence
-from .fsops import content_hash
-from .research import ReferenceResolver, ResearchError
+from .fsops import atomic_write, content_hash, resolve_contained
+from .research import RESEARCH_DIR, MappingResolver, ReferenceResolver, ResearchError
 
 EVIDENCE_SCHEMA = "megamind/evidence-record/v1"
 QUOTATION_SCHEMA = "megamind/quotation/v1"
 CLAIM_SCHEMA = "megamind/claim/v1"
 CONTRADICTION_SCHEMA = "megamind/contradiction/v1"
+
+EVIDENCE_DIR = RESEARCH_DIR / "evidence"
+CLAIMS_DIR = RESEARCH_DIR / "claims"
+CONTRADICTIONS_DIR = RESEARCH_DIR / "contradictions"
 
 
 class EvidenceResolver(ReferenceResolver, Protocol):
@@ -370,6 +375,113 @@ def make_contradiction(data: Mapping[str, Any], resolver: EvidenceResolver) -> C
         basis,
         resolution,
         str(body["gap_id"]),
+    )
+
+
+def _freeze(root: Path, relative: Path, document: Mapping[str, Any]) -> Path:
+    text = json.dumps(document, indent=2, sort_keys=True) + "\n"
+    path = resolve_contained(root, relative)
+    if path.is_file() and path.read_text(encoding="utf-8") != text:
+        raise EvidenceAcceptanceError("frozen evidence artifact is immutable")
+    return atomic_write(root, relative, text)
+
+
+def store_claim(root: Path, claim: Claim) -> Path:
+    return _freeze(root, CLAIMS_DIR / f"{claim.claim_id}.json", claim.to_data())
+
+
+def store_contradiction(root: Path, contradiction: Contradiction) -> Path:
+    return _freeze(
+        root,
+        CONTRADICTIONS_DIR / f"{contradiction.contradiction_id}.json",
+        contradiction.to_data(),
+    )
+
+
+def _read_document(path: Path, schema: str) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise EvidenceAcceptanceError(f"frozen artifact is unreadable: {path.name}") from error
+    if not isinstance(raw, dict) or raw.get("schema") != schema:
+        raise EvidenceAcceptanceError(f"frozen artifact is not a {schema} document: {path.name}")
+    return raw
+
+
+def _record_from_data(raw: Mapping[str, Any]) -> EvidenceRecord:
+    rights = raw.get("rights")
+    derivation = raw.get("derivation")
+    return EvidenceRecord(
+        str(raw.get("evidence_id", "")),
+        str(raw.get("origin", "")),
+        str(raw.get("origin_id", "")),
+        str(raw.get("decision", "")),
+        str(raw.get("quality", "")),
+        str(raw.get("correction_status", "")),
+        tuple(
+            GateResult(str(g.get("name", "")), str(g.get("verdict", "")), str(g.get("reason", "")))
+            for g in raw.get("gates", [])
+            if isinstance(g, dict)
+        ),
+        str(raw.get("snapshot_sha256", "")),
+        str(raw.get("normalized_sha256", "")),
+        tuple(str(value) for value in raw.get("claim_types", [])),
+        rights if isinstance(rights, dict) else {},
+        derivation if isinstance(derivation, dict) else {},
+    )
+
+
+def frozen_evidence(root: Path) -> dict[str, EvidenceRecord]:
+    """Read back frozen evidence records; this never reads a source body."""
+    directory = resolve_contained(root, EVIDENCE_DIR)
+    if not directory.is_dir():
+        return {}
+    records: dict[str, EvidenceRecord] = {}
+    for path in sorted(directory.glob("*.json")):
+        record = _record_from_data(_read_document(path, EVIDENCE_SCHEMA))
+        records[record.evidence_id] = record
+    return records
+
+
+def frozen_ids(root: Path, kind: str) -> set[str]:
+    """Identifiers of the frozen claim or contradiction artifacts, opaque to callers."""
+    directory = {"claim": CLAIMS_DIR, "contradiction": CONTRADICTIONS_DIR}.get(kind)
+    if directory is None:
+        raise EvidenceAcceptanceError(f"unknown frozen artifact kind: {kind}")
+    resolved = resolve_contained(root, directory)
+    if not resolved.is_dir():
+        return set()
+    return {path.stem for path in resolved.glob("*.json")}
+
+
+def unresolved_contradictions(root: Path, identifiers: Iterable[str]) -> list[str]:
+    """Contradictions among the given references that no resolution rule settled."""
+    unresolved: list[str] = []
+    for identifier in sorted(set(identifiers)):
+        path = resolve_contained(root, CONTRADICTIONS_DIR / f"{identifier}.json")
+        if not path.is_file():
+            continue
+        if _read_document(path, CONTRADICTION_SCHEMA).get("resolution") == "unresolved":
+            unresolved.append(identifier)
+    return unresolved
+
+
+def make_resolved_claim(data: Mapping[str, Any], records: Mapping[str, EvidenceRecord]) -> Claim:
+    """Validate one host claim against frozen accepted evidence and derive its confidence.
+
+    Support references resolve only against evidence this lane already accepted,
+    so a deferred or rejected record cannot carry a claim, and the confidence is
+    computed here rather than taken from the receipt.
+    """
+    accepted = {key for key, record in records.items() if record.decision == "accepted"}
+    claim = make_claim(data, MappingResolver({"evidence": accepted}))
+    return replace(
+        claim,
+        confidence=claim_confidence_from_records(
+            [records[ref] for ref in claim.supported_by],
+            lifecycle=claim.lifecycle,
+            contradicted=bool(claim.contradicted_by),
+        ),
     )
 
 

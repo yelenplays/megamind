@@ -301,7 +301,7 @@ def _check_research_state(root: Path, findings: list[Finding]) -> None:
                     f"job {job.job_id} lacks bound policy/card/access digests",
                 )
             )
-    for directory in ("packets", "outcomes", "evidence"):
+    for directory in ("packets", "outcomes", "evidence", "claims", "contradictions"):
         path = root / ".megamind" / "research" / directory
         if not path.is_dir():
             continue

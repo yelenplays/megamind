@@ -13,8 +13,11 @@ attempt identities for retries. Packets and terminal outcomes are immutable
 `research-packet/v1` and `research-outcome/v1` artifacts.
 
 Host workers may provide frozen JSON receipts, but cannot mint eligibility,
-quality, access, approval, or answer authorization. Evidence and claim IDs are
-opaque and validated only through narrow resolver interfaces. Cancellation
+quality, access, approval, or answer authorization. Every plan names one wiki,
+and the research verdict plus the bound policy, card, and access digests are
+derived from that wiki's validated card and from the access policy layer; a
+host receipt can only withhold a cycle the card allows. Evidence and claim IDs
+are opaque and validated only through narrow resolver interfaces. Cancellation
 retains all artifacts. Exact replay is a no-op; divergent replay and terminal
 mutation are refusals. Policy, card, access, or plan digest drift requires a
 new plan and proof.

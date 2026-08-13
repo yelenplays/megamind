@@ -4,19 +4,32 @@ Megamind owns state and validation only.  Hosts may freeze artifacts and pass
 JSON receipts to this module, but this module never fetches, schedules, or
 calls a model.  Journals are append-only; plans, packets, and outcomes are
 immutable content-addressed documents.
+
+Permission is never a host claim.  Every plan names one wiki, and
+``research_authority`` derives the verdict and the bound policy/card/access
+digests from that wiki's validated card and from the access policy layer.  A
+host receipt can only narrow that verdict, never widen it.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from .access import effective_policy
+from .card import load_wiki_card
 from .fsops import MEGAMIND_DIR, append_audit, atomic_write, content_hash, resolve_contained
 from .models import KNOWLEDGE_TYPES, Document
+from .registry import (
+    RegistryNotInitialized,
+    WikiEntry,
+    load_registry,
+    research_policy_allows,
+)
 
 PLAN_SCHEMA = "megamind/research-plan/v1"
 JOB_SCHEMA = "megamind/research-job/v1"
@@ -220,6 +233,7 @@ def _hash_body(body: Mapping[str, Any]) -> str:
 class ResearchPlan:
     plan_id: str
     job_id: str
+    wiki: str
     gap_id: str
     question: str
     must_not_answer: tuple[str, ...]
@@ -239,6 +253,7 @@ class ResearchPlan:
     def body(self) -> dict[str, Any]:
         return {
             "job_id": self.job_id,
+            "wiki": self.wiki,
             "gap_id": self.gap_id,
             "question": self.question,
             "must_not_answer": list(self.must_not_answer),
@@ -293,6 +308,79 @@ class JobView:
         }
 
 
+@dataclass(frozen=True)
+class ResearchAuthority:
+    """The card-derived verdict that alone may authorize one research cycle.
+
+    A host receipt is an observation.  Eligibility comes from the validated
+    wiki card's research policy and from the access policy layer, and the
+    digests below are computed here so a later card edit is drift, not a
+    silently reused authorization.
+    """
+
+    wiki: str
+    authorized: bool
+    reason: str
+    policy_digest: str
+    card_digest: str
+    access_digest: str
+    max_sources_per_cycle: int
+    apply_mode: str
+
+    def to_data(self) -> dict[str, Any]:
+        return {
+            "wiki": self.wiki,
+            "authorized": self.authorized,
+            "reason": self.reason,
+            "policy_digest": self.policy_digest,
+            "card_digest": self.card_digest,
+            "access_digest": self.access_digest,
+            "max_sources_per_cycle": self.max_sources_per_cycle,
+            "apply_mode": self.apply_mode,
+        }
+
+
+def research_authority(entry: WikiEntry) -> ResearchAuthority:
+    """Derive the restrictive research verdict and bound digests for one card."""
+    access = effective_policy(entry)
+    denials: list[str] = []
+    if entry.provisional:
+        denials.append("wiki is provisional")
+    if not research_policy_allows(entry):
+        denials.append("card research policy does not authorize a research cycle")
+    if access.local == "none" or access.routing_mode == "pointer":
+        denials.append(f"access policy allows local '{access.local}' for this wiki")
+    return ResearchAuthority(
+        entry.name,
+        not denials,
+        "; ".join(denials) or "card research policy authorizes this cycle",
+        _hash_body(asdict(entry.research_policy)),
+        _hash_body(asdict(entry)),
+        _hash_body(asdict(access)),
+        entry.research_policy.max_sources_per_cycle,
+        entry.research_policy.apply_mode,
+    )
+
+
+def resolve_wiki_entry(root: Path, name: str) -> WikiEntry:
+    """Return the authoritative card entry a plan is bound to."""
+    if not name:
+        raise ResearchError("research plan must name a wiki")
+    try:
+        registry = load_registry(root)
+    except RegistryNotInitialized:
+        card = load_wiki_card(root)
+        if card.name != name:
+            raise ResearchError(
+                f"wiki does not match the authoritative wiki card: {name}"
+            ) from None
+        return card
+    entry = registry.wiki_by_name(name)
+    if entry is None:
+        raise ResearchError(f"wiki is not present in the authoritative registry: {name}")
+    return entry
+
+
 class ReferenceResolver(Protocol):
     def resolve(self, kind: str, identifier: str) -> bool: ...
 
@@ -310,6 +398,7 @@ class MappingResolver:
 def make_plan(data: Mapping[str, Any], *, today: str | None = None) -> ResearchPlan:
     allowed = {
         "job_id",
+        "wiki",
         "gap_id",
         "question",
         "must_not_answer",
@@ -328,10 +417,11 @@ def make_plan(data: Mapping[str, Any], *, today: str | None = None) -> ResearchP
     }
     _unknown(data, allowed, "research plan")
     question = _string(data.get("question"), "question", required=True)
+    wiki = _string(data.get("wiki"), "wiki", required=True)
     gap_id = _string(data.get("gap_id"), "gap_id", required=True)
     job_id = _string(data.get("job_id", ""), "job_id")
     if not job_id:
-        job_id = _hash_body({"gap_id": gap_id, "question": question})
+        job_id = _hash_body({"wiki": wiki, "gap_id": gap_id, "question": question})
     policy = _string(data.get("policy_digest", ""), "policy_digest")
     card = _string(data.get("card_digest", ""), "card_digest")
     access = _string(data.get("access_digest", ""), "access_digest")
@@ -358,6 +448,7 @@ def make_plan(data: Mapping[str, Any], *, today: str | None = None) -> ResearchP
     created = _iso(str(data.get("created", today or "")))
     body = {
         "job_id": job_id,
+        "wiki": wiki,
         "gap_id": gap_id,
         "question": question,
         "must_not_answer": list(strings("must_not_answer")),
@@ -380,6 +471,7 @@ def make_plan(data: Mapping[str, Any], *, today: str | None = None) -> ResearchP
     return ResearchPlan(
         plan_id,
         job_id,
+        wiki,
         gap_id,
         question,
         strings("must_not_answer"),
@@ -418,6 +510,22 @@ class ResearchStore:
             PLANS_DIR / f"{plan.plan_id}.json",
             json.dumps(plan.to_data(), indent=2, sort_keys=True) + "\n",
         )
+
+    def load_plan(self, plan_id: str) -> ResearchPlan:
+        """Read back the frozen plan a job is bound to."""
+        path = self._path(PLANS_DIR / f"{plan_id}.json")
+        if not path.is_file():
+            raise ResearchNotFound(f"research plan not found: {plan_id}")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ResearchError("research plan is not valid JSON") from exc
+        if not isinstance(data, dict) or data.get("schema") != PLAN_SCHEMA:
+            raise ResearchError("research plan is not a typed plan document")
+        plan = make_plan({k: v for k, v in data.items() if k not in ("schema", "plan_id")})
+        if plan.plan_id != plan_id:
+            raise ResearchError("stored research plan does not match its identifier")
+        return plan
 
     def _events(self) -> list[dict[str, Any]]:
         path = self._path(JOBS_PATH)
@@ -703,6 +811,41 @@ def _job_from_data(value: Mapping[str, Any]) -> JobView:
         tuple(str(x) for x in value.get("artifact_ids", [])),
         str(value.get("updated", "")),
     )
+
+
+def make_discovery_receipt(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a host discovery receipt.  Candidate identifiers stay opaque."""
+    _unknown(data, {"job_id", "attempt_id", "candidates", "usage", "note"}, "discovery receipt")
+    candidates = data.get("candidates", [])
+    if not isinstance(candidates, list) or not all(isinstance(x, str) and x for x in candidates):
+        raise ResearchError("discovery candidates must be non-empty opaque references")
+    usage = _object(data.get("usage", {}), "usage")
+    if not all(isinstance(key, str) and key for key in usage):
+        raise ResearchError("discovery usage must be keyed by ceiling name")
+    return {
+        "job_id": _string(data.get("job_id"), "job_id", required=True),
+        "attempt_id": _string(data.get("attempt_id"), "attempt_id", required=True),
+        "candidates": sorted(set(candidates)),
+        "usage": {str(key): value for key, value in usage.items()},
+        "note": _string(data.get("note", ""), "note"),
+    }
+
+
+def make_claims_receipt(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the job envelope of a claim receipt; claim bodies are typed elsewhere."""
+    _unknown(data, {"job_id", "attempt_id", "claims", "contradictions"}, "claims receipt")
+    claims = data.get("claims", [])
+    contradictions = data.get("contradictions", [])
+    if not isinstance(claims, list) or not claims or not all(isinstance(x, dict) for x in claims):
+        raise ResearchError("claims must be a non-empty list of claim objects")
+    if not isinstance(contradictions, list) or not all(isinstance(x, dict) for x in contradictions):
+        raise ResearchError("contradictions must be a list of contradiction objects")
+    return {
+        "job_id": _string(data.get("job_id"), "job_id", required=True),
+        "attempt_id": _string(data.get("attempt_id"), "attempt_id", required=True),
+        "claims": [dict(item) for item in claims],
+        "contradictions": [dict(item) for item in contradictions],
+    }
 
 
 def _packet_body(packet: Mapping[str, Any]) -> dict[str, Any]:
