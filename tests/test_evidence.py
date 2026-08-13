@@ -1734,7 +1734,14 @@ def test_doctor_leaves_a_durable_interrupted_transaction_for_a_mutation_to_recov
     root = governed_vault(tmp_path)
     interrupted = proposed_claim("the interrupted synthetic fact")
     rel = Path(MEGAMIND_DIR) / "evidence" / "claims" / f"{interrupted['claim_id']}.json"
-    items = [{"path": rel.as_posix(), "previous": None}]
+    staged = json.dumps(interrupted, sort_keys=True, indent=2) + "\n"
+    items = [
+        {
+            "path": rel.as_posix(),
+            "previous": None,
+            "staged_sha256": hashlib.sha256(staged.encode("utf-8")).hexdigest(),
+        }
+    ]
     transaction_id = content_hash(
         json.dumps({"items": items}, sort_keys=True, separators=(",", ":"))
     )
@@ -1755,9 +1762,7 @@ def test_doctor_leaves_a_durable_interrupted_transaction_for_a_mutation_to_recov
     )
     interrupted_path = root / rel
     interrupted_path.parent.mkdir(parents=True, exist_ok=True)
-    interrupted_path.write_text(
-        json.dumps(interrupted, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-    )
+    interrupted_path.write_text(staged, encoding="utf-8")
     code, doc, _ = run_json(capsys, "--root", str(root), "doctor")
     assert code == 0
     assert interrupted_path.is_file()
@@ -1769,6 +1774,42 @@ def test_doctor_leaves_a_durable_interrupted_transaction_for_a_mutation_to_recov
     assert not journal.exists()
     backups = root / MEGAMIND_DIR / BACKUP_DIR
     assert list(backups.glob(f"{journal.name}.*.bak"))
+
+
+def test_evidence_recovery_refuses_a_hostile_staged_journal(tmp_path: Path) -> None:
+    root = governed_vault(tmp_path)
+    store = EvidenceStore(root)
+    claim = proposed_claim("the existing synthetic fact")
+    path = store.put("claims", claim)
+    items = [
+        {
+            "path": path.relative_to(root).as_posix(),
+            "previous": None,
+            "staged_sha256": hashlib.sha256(b"different staged bytes").hexdigest(),
+        }
+    ]
+    transaction_id = content_hash(json.dumps({"items": items}, sort_keys=True, separators=(",", ":")))
+    journal = root / MEGAMIND_DIR / "evidence" / "transactions" / f"{transaction_id}.json"
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        json.dumps(
+            {
+                "schema": "megamind/evidence-transaction/v1",
+                "transaction_id": transaction_id,
+                "items": items,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(EvidenceError, match="does not match staged post-state"):
+        store.recover()
+
+    assert path.is_file()
+    assert journal.is_file()
 
 
 def test_evidence_store_audits_canonical_correction_notice_id(tmp_path: Path) -> None:

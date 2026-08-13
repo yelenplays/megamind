@@ -1237,13 +1237,15 @@ class EvidenceStore:
             expected = content_hash(_stable({"items": items}))
             if expected != journal.stem:
                 raise EvidenceError("evidence transaction journal is invalid")
-            restores: list[tuple[Path, str | None]] = []
+            restores: list[tuple[Path, str | None, str]] = []
             for item in items:
                 if (
                     not isinstance(item, dict)
-                    or set(item) != {"path", "previous"}
+                    or set(item) != {"path", "previous", "staged_sha256"}
                     or not isinstance(item["path"], str)
                     or (item["previous"] is not None and not isinstance(item["previous"], str))
+                    or not isinstance(item["staged_sha256"], str)
+                    or not SHA256.fullmatch(item["staged_sha256"])
                 ):
                     raise EvidenceError("evidence transaction journal is invalid")
                 target = Path(item["path"])
@@ -1254,9 +1256,23 @@ class EvidenceStore:
                     or target != self._path(target.parts[2], target.stem)
                 ):
                     raise EvidenceError("evidence transaction journal is invalid")
-                restores.append((target, item["previous"]))
+                restores.append((target, item["previous"], item["staged_sha256"]))
+            rollback: list[tuple[Path, str | None]] = []
+            for target, previous, staged_sha256 in reversed(restores):
+                target_path = resolve_contained(self.root, target)
+                current = target_path.read_text(encoding="utf-8") if target_path.is_file() else None
+                if current is None:
+                    if previous is not None:
+                        raise EvidenceError("evidence transaction does not match staged post-state")
+                    continue
+                if hashlib.sha256(current.encode("utf-8")).hexdigest() == staged_sha256:
+                    rollback.append((target, previous))
+                    continue
+                if previous is not None and current == previous:
+                    continue
+                raise EvidenceError("evidence transaction does not match staged post-state")
             restored_paths: list[str] = []
-            for target, previous in reversed(restores):
+            for target, previous in rollback:
                 backup_existing(self.root, target, durable=True)
                 if previous is None:
                     remove_contained(self.root, target, durable=True)
@@ -1415,10 +1431,16 @@ class EvidenceStore:
         if len({rel for rel, _, _ in prepared}) != len(prepared):
             raise EvidenceError("evidence transaction contains duplicate record targets")
         items_for_journal: list[dict[str, str | None]] = []
-        for rel, _, _ in prepared:
+        for rel, _, text in prepared:
             path = resolve_contained(self.root, rel)
             previous = path.read_text(encoding="utf-8") if path.is_file() else None
-            items_for_journal.append({"path": rel.as_posix(), "previous": previous})
+            items_for_journal.append(
+                {
+                    "path": rel.as_posix(),
+                    "previous": previous,
+                    "staged_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                }
+            )
             if previous is not None:
                 backup_existing(self.root, rel, durable=True)
         transaction_id = content_hash(_stable({"items": items_for_journal}))
@@ -1444,7 +1466,13 @@ class EvidenceStore:
         except BaseException:
             self._recover_transactions()
             raise
+        backup_existing(self.root, journal_rel, durable=True)
         remove_contained(self.root, journal_rel, durable=True)
+        append_audit(
+            self.root,
+            "evidence-transaction-complete",
+            {"transaction_id": transaction_id, "paths": [rel.as_posix() for rel, _, _ in prepared]},
+        )
         for rel, canonical, _ in prepared:
             append_audit(self.root, "evidence-record", {"kind": rel.parent.name, "record_id": str(canonical[ID_KEYS[rel.parent.name]])})
         return [resolve_contained(self.root, rel) for rel, _, _ in prepared]
