@@ -556,6 +556,7 @@ class ResearchStore:
             if not isinstance(value, dict):
                 raise ResearchError("invalid research job journal entry")
             events.append(_validated_event(value))
+        _validate_event_history(events)
         return events
 
     def jobs(self) -> list[JobView]:
@@ -870,6 +871,36 @@ def _validated_event(value: Mapping[str, Any]) -> dict[str, Any]:
     if value["artifact_ids"] != payload["artifact_ids"] or value["event_id"] != _hash_body(payload):
         raise ResearchError("invalid research job journal entry")
     return dict(value)
+
+
+def _validate_event_history(events: list[Mapping[str, Any]]) -> None:
+    latest: dict[str, Mapping[str, Any]] = {}
+    for event in events:
+        job_id = str(event["job_id"])
+        current = latest.get(job_id)
+        if current is None:
+            if event["state"] != "gap-open":
+                raise ResearchError("invalid research job journal transition")
+            latest[job_id] = event
+            continue
+        resumed = (
+            current["state"] == "cancelled"
+            and event["state"] == "gap-open"
+            and event["attempt_id"] != current["attempt_id"]
+        )
+        if resumed:
+            latest[job_id] = event
+            continue
+        if current["state"] in TERMINAL_STATES:
+            raise ResearchError("invalid research job journal transition")
+        if event["attempt_id"] != current["attempt_id"] or any(
+            event[name] != current[name]
+            for name in ("plan_id", "gap_id", "policy_digest", "card_digest", "access_digest")
+        ):
+            raise ResearchError("invalid research job journal transition")
+        if event["state"] not in TRANSITIONS.get(str(current["state"]), frozenset()):
+            raise ResearchError("invalid research job journal transition")
+        latest[job_id] = event
 
 
 def _job_from_data(value: Mapping[str, Any]) -> JobView:

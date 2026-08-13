@@ -23,6 +23,7 @@ from megamind.research import (
     make_packet,
     make_plan,
 )
+from megamind.fsops import content_hash
 
 
 def _plan() -> object:
@@ -102,6 +103,41 @@ def test_research_journal_refuses_malformed_events(tmp_path: Path) -> None:
     journal.write_text(json.dumps(event) + "\n", encoding="utf-8")
 
     with pytest.raises(ResearchError, match="invalid research job journal entry"):
+        store.jobs()
+
+
+def test_research_journal_refuses_a_self_hashed_invalid_transition(tmp_path: Path) -> None:
+    plan = _plan()
+    store = ResearchStore(tmp_path)
+    store.start(plan, today="2026-01-01")
+    journal = tmp_path / ".megamind" / "research" / "jobs.jsonl"
+    first = json.loads(journal.read_text(encoding="utf-8"))
+    payload = {
+        name: first[name]
+        for name in (
+            "job_id",
+            "attempt_id",
+            "plan_id",
+            "gap_id",
+            "policy_digest",
+            "card_digest",
+            "access_digest",
+            "reason",
+            "artifact_ids",
+        )
+    }
+    payload["state"] = "planned"
+    forged = {
+        "schema": "megamind/research-job/v1",
+        **payload,
+        "event_id": content_hash(json.dumps(payload, sort_keys=True, separators=(",", ":"))),
+        "updated": "2026-01-01",
+    }
+    journal.write_text(
+        json.dumps(first) + "\n" + json.dumps(forged) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ResearchError, match="invalid research job journal transition"):
         store.jobs()
 
 
