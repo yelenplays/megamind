@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 from pathlib import Path
 from typing import Any
@@ -1729,7 +1728,7 @@ def test_put_all_rolls_back_after_a_write_failure(
     assert not list((root / MEGAMIND_DIR / "evidence" / "claims").glob("*.json"))
 
 
-def test_doctor_leaves_a_durable_interrupted_transaction_for_a_mutation_to_recover(
+def test_unverifiable_interrupted_transaction_remains_inert(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = governed_vault(tmp_path)
@@ -1755,11 +1754,6 @@ def test_doctor_leaves_a_durable_interrupted_transaction_for_a_mutation_to_recov
                 "schema": "megamind/evidence-transaction/v1",
                 "transaction_id": transaction_id,
                 "items": items,
-                "authority": hmac.new(
-                    bytes.fromhex(store._transaction_authority(create=True)),
-                    json.dumps({"items": items}, sort_keys=True, separators=(",", ":")).encode(),
-                    hashlib.sha256,
-                ).hexdigest(),
             },
             sort_keys=True,
             indent=2,
@@ -1776,24 +1770,22 @@ def test_doctor_leaves_a_durable_interrupted_transaction_for_a_mutation_to_recov
     assert journal.is_file()
     assert doc["errors"] == 0
 
-    EvidenceStore(root).put("claims", proposed_claim("the repaired synthetic fact"))
-    assert not interrupted_path.exists()
-    assert not journal.exists()
-    backups = root / MEGAMIND_DIR / BACKUP_DIR
-    assert list(backups.glob(f"{journal.name}.*.bak"))
+    with pytest.raises(EvidenceError, match="transaction recovery authority is unavailable"):
+        store.recover()
+    assert interrupted_path.is_file()
+    assert journal.is_file()
 
 
 def test_evidence_recovery_refuses_a_hostile_staged_journal(tmp_path: Path) -> None:
     root = governed_vault(tmp_path)
     store = EvidenceStore(root)
-    store._transaction_authority(create=True)
     claim = proposed_claim("the existing synthetic fact")
     path = store.put("claims", claim)
     items = [
         {
             "path": path.relative_to(root).as_posix(),
             "previous": None,
-            "staged_sha256": hashlib.sha256(b"different staged bytes").hexdigest(),
+            "staged_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
     ]
     transaction_id = content_hash(json.dumps({"items": items}, sort_keys=True, separators=(",", ":")))
@@ -1805,7 +1797,6 @@ def test_evidence_recovery_refuses_a_hostile_staged_journal(tmp_path: Path) -> N
                 "schema": "megamind/evidence-transaction/v1",
                 "transaction_id": transaction_id,
                 "items": items,
-                "authority": "0" * 64,
             },
             sort_keys=True,
             indent=2,
@@ -1814,7 +1805,7 @@ def test_evidence_recovery_refuses_a_hostile_staged_journal(tmp_path: Path) -> N
         encoding="utf-8",
     )
 
-    with pytest.raises(EvidenceError, match="transaction authority is invalid"):
+    with pytest.raises(EvidenceError, match="transaction recovery authority is unavailable"):
         store.recover()
 
     assert path.is_file()

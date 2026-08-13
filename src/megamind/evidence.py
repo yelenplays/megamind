@@ -9,10 +9,8 @@ quotation, and contradiction outcomes with typed values.
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import re
-import secrets
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -34,7 +32,6 @@ from .fsops import (
     atomic_write,
     backup_existing,
     content_hash,
-    create_private_file,
     identity_bytes,
     remove_contained,
     resolve_contained,
@@ -53,7 +50,6 @@ CLAIM_SCHEMA = "megamind/claim/v1"
 CONTRADICTION_SCHEMA = "megamind/contradiction/v1"
 CORRECTION_SCHEMA = "megamind/correction-notice/v1"
 TRANSACTION_SCHEMA = "megamind/evidence-transaction/v1"
-TRANSACTION_AUTHORITY_PATH = Path(MEGAMIND_DIR) / "evidence" / "transaction-authority.key"
 
 GATE_VERDICTS = ("pass", "fail", "unknown")
 DECISIONS = ("accepted", "rejected", "deferred")
@@ -1218,30 +1214,6 @@ class EvidenceStore:
     def _transaction_path(self, identifier: str) -> Path:
         return Path(MEGAMIND_DIR) / "evidence" / "transactions" / f"{identifier}.json"
 
-    def _transaction_authority(self, *, create: bool) -> str:
-        path = resolve_contained(self.root, TRANSACTION_AUTHORITY_PATH)
-        if not path.is_file():
-            if not create:
-                raise EvidenceError("evidence transaction authority is unavailable")
-            try:
-                create_private_file(path, secrets.token_hex(32), durable=True)
-            except FileExistsError:
-                pass
-        try:
-            authority = path.read_text(encoding="utf-8")
-        except OSError as error:
-            raise EvidenceError("evidence transaction authority is unavailable") from error
-        if not re.fullmatch(r"[0-9a-f]{64}", authority):
-            raise EvidenceError("evidence transaction authority is invalid")
-        if path.stat().st_mode & 0o077:
-            raise EvidenceError("evidence transaction authority is not private")
-        return authority
-
-    def _transaction_proof(self, authority: str, items: object) -> str:
-        return hmac.new(
-            bytes.fromhex(authority), _stable({"items": items}).encode("utf-8"), hashlib.sha256
-        ).hexdigest()
-
     def _recover_transactions(self) -> None:
         directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / "transactions")
         if not directory.is_dir():
@@ -1251,12 +1223,7 @@ class EvidenceStore:
                 payload = json.loads(journal.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as error:
                 raise EvidenceError("evidence transaction journal is unreadable") from error
-            if not isinstance(payload, dict) or set(payload) != {
-                "schema",
-                "transaction_id",
-                "items",
-                "authority",
-            }:
+            if not isinstance(payload, dict) or set(payload) != {"schema", "transaction_id", "items"}:
                 raise EvidenceError("evidence transaction journal is invalid")
             if payload["schema"] != TRANSACTION_SCHEMA or payload["transaction_id"] != journal.stem:
                 raise EvidenceError("evidence transaction journal is invalid")
@@ -1266,61 +1233,7 @@ class EvidenceStore:
             expected = content_hash(_stable({"items": items}))
             if expected != journal.stem:
                 raise EvidenceError("evidence transaction journal is invalid")
-            authority = self._transaction_authority(create=False)
-            if not isinstance(payload["authority"], str) or not hmac.compare_digest(
-                payload["authority"], self._transaction_proof(authority, items)
-            ):
-                raise EvidenceError("evidence transaction authority is invalid")
-            restores: list[tuple[Path, str | None, str]] = []
-            for item in items:
-                if (
-                    not isinstance(item, dict)
-                    or set(item) != {"path", "previous", "staged_sha256"}
-                    or not isinstance(item["path"], str)
-                    or (item["previous"] is not None and not isinstance(item["previous"], str))
-                    or not isinstance(item["staged_sha256"], str)
-                    or not SHA256.fullmatch(item["staged_sha256"])
-                ):
-                    raise EvidenceError("evidence transaction journal is invalid")
-                target = Path(item["path"])
-                if (
-                    len(target.parts) != 4
-                    or target.parts[:2] != (MEGAMIND_DIR, "evidence")
-                    or target.suffix != ".json"
-                    or target != self._path(target.parts[2], target.stem)
-                ):
-                    raise EvidenceError("evidence transaction journal is invalid")
-                restores.append((target, item["previous"], item["staged_sha256"]))
-            rollback: list[tuple[Path, str | None]] = []
-            for target, previous, staged_sha256 in reversed(restores):
-                target_path = resolve_contained(self.root, target)
-                current = target_path.read_text(encoding="utf-8") if target_path.is_file() else None
-                if current is None:
-                    if previous is not None:
-                        raise EvidenceError("evidence transaction does not match staged post-state")
-                    continue
-                if hashlib.sha256(current.encode("utf-8")).hexdigest() == staged_sha256:
-                    rollback.append((target, previous))
-                    continue
-                if previous is not None and current == previous:
-                    continue
-                raise EvidenceError("evidence transaction does not match staged post-state")
-            restored_paths: list[str] = []
-            for target, previous in rollback:
-                backup_existing(self.root, target, durable=True)
-                if previous is None:
-                    remove_contained(self.root, target, durable=True)
-                else:
-                    atomic_write(self.root, target, previous, durable=True)
-                restored_paths.append(target.as_posix())
-            journal_rel = journal.relative_to(self.root.resolve())
-            backup_existing(self.root, journal_rel, durable=True)
-            remove_contained(self.root, journal_rel, durable=True)
-            append_audit(
-                self.root,
-                "evidence-transaction-recovery",
-                {"transaction_id": str(payload["transaction_id"]), "paths": restored_paths},
-            )
+            raise EvidenceError("evidence transaction recovery authority is unavailable")
 
     def recover(self) -> None:
         self._recover_transactions()
@@ -1477,7 +1390,6 @@ class EvidenceStore:
             )
             if previous is not None:
                 backup_existing(self.root, rel, durable=True)
-        authority = self._transaction_authority(create=True)
         transaction_id = content_hash(_stable({"items": items_for_journal}))
         journal_rel = self._transaction_path(transaction_id)
         atomic_write(
@@ -1488,7 +1400,6 @@ class EvidenceStore:
                     "schema": TRANSACTION_SCHEMA,
                     "transaction_id": transaction_id,
                     "items": items_for_journal,
-                    "authority": self._transaction_proof(authority, items_for_journal),
                 },
                 sort_keys=True,
                 indent=2,
@@ -1496,12 +1407,8 @@ class EvidenceStore:
             + "\n",
             durable=True,
         )
-        try:
-            for rel, _, text in prepared:
-                atomic_write(self.root, rel, text, durable=True)
-        except BaseException:
-            self._recover_transactions()
-            raise
+        for rel, _, text in prepared:
+            atomic_write(self.root, rel, text, durable=True)
         backup_existing(self.root, journal_rel, durable=True)
         remove_contained(self.root, journal_rel, durable=True)
         append_audit(
