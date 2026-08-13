@@ -34,6 +34,15 @@ SOURCE_CLASSES = (
     "dataset",
 )
 VIDEO_QUALITIES = SOURCE_QUALITIES
+_MATCHER_FIELDS = ("registry", "host", "publisher", "document_type", "jurisdiction")
+_MATCHER_REQUIREMENTS = {
+    "registry": ("registry",),
+    "host": ("host",),
+    "publisher": ("publisher",),
+    "document_type": ("document_type",),
+    "jurisdiction": ("jurisdiction",),
+    "max_tier": ("max_tier",),
+}
 
 
 class PolicyError(ValueError):
@@ -64,6 +73,27 @@ def _strings(label: str, value: object) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise PolicyError(f"{label} must be a list of strings")
     return list(value)
+
+
+def _validate_matcher(label: str, value: object) -> dict[str, object]:
+    matcher = _mapping(label, value)
+    _unknown(label, matcher, {"kind", *_MATCHER_FIELDS, "max_tier"})
+    kind = matcher.get("kind")
+    if not isinstance(kind, str) or kind not in _MATCHER_REQUIREMENTS:
+        raise PolicyError(f"{label} kind is invalid")
+    for field_name in _MATCHER_REQUIREMENTS[kind]:
+        if field_name not in matcher:
+            raise PolicyError(f"{label} kind {kind} requires {field_name}")
+    for field_name in _MATCHER_FIELDS:
+        if field_name in matcher:
+            _str(f"{label} {field_name}", matcher[field_name], nonempty=True)
+    if "document_type" in matcher and matcher["document_type"] not in SOURCE_CLASSES:
+        raise PolicyError(f"{label} document_type is invalid")
+    if "max_tier" in matcher:
+        maximum = matcher["max_tier"]
+        if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0:
+            raise PolicyError(f"{label} max_tier must be positive")
+    return matcher
 
 
 @dataclass(frozen=True)
@@ -179,25 +209,9 @@ class ResearchPolicy:
                 raise PolicyError(f"research policy tiers[{index}] matchers must be a list")
             matchers: list[dict[str, object]] = []
             for mindex, matcher in enumerate(matchers_raw):
-                m = _mapping(f"research policy matcher {index}.{mindex}", matcher)
-                if "kind" not in m or not isinstance(m["kind"], str) or not m["kind"]:
-                    raise PolicyError("research policy matchers require a kind")
-                # Matchers are structured facts.  Unknown matcher keys are
-                # refused rather than silently becoming a future permission.
-                _unknown(
-                    f"research policy matcher {index}.{mindex}",
-                    m,
-                    {
-                        "kind",
-                        "registry",
-                        "host",
-                        "publisher",
-                        "document_type",
-                        "jurisdiction",
-                        "max_tier",
-                    },
+                matchers.append(
+                    _validate_matcher(f"research policy matcher {index}.{mindex}", matcher)
                 )
-                matchers.append(m)
             claim_types = tuple(
                 _strings(
                     f"research policy tiers[{index}] claim_types",
@@ -294,6 +308,30 @@ def policy_from_data(value: object) -> ResearchPolicy:
     return ResearchPolicy.from_data(value)
 
 
+def _matcher_matches(matcher: Mapping[str, object], facts: Mapping[str, object]) -> bool:
+    try:
+        validated = _validate_matcher("research policy matcher", matcher)
+    except PolicyError:
+        return False
+    if any(
+        facts.get(field_name) != validated[field_name]
+        for field_name in _MATCHER_FIELDS
+        if field_name in validated
+    ):
+        return False
+    if "max_tier" not in validated:
+        return True
+    current = facts.get("tier")
+    maximum = validated["max_tier"]
+    return (
+        isinstance(current, int)
+        and not isinstance(current, bool)
+        and isinstance(maximum, int)
+        and not isinstance(maximum, bool)
+        and current <= maximum
+    )
+
+
 def tier_for_facts(
     policy: ResearchPolicy | None, facts: Mapping[str, object], claim_type: str
 ) -> ResearchTier | None:
@@ -311,22 +349,7 @@ def tier_for_facts(
         if not tier.matchers:
             continue
         for matcher in tier.matchers:
-            matched = True
-            for key in ("registry", "host", "publisher", "document_type", "jurisdiction"):
-                if key in matcher and facts.get(key) != matcher[key]:
-                    matched = False
-            if "max_tier" in matcher:
-                current = facts.get("tier")
-                maximum = matcher["max_tier"]
-                if (
-                    not isinstance(current, int)
-                    or isinstance(current, bool)
-                    or not isinstance(maximum, int)
-                    or isinstance(maximum, bool)
-                    or current > maximum
-                ):
-                    matched = False
-            if matched:
+            if _matcher_matches(matcher, facts):
                 return tier
     return None
 

@@ -26,7 +26,14 @@ from megamind.evidence import (
     validate_quotation,
 )
 from megamind.fsops import MEGAMIND_DIR, content_hash
-from megamind.policy import RESEARCH_POLICY_SCHEMA, PolicyError, ResearchPolicy, freshness_state
+from megamind.policy import (
+    RESEARCH_POLICY_SCHEMA,
+    PolicyError,
+    ResearchPolicy,
+    ResearchTier,
+    freshness_state,
+    tier_for_facts,
+)
 from megamind.registry import load_registry, save_registry
 from megamind.research import PACKET_SCHEMA
 from megamind.scaffold import init_wiki_root
@@ -187,6 +194,44 @@ def test_research_policy_rejects_unknown_fields_and_absence_is_denial() -> None:
         )
     policy = ResearchPolicy.from_data({"schema": "megamind/research-policy/v1", "tiers": []})
     assert policy.permitted is False
+
+
+@pytest.mark.parametrize(
+    "matcher",
+    [
+        {"kind": "typo"},
+        {"kind": "publisher"},
+        {"kind": "max_tier"},
+        {"kind": "publisher", "publisher": ""},
+        {"kind": "document_type", "document_type": "unknown"},
+    ],
+)
+def test_research_policy_matchers_are_discriminated_and_restrictive(
+    matcher: dict[str, object],
+) -> None:
+    data = {
+        "schema": RESEARCH_POLICY_SCHEMA,
+        "research": "approval",
+        "tiers": [
+            {
+                "tier": 1,
+                "name": "authority",
+                "quality": "primary",
+                "matchers": [matcher],
+            }
+        ],
+    }
+    with pytest.raises(PolicyError):
+        ResearchPolicy.from_data(data)
+
+    forged = ResearchPolicy(
+        tiers=(ResearchTier(1, "authority", "primary", (matcher,)),), research="approval"
+    )
+    assert tier_for_facts(
+        forged,
+        {"publisher": "Authority", "document_type": "official-guidance", "tier": 1},
+        "fact",
+    ) is None
 
 
 def test_empty_and_out_of_range_quotation_spans_are_refused() -> None:
