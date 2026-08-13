@@ -181,7 +181,7 @@ def test_reconciliation_refuses_a_missing_journaled_contradiction(tmp_path: Path
         unresolved_contradictions(tmp_path, job.contradiction_ids)
 
 
-def test_accepting_artifact_sets_are_immutable_on_extraction(tmp_path: Path) -> None:
+def test_accepting_artifact_sets_are_immutable_on_all_outgoing_edges(tmp_path: Path) -> None:
     plan = _plan()
     store = ResearchStore(tmp_path)
     job = store.start(plan, today="2026-01-01")
@@ -209,6 +209,17 @@ def test_accepting_artifact_sets_are_immutable_on_extraction(tmp_path: Path) -> 
         store.transition(
             job.job_id,
             "extracting",
+            plan_id=plan.plan_id,
+            gap_id=plan.gap_id,
+            attempt_id=job.attempt_id,
+            artifact_ids=["claim-b"],
+            contradiction_ids=["contradiction-b"],
+            today="2026-01-01",
+        )
+    with pytest.raises(ReplayConflict, match="accepted artifact set is immutable"):
+        store.transition(
+            job.job_id,
+            "packet-ready",
             plan_id=plan.plan_id,
             gap_id=plan.gap_id,
             attempt_id=job.attempt_id,

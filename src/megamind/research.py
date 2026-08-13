@@ -658,7 +658,7 @@ class ResearchStore:
                 current.state, frozenset()
             ):
                 raise InvalidResearchTransition(f"cannot transition {current.state} to {to_state}")
-            if current.state == "accepting" and to_state == "extracting" and (
+            if current.state == "accepting" and (
                 sorted(set(artifact_ids or [])) != sorted(current.artifact_ids)
                 or effective_contradictions != sorted(current.contradiction_ids)
             ):
@@ -933,7 +933,7 @@ def _validate_event_history(events: list[Mapping[str, Any]]) -> None:
             current["state"] == "retrieving" and event["state"] == "accepting"
         ):
             raise ResearchError("invalid research job journal transition")
-        if current["state"] == "accepting" and event["state"] == "extracting" and (
+        if current["state"] == "accepting" and (
             event["artifact_ids"] != current["artifact_ids"]
             or event["contradiction_ids"] != current["contradiction_ids"]
         ):
