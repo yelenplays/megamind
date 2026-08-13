@@ -267,6 +267,51 @@ def test_accepting_job_cancellation_preserves_artifact_sets(tmp_path: Path) -> N
     assert cancelled.contradiction_ids == ("contradiction-a",)
 
 
+def test_resumed_attempt_clears_prior_accepted_artifact_sets(tmp_path: Path) -> None:
+    plan = _plan()
+    store = ResearchStore(tmp_path)
+    job = store.start(plan, today="2026-01-01")
+    for state in ("permission-check", "planned", "discovering", "retrieving"):
+        job = store.transition(
+            job.job_id,
+            state,
+            plan_id=plan.plan_id,
+            gap_id=plan.gap_id,
+            attempt_id=job.attempt_id,
+            today="2026-01-01",
+        )
+    job = store.transition(
+        job.job_id,
+        "accepting",
+        plan_id=plan.plan_id,
+        gap_id=plan.gap_id,
+        attempt_id=job.attempt_id,
+        artifact_ids=["claim-a"],
+        contradiction_ids=["contradiction-a"],
+        today="2026-01-01",
+    )
+    cancelled = store.transition(
+        job.job_id,
+        "cancelled",
+        plan_id=plan.plan_id,
+        gap_id=plan.gap_id,
+        attempt_id=job.attempt_id,
+        today="2026-01-01",
+    )
+
+    resumed = store.transition(
+        cancelled.job_id,
+        "gap-open",
+        plan_id=plan.plan_id,
+        gap_id=plan.gap_id,
+        attempt_id="fresh-attempt",
+        today="2026-01-01",
+    )
+
+    assert resumed.artifact_ids == ()
+    assert resumed.contradiction_ids == ()
+
+
 def test_research_plan_requires_a_wiki_binding() -> None:
     with pytest.raises(Exception, match="wiki must be a non-empty string"):
         make_plan(

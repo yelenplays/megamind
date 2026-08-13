@@ -630,6 +630,7 @@ class ResearchStore:
                 and attempt_id != current.attempt_id
             )
             if resuming_cancelled:
+                effective_artifacts = []
                 effective_contradictions = []
             if current.state in TERMINAL_STATES and not resuming_cancelled:
                 candidate = _event_payload(
