@@ -11,6 +11,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from .fsops import (
@@ -25,6 +26,22 @@ from .fsops import (
 from .confidence import RELIANCE_FLOOR, Confidence, answer_confidence
 
 LEGACY_JOBS_PATH = Path(MEGAMIND_DIR) / "research" / "jobs.jsonl"
+LEGACY_TRANSITIONS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "gap-open": frozenset({"permission-check", "cancelled"}),
+        "permission-check": frozenset(
+            {"planned", "cancelled", "policy-denied", "approval-required"}
+        ),
+        "planned": frozenset({"discovering", "cancelled"}),
+        "discovering": frozenset({"retrieving", "cancelled", "budget-exhausted"}),
+        "retrieving": frozenset({"accepting", "cancelled", "budget-exhausted"}),
+        "accepting": frozenset({"extracting", "packet-ready", "cancelled"}),
+        "extracting": frozenset({"reconciling", "cancelled"}),
+        "reconciling": frozenset(
+            {"packet-ready", "cancelled", "unresolved-contradiction"}
+        ),
+    }
+)
 
 PLAN_SCHEMA = "megamind/research-plan/v1"
 JOB_SCHEMA = "megamind/research-job/v1"
@@ -651,16 +668,6 @@ class ResearchStore:
                 raise ResearchError("invalid research job journal entry")
             events.append(value)
         latest: dict[str, dict[str, Any]] = {}
-        transitions = {
-            "gap-open": {"permission-check", "cancelled"},
-            "permission-check": {"planned", "cancelled", "policy-denied", "approval-required"},
-            "planned": {"discovering", "cancelled"},
-            "discovering": {"retrieving", "cancelled", "budget-exhausted"},
-            "retrieving": {"accepting", "cancelled", "budget-exhausted"},
-            "accepting": {"extracting", "packet-ready", "cancelled"},
-            "extracting": {"reconciling", "cancelled"},
-            "reconciling": {"packet-ready", "cancelled", "unresolved-contradiction"},
-        }
         for event in events:
             job_id = str(event["job_id"])
             prior = latest.get(job_id)
@@ -679,7 +686,9 @@ class ResearchStore:
                 elif (
                     event["attempt_id"] != prior["attempt_id"]
                     or any(event[key] != prior[key] for key in ("plan_id", "gap_id", "policy_digest", "card_digest", "access_digest"))
-                    or event["state"] not in transitions.get(str(prior["state"]), set())
+                    or event["state"] not in LEGACY_TRANSITIONS.get(
+                        str(prior["state"]), frozenset()
+                    )
                     or (prior["state"] == "accepting" and (event["artifact_ids"] != prior["artifact_ids"] or event["contradiction_ids"] != prior["contradiction_ids"]))
                 ):
                     raise ResearchError("invalid research job journal transition")
@@ -736,16 +745,6 @@ class ResearchStore:
         today: str | None = None,
         expected_state: str | None = None,
     ) -> LegacyJob:
-        edges = {
-            "gap-open": {"permission-check", "cancelled"},
-            "permission-check": {"planned", "cancelled", "policy-denied", "approval-required"},
-            "planned": {"discovering", "cancelled"},
-            "discovering": {"retrieving", "cancelled", "budget-exhausted"},
-            "retrieving": {"accepting", "cancelled", "budget-exhausted"},
-            "accepting": {"extracting", "packet-ready", "cancelled"},
-            "extracting": {"reconciling", "cancelled"},
-            "reconciling": {"packet-ready", "cancelled", "unresolved-contradiction"},
-        }
         current = self._legacy_job(job_id)
         if current is not None:
             if expected_state and current.state != expected_state:
@@ -769,7 +768,11 @@ class ResearchStore:
                 or effective_contradictions != sorted(current.contradiction_ids)
             ):
                 raise ReplayConflict("accepted artifact set is immutable")
-            if not resumed and state != current.state and state not in edges.get(current.state, set()):
+            if (
+                not resumed
+                and state != current.state
+                and state not in LEGACY_TRANSITIONS.get(current.state, frozenset())
+            ):
                 raise ResearchError(f"cannot transition {current.state} to {state}")
         else:
             effective_artifacts = sorted(set(artifact_ids or []))
