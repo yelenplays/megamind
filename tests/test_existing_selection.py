@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from megamind import toon
+from megamind import selection, toon
 from megamind.registry import ContextBudget, ModelAccess, load_registry, save_registry
 from test_cli import run_json, run_toon
 from test_selection import _preflight
@@ -143,6 +143,23 @@ def test_existing_selection_excludes_unsafe_current_rows(vault: Path, capsys: An
     names = {str(item["name"]) for item in listed["wikis"]}
     assert "BrandingWiki" not in names
     assert "ProductWiki" not in names
+    refused = run_json(
+        capsys,
+        *_list_args(vault),
+        "BrandingWiki",
+        "--selection-id",
+        listed["selection_id"],
+    )
+    assert refused[0] == 1
+    toon_refused = run_toon(
+        capsys,
+        *_list_args(vault),
+        "BrandingWiki",
+        "--selection-id",
+        listed["selection_id"],
+    )
+    assert toon_refused[0] == 1
+    assert toon_refused[1] == toon.encode(refused[1])
 
 
 def test_existing_selection_binds_model_session_date_and_catalog(vault: Path, capsys: Any) -> None:
@@ -168,6 +185,8 @@ def test_existing_selection_binds_model_session_date_and_catalog(vault: Path, ca
     )
     code, document, _ = run_json(capsys, *base)
     assert code == 1 and document["code"] == "selection_invalid"
+    code, rendered, _ = run_toon(capsys, *base)
+    assert code == 1 and rendered == toon.encode(document)
 
     code, listed2, _ = run_json(capsys, *_list_args(vault))
     assert code == 0 and listed2["selection_id"] == listed["selection_id"]
@@ -184,3 +203,54 @@ def test_existing_selection_binds_model_session_date_and_catalog(vault: Path, ca
         listed2["selection_id"],
     )
     assert code == 1 and document["code"] == "selection_invalid"
+    code, rendered, _ = run_toon(
+        capsys,
+        *_list_args(vault),
+        "BrandingWiki",
+        "--selection-id",
+        listed2["selection_id"],
+    )
+    assert code == 1 and rendered == toon.encode(document)
+
+
+def test_existing_selection_recovers_pending_audit_events(
+    vault: Path, capsys: Any, monkeypatch: Any
+) -> None:
+    original_append_audit = selection.append_audit
+
+    def fail_audit(*args: Any, **kwargs: Any) -> Path:
+        raise OSError("synthetic audit failure")
+
+    monkeypatch.setattr(selection, "append_audit", fail_audit)
+    code, document, _ = run_json(capsys, *_list_args(vault))
+    assert code == 1 and document["code"] == "selection_invalid"
+
+    monkeypatch.setattr(selection, "append_audit", original_append_audit)
+    code, listed, _ = run_json(capsys, *_list_args(vault))
+    assert code == 0
+    assert "existing_selection_listed" in (
+        vault / ".megamind" / "audit" / "log.jsonl"
+    ).read_text(encoding="utf-8")
+
+    monkeypatch.setattr(selection, "append_audit", fail_audit)
+    code, document, _ = run_json(
+        capsys,
+        *_list_args(vault),
+        "BrandingWiki",
+        "--selection-id",
+        listed["selection_id"],
+    )
+    assert code == 1 and document["code"] == "selection_invalid"
+
+    monkeypatch.setattr(selection, "append_audit", original_append_audit)
+    code, document, _ = run_json(
+        capsys,
+        *_list_args(vault),
+        "BrandingWiki",
+        "--selection-id",
+        listed["selection_id"],
+    )
+    assert code == 1 and document["code"] == "selection_invalid"
+    assert "existing_selection_consumed" in (
+        vault / ".megamind" / "audit" / "log.jsonl"
+    ).read_text(encoding="utf-8")

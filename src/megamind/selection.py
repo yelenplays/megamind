@@ -18,6 +18,7 @@ from typing import Any
 
 from .catalog import Catalog, RootRef
 from .fsops import (
+    AuditValue,
     PathEscapeError,
     append_audit,
     atomic_write,
@@ -377,6 +378,16 @@ def _read_existing_state(state_root: Path, selection_id: str) -> Doc:
         raise _existing_state_error("identity is malformed")
     if payload.get("status") not in {"listed", "consumed"}:
         raise _existing_state_error("status is malformed")
+    audit_event = payload.get("audit_event")
+    if not isinstance(audit_event, dict):
+        raise _existing_state_error("audit record is malformed")
+    if audit_event.get("action") not in {
+        "existing_selection_listed",
+        "existing_selection_consumed",
+    } or not isinstance(audit_event.get("event_id"), str):
+        raise _existing_state_error("audit record is malformed")
+    if audit_event.get("backup") is not None and not isinstance(audit_event.get("backup"), str):
+        raise _existing_state_error("audit record is malformed")
     return payload
 
 
@@ -400,29 +411,86 @@ def _state_audit_time(payload: Doc) -> datetime:
         raise _existing_state_error("malformed") from error
 
 
-def _write_existing_state(state_root: Path, payload: Doc, action: str) -> None:
+def _audit_event(selection_id: str, status: str) -> Doc:
+    action = f"existing_selection_{status}"
+    return {
+        "action": action,
+        "event_id": content_hash(f"{selection_id}:{action}"),
+        "backup": None,
+    }
+
+
+def _audit_details(payload: Doc) -> dict[str, AuditValue]:
+    binding = payload.get("binding")
+    audit_event = payload.get("audit_event")
+    if not isinstance(binding, dict) or not isinstance(audit_event, dict):
+        raise _existing_state_error("audit record is malformed")
+    return {
+        "selection_id": str(payload["selection_id"]),
+        "request_hash": str(binding["request_hash"]),
+        "catalog_hash": str(binding["catalog_hash"]),
+        "event_id": str(audit_event["event_id"]),
+        "backup": audit_event.get("backup") if isinstance(audit_event.get("backup"), str) else None,
+    }
+
+
+def _audit_event_exists(state_root: Path, event_id: str) -> bool:
+    try:
+        raw = resolve_contained(state_root, Path(".megamind") / "audit" / "log.jsonl").read_text(
+            encoding="utf-8"
+        )
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise _existing_state_error("audit could not be read") from error
+    for line in raw.splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise _existing_state_error("audit is malformed") from error
+        if isinstance(entry, dict) and entry.get("event_id") == event_id:
+            return True
+    return False
+
+
+def _ensure_existing_audit(state_root: Path, payload: Doc) -> None:
+    audit_event = payload.get("audit_event")
+    if not isinstance(audit_event, dict):
+        raise _existing_state_error("audit record is malformed")
+    event_id = audit_event.get("event_id")
+    action = audit_event.get("action")
+    if not isinstance(event_id, str) or not isinstance(action, str):
+        raise _existing_state_error("audit record is malformed")
+    if _audit_event_exists(state_root, event_id):
+        return
+    try:
+        append_audit(
+            state_root,
+            action,
+            _audit_details(payload),
+            now=_state_audit_time(payload),
+        )
+    except OSError as error:
+        raise _existing_state_error("could not be audited") from error
+
+
+def _write_existing_state(state_root: Path, payload: Doc) -> None:
     target = _existing_state_path(state_root, str(payload["selection_id"]))
     try:
         backup = backup_existing(state_root, target, durable=True)
+        audit_event = payload.get("audit_event")
+        if not isinstance(audit_event, dict):
+            raise _existing_state_error("audit record is malformed")
+        audit_event["backup"] = backup.name if backup else None
         atomic_write(
             state_root,
             target,
             _state_document(payload),
             durable=True,
         )
-        append_audit(
-            state_root,
-            action,
-            {
-                "selection_id": str(payload["selection_id"]),
-                "request_hash": str(payload["binding"]["request_hash"]),
-                "catalog_hash": str(payload["binding"]["catalog_hash"]),
-                "backup": backup.name if backup else None,
-            },
-            now=_state_audit_time(payload),
-        )
     except OSError as error:
         raise _existing_state_error("could not be recorded") from error
+    _ensure_existing_audit(state_root, payload)
 
 
 def _create_existing_state(state_root: Path, payload: Doc) -> bool:
@@ -437,20 +505,7 @@ def _create_existing_state(state_root: Path, payload: Doc) -> bool:
         return False
     except OSError as error:
         raise _existing_state_error("could not be recorded") from error
-    try:
-        append_audit(
-            state_root,
-            "existing_selection_listed",
-            {
-                "selection_id": str(payload["selection_id"]),
-                "request_hash": str(payload["binding"]["request_hash"]),
-                "catalog_hash": str(payload["binding"]["catalog_hash"]),
-                "backup": None,
-            },
-            now=_state_audit_time(payload),
-        )
-    except OSError as error:
-        raise _existing_state_error("could not be audited") from error
+    _ensure_existing_audit(state_root, payload)
     return True
 
 
@@ -469,7 +524,15 @@ def _claim_existing_state(state_root: Path, state: Doc, wiki: str) -> None:
             durable=True,
         )
     except FileExistsError as error:
-        raise _existing_state_error("already consumed") from error
+        try:
+            raw = resolve_contained(state_root, _existing_claim_path(selection_id)).read_text(
+                encoding="utf-8"
+            )
+            existing = json.loads(raw)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as read_error:
+            raise _existing_state_error("claim is malformed") from read_error
+        if existing != claim:
+            raise _existing_state_error("already consumed") from error
     except OSError as error:
         raise _existing_state_error("could not be claimed") from error
 
@@ -562,6 +625,7 @@ def list_existing(
             except SelectionError:
                 raise
             if prior.get("binding") == binding and prior.get("status") == "listed":
+                _ensure_existing_audit(state_root, prior)
                 return ExistingSelectionList(
                     content_hash(request),
                     catalog.catalog_hash,
@@ -580,6 +644,7 @@ def list_existing(
             "selection_id": nonce,
             "issuance": issuance,
             "binding": binding,
+            "audit_event": _audit_event(nonce, "listed"),
         }
         if _create_existing_state(state_root, payload):
             return ExistingSelectionList(
@@ -614,6 +679,7 @@ def select_existing(
     if model_class not in MODEL_CLASSES:
         raise SelectionError("existing selection model class is invalid")
     state = _read_existing_state(state_root, selection_id)
+    _ensure_existing_audit(state_root, state)
     if state.get("status") != "listed":
         raise _existing_state_error("already consumed")
     candidates = _existing_candidates(refs, catalog, model_class)
@@ -686,7 +752,8 @@ def select_existing(
     _claim_existing_state(state_root, state, wiki)
     consumed = dict(state)
     consumed["status"] = "consumed"
-    _write_existing_state(state_root, consumed, "existing_selection_consumed")
+    consumed["audit_event"] = _audit_event(selection_id, "consumed")
+    _write_existing_state(state_root, consumed)
     return ExistingSelectionResult(
         content_hash(request),
         catalog.catalog_hash,

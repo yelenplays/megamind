@@ -251,7 +251,10 @@ and total counts, and `--full` emits every eligible name. Its `selection_id`
 binds only the names it emitted, so an omitted name cannot be selected. Its
 durable, content-addressed state binds `request_hash`, the complete `catalog_hash`,
 `model_class`, owner/session identity hashes, the home identity, the current
-UTC date, and the complete eligible set. Repeating an unconsumed exact list is
+UTC date, and the emitted eligible subset. The complete catalog hash continues
+to bind the full current catalog. Each state transition also carries a durable
+privacy-safe audit event that is recovered into the audit log on retry.
+Repeating an unconsumed exact list is
 idempotent; after consumption a fresh identity is issued. Selection passes the
 same exact request/model/owner/session/date, one listed wiki, and the
 `selection_id`. Megamind recomputes the catalog and eligible set, verifies the
