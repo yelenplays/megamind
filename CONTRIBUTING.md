@@ -19,8 +19,8 @@ commands:
 
 ```sh
 pytest          # deterministic test suite
-ruff check src tests && ruff format --check src tests
-mypy            # strict, configured in pyproject.toml
+ruff check src tests evals && ruff format --check src tests evals
+mypy            # strict, configured in pyproject.toml (src/megamind and evals)
 ```
 
 ## Ground rules
@@ -38,7 +38,7 @@ mypy            # strict, configured in pyproject.toml
   only. Optional integrations belong behind extras (see the roadmap).
 - **Tests first**: behavior changes come with tests; bug fixes come with a
   test that fails before the fix. The synthetic examples vault and the frozen
-  evaluation fixture are pinned by tests; regenerate them deliberately, never
+  evaluation fixtures are pinned by tests; regenerate them deliberately, never
   let them drift.
 - **Synthetic content only**: examples, tests, fixtures, and docs must never
   contain real personal data, private paths, or company information.

@@ -43,9 +43,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e . ruff mypy pytest
       - name: Ruff lint
-        run: ruff check src tests
+        run: ruff check src tests evals
       - name: Ruff format
-        run: ruff format --check src tests
+        run: ruff format --check src tests evals
       - name: Mypy (strict)
         run: mypy
 

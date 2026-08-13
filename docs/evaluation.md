@@ -1,6 +1,8 @@
-# Phase 4 evaluation contract
+# Evaluation contract
 
-Megamind ships two offline evaluation surfaces.
+Megamind ships two offline evaluation surfaces from Phase 4 - the release
+benchmark and the three-arm value evaluation - plus one frozen
+governed-research corpus that is evaluation data only.
 
 ## Release benchmark
 
@@ -223,3 +225,57 @@ evaluation pass and an explicit governed card change. Phase 6 host rollout may
 consume only a complete `status: promoted` score as one of several required
 proofs; evaluation never overrides card access, host capability evidence,
 health, privacy order, or separate governance and access approvals.
+
+## Governed-research adversarial corpus
+
+`evals/fixtures/research-adversarial` is the third offline surface, and it is
+data only: an independent synthetic corpus for governed research with no
+command, host orchestration, network adapter, or production research record
+behind it. Expected behavior is encoded as versioned data contracts rather
+than calls into an implementation, so the corpus stays independently
+mergeable ahead of the surfaces it will gate.
+
+`evals/gen_research_corpus.py` is the only source of its bytes;
+`tests/test_research_corpus.py` regenerates into a temporary directory and
+requires an exact byte match, the same rule the release fixture follows.
+Regenerate with `python evals/gen_research_corpus.py
+evals/fixtures/research-adversarial --replace`. Source snapshots, labels,
+transcripts, the synthetic estate, cases, mutations, `manifest.json`, and
+`thresholds.json` are digest-bound to each other, so they are regenerated
+together or not at all; the generator refuses a target it does not own.
+
+The corpus holds frozen source snapshots with
+`megamind/research-source-label/v1` labels (derived origin identity and
+family, quality, lifecycle, eligibility, claim types, injection posture,
+rights, date precision), transcript fixtures whose digest is recomputable
+from a normalized payload alone, benchmark cases carrying required and
+forbidden claims plus one `expected_typed_outcome`, and mutations naming the
+fixture they perturb and the gates they cover. Adversarial coverage spans
+general and personalized creatine and allocation, retracted, concern and
+corrected evidence, duplicate and copied origins, malicious instructions in
+pages and transcripts, fabricated citations, irrelevant authoritative and
+relevant low-quality sources, stale and undated evidence, contradictions,
+transcript timestamp, speaker and date-precision perturbations, privacy
+canaries, a no-match and a provisional wiki, and reliability cases for
+partial outage, retries, duplicate jobs, day rollover, concurrent writes, and
+rollback.
+
+`evals/research_benchmark.py` is the fail-closed loader and is
+evaluation-only code: no worker, model, or network adapter. `load_corpus`
+refuses an absent or stale manifest, a file set or digest that drifted, a
+snapshot or transcript whose binding no longer holds, thresholds not bound to
+this corpus version and digest, a case or mutation naming something that does
+not exist, a tier or domain whose denominator or expected outcomes drifted, a
+missing required mutation category, a canary that is linked from another file
+or whose marker was copied into one, and any text matching a personal-data or
+machine-path pattern.
+
+Gates live in `thresholds.json`, never in prose: hard gates, statistical
+gates, and a per-domain hard floor for every domain the manifest declares,
+each with its own denominator, so an aggregate average cannot paper over a
+failing domain. The hidden holdout stays required with labels unpublished and
+aggregate substitution forbidden, and a separately supplied holdout root is
+validated without its labels ever entering public corpus data. The manifest
+is the authority for tier and domain denominators, expected outcomes,
+required mutation categories, and the canary list; read it rather than
+copying those numbers anywhere.

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "wikis": [
+    {
+      "index": "HealthWiki/INDEX.md",
+      "name": "HealthWiki",
+      "path": "HealthWiki",
+      "privacy": "public-reference",
+      "provisional": false
+    },
+    {
+      "index": "FinanceWiki/INDEX.md",
+      "name": "FinanceWiki",
+      "path": "FinanceWiki",
+      "privacy": "public-reference",
+      "provisional": false
+    },
+    {
+      "index": "ProvisionalWiki/INDEX.md",
+      "name": "ProvisionalWiki",
+      "path": "ProvisionalWiki",
+      "privacy": "public-reference",
+      "provisional": true
+    }
+  ]
+}
