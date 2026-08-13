@@ -114,6 +114,27 @@ A typed, correlation-stable suggestion that a host may research one gap topic.
 Never a dispatch, a worker, or a budget commitment.
 _Avoid_: task assignment, work order
 
+**Source origin**:
+The display-only string a host reports for where a source was found. It is
+free text that may resemble an identity but never is one: it is shown, cited,
+bounded and redacted at the projection boundary, and never corroborates.
+_Avoid_: derived identity, independence signal
+
+**Derived origin identity**:
+The `origin_id` a host derives independently of the display origin, and the
+only key corroboration counts by. Sources sharing one identity count once, and
+unknown or unstated independence collapses into a single restrictive bucket.
+_Avoid_: source URL, deduplication hint
+
+**Acceptance facts**:
+The typed block every `research-result/v2` source must carry: derived origin
+identity, retrieval and publication dates with precision, snapshot and
+normalized digests, rights posture, and a host-checked correction status.
+Megamind derives eligibility from them, so missing, unknown where a gate needs
+certainty, malformed, contradictory, non-clean, or retracted facts are typed
+ineligible. Source prose can never set them.
+_Avoid_: caller eligibility boolean, quality or rights inference
+
 **Provisional wiki**:
 A locally created wiki that passed every qualification criterion but is not
 trusted active knowledge yet: it is surfaced and may be offered, never an
