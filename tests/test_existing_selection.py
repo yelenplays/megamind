@@ -268,6 +268,7 @@ def test_existing_selection_refuses_model_date_and_home_changes(
     code, rendered, _ = run_toon(capsys, *home_context)
     assert code == 1 and rendered == toon.encode(document)
 
+
 def test_existing_selection_recovers_pending_audit_events(
     vault: Path, capsys: Any, monkeypatch: Any
 ) -> None:
@@ -283,9 +284,9 @@ def test_existing_selection_recovers_pending_audit_events(
     monkeypatch.setattr(selection, "append_audit", original_append_audit)
     code, listed, _ = run_json(capsys, *_list_args(vault))
     assert code == 0
-    assert "existing_selection_listed" in (
-        vault / ".megamind" / "audit" / "log.jsonl"
-    ).read_text(encoding="utf-8")
+    assert "existing_selection_listed" in (vault / ".megamind" / "audit" / "log.jsonl").read_text(
+        encoding="utf-8"
+    )
 
     monkeypatch.setattr(selection, "append_audit", fail_audit)
     code, document, _ = run_json(
@@ -306,9 +307,9 @@ def test_existing_selection_recovers_pending_audit_events(
         listed["selection_id"],
     )
     assert code == 1 and document["code"] == "selection_invalid"
-    assert "existing_selection_consumed" in (
-        vault / ".megamind" / "audit" / "log.jsonl"
-    ).read_text(encoding="utf-8")
+    assert "existing_selection_consumed" in (vault / ".megamind" / "audit" / "log.jsonl").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_existing_selection_recovers_claimed_state(
@@ -351,7 +352,9 @@ def test_existing_selection_recovers_claimed_state(
 def test_existing_selection_state_and_claim_are_owner_only(vault: Path, capsys: Any) -> None:
     code, listed, _ = run_json(capsys, *_list_args(vault))
     assert code == 0
-    state_path = vault / ".megamind" / "audit" / "existing-selection" / f"{listed['selection_id']}.json"
+    state_path = (
+        vault / ".megamind" / "audit" / "existing-selection" / f"{listed['selection_id']}.json"
+    )
     assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
 
     code, selected, _ = run_json(
