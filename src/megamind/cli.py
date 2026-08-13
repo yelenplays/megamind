@@ -1553,8 +1553,11 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
             | {contradiction.contradiction_id for contradiction in contradictions}
         )
         contradiction_ids = sorted(contradiction.contradiction_id for contradiction in contradictions)
-        if job.state == "extracting" and list(job.artifact_ids) != artifact_ids:
-            raise ReplayConflict("this attempt already extracted a different claim set")
+        if job.state in {"accepting", "extracting"} and (
+            list(job.artifact_ids) != artifact_ids
+            or list(job.contradiction_ids) != contradiction_ids
+        ):
+            raise ReplayConflict("accepted artifact set is immutable")
         for claim in claims:
             store_claim(root, claim)
         for contradiction in contradictions:

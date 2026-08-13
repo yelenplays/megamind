@@ -658,6 +658,11 @@ class ResearchStore:
                 current.state, frozenset()
             ):
                 raise InvalidResearchTransition(f"cannot transition {current.state} to {to_state}")
+            if current.state == "accepting" and to_state == "extracting" and (
+                sorted(set(artifact_ids or [])) != sorted(current.artifact_ids)
+                or effective_contradictions != sorted(current.contradiction_ids)
+            ):
+                raise ReplayConflict("accepted artifact set is immutable")
             if current.attempt_id != attempt_id and not resuming_cancelled:
                 raise ReplayConflict("attempt identity does not match current job")
             policy_digest = policy_digest or current.policy_digest
@@ -926,6 +931,11 @@ def _validate_event_history(events: list[Mapping[str, Any]]) -> None:
             raise ResearchError("invalid research job journal transition")
         if event["contradiction_ids"] != current["contradiction_ids"] and not (
             current["state"] == "retrieving" and event["state"] == "accepting"
+        ):
+            raise ResearchError("invalid research job journal transition")
+        if current["state"] == "accepting" and event["state"] == "extracting" and (
+            event["artifact_ids"] != current["artifact_ids"]
+            or event["contradiction_ids"] != current["contradiction_ids"]
         ):
             raise ResearchError("invalid research job journal transition")
         if event["state"] not in TRANSITIONS.get(str(current["state"]), frozenset()):
