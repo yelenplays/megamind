@@ -232,6 +232,40 @@ non-offer insertion, filtered/hidden/broken/absent/provisional/pointer state,
 access `none`, missing load artifacts, and traversal or escaping symlinks are
 `selection_invalid`. The operation is read-only and deterministic.
 
+## Existing-wiki selection (`select-existing`)
+
+The list invocation emits `megamind/existing-selection-list/v1`. It requires
+an exact request representation, model class, owner id, session id, and
+current UTC date (`--today`). Megamind recomputes the complete current catalog
+and emits only unique, healthy, nameable (`full` or `redacted`) rows with
+`full` or `digest-only` effective access, no provisional or pointer governance,
+no stale marker, and present contained declared load artifacts. The list is
+never formed from a caller's display array. Each row carries its exact
+`access`, and its exact card `context_budget` when declared, plus a privacy-safe
+root-facts identity. Hidden/withheld, none-access, broken/unavailable, stale,
+missing-artifact, duplicate, and escaping rows are absent without a reason
+that could enumerate them.
+
+The list's `selection_id` is an opaque one-time identity. Its durable,
+content-addressed state binds `request_hash`, the complete `catalog_hash`,
+`model_class`, owner/session identity hashes, the home identity, the current
+UTC date, and the complete eligible set. Repeating an unconsumed exact list is
+idempotent; after consumption a fresh identity is issued. Selection passes the
+same exact request/model/owner/session/date, one listed wiki, and the
+`selection_id`. Megamind recomputes the catalog and eligible set, verifies the
+state and home binding, then consumes the identity before returning
+`megamind/existing-selection-result/v1`. Drift, date rollover, model/session
+change, replay, cross-home reuse, forged names, or caller-manufactured
+eligibility are `selection_invalid` refusals.
+
+The authorization carries `basis: selected-eligible-existing`, preserves the
+current effective access and card budget, returns only the existing bounded
+reader `allows` and `follow_up`, and sets `threshold_matched: false` in both
+provenance and the selected entry. Explicit selection authorizes consultation
+only; it does not raise confidence or answerability. This path is distinct
+from `select-offer`, which continues to require membership in the original
+preflight `offers[]`.
+
 ## Governed gardening records (Phase 3)
 
 `.megamind/gaps.jsonl` is an append-only snapshot journal. The latest record

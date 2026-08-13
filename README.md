@@ -140,6 +140,12 @@ megamind-axi preflight "how do we price cleanup offers" --estate ~/Wikis --model
   preflight identity and current cards, authorizes only that one still-loadable
   offer, preserves its confidence and evidence, and exposes no broader access
   than the card already declared. A rephrased request is not a selection.
+- **Different existing wiki** is a separate `select-existing` path, never an
+  unoffered `select-offer` call. Megamind derives the eligible list from the
+  complete current catalog and binds its one-time selection identity to the
+  exact request, model class, owner/session, home, catalog, and freshness date.
+  It preserves effective access and budget but sets `threshold_matched: false`;
+  explicit choice grants consultation authority, not confidence or answerability.
 
 ## Governed gardening: gaps, research waves, provisional wikis
 
