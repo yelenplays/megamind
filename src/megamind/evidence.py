@@ -816,6 +816,8 @@ def validate_claim(
     quotations: Mapping[str, Mapping[str, Any]] | None = None,
     evidence: Mapping[str, Mapping[str, Any]] | None = None,
     notices: Sequence[Mapping[str, Any]] = (),
+    policy: ResearchPolicy | None = None,
+    enforce_policy: bool = False,
 ) -> dict[str, Any]:
     data = _map("claim", raw)
     _unknown(
@@ -916,6 +918,19 @@ def validate_claim(
                 raise EvidenceError("active claim requires accepted evidence")
             if resolve_corrections(record, notices)["status"] != CLEAN_CORRECTION:
                 raise EvidenceError("active claim requires currently clean evidence")
+    if lifecycle == "active" and enforce_policy:
+        if quotations is None or evidence is None:
+            raise EvidenceError("active claim policy admission requires stored support")
+        for support in supported:
+            gates = acceptance_gates(
+                evidence[support["evidence_id"]],
+                policy,
+                claim_type,
+                [quotations[support["quotation_id"]]],
+                notices,
+            )
+            if decide_acceptance(gates)[0] != "accepted":
+                raise EvidenceError("active claim support is not accepted under the wiki policy")
     return {
         "schema": CLAIM_SCHEMA,
         "claim_id": expected,
@@ -1177,6 +1192,7 @@ class EvidenceStore:
         *,
         quote_ceiling_chars: int = QUOTE_CEILING_CHARS,
     ) -> Path:
+        self._recover_transactions()
         rel, _, text = self._prepare(kind, data, normalized_text, quote_ceiling_chars)
         atomic_write(self.root, rel, text)
         return resolve_contained(self.root, rel)
@@ -1235,6 +1251,7 @@ class EvidenceStore:
         return [resolve_contained(self.root, rel) for rel, _, _ in prepared]
 
     def get(self, kind: str, identifier: str) -> dict[str, Any]:
+        self._recover_transactions()
         path = resolve_contained(self.root, self._path(kind, identifier))
         if not path.is_file():
             raise EvidenceError("evidence record not found")
@@ -1252,6 +1269,7 @@ class EvidenceStore:
         about, so it is returned as a typed problem instead of aborting the
         whole read.
         """
+        self._recover_transactions()
         directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / kind)
         if not directory.is_dir():
             return []

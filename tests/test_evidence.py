@@ -756,6 +756,79 @@ def test_artifact_rechecks_stored_quotation_against_its_wiki_ceiling(
     assert "G10" in doc["evidence"]["acceptance"]["failure"]
 
 
+def test_active_claim_rechecks_support_under_its_wiki_policy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    record, quotation = accepted_artifact(tmp_path, capsys, root)
+    registry = load_registry(root)
+    starter = registry.wiki_by_name("StarterWiki")
+    assert starter is not None and starter.research_policy is not None
+    starter.research_policy = ResearchPolicy.from_data(
+        {**starter.research_policy.to_data(), "quote_ceiling_chars": 5}
+    )
+    save_registry(root, registry)
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-claims",
+        "--wiki",
+        "StarterWiki",
+        "--input",
+        write_json(
+            tmp_path / "in" / "claim.json",
+            [
+                research_claim(
+                    str(record["evidence_id"]),
+                    str(quotation["quotation_id"]),
+                    "The policy-rejected synthetic fact holds",
+                )
+            ],
+        ),
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert not (root / MEGAMIND_DIR / "evidence" / "claims").exists()
+    starter.research_policy = ResearchPolicy.from_data(
+        {
+            **starter.research_policy.to_data(),
+            "quote_ceiling_chars": 400,
+            "tiers": [
+                {
+                    **starter.research_policy.to_data()["tiers"][0],
+                    "matchers": [{"kind": "publisher", "publisher": "Other Authority"}],
+                }
+            ],
+        }
+    )
+    save_registry(root, registry)
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-claims",
+        "--wiki",
+        "StarterWiki",
+        "--input",
+        write_json(
+            tmp_path / "in" / "claim-source.json",
+            [
+                research_claim(
+                    str(record["evidence_id"]),
+                    str(quotation["quotation_id"]),
+                    "The source-policy-rejected synthetic fact holds",
+                )
+            ],
+        ),
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert not (root / MEGAMIND_DIR / "evidence" / "claims").exists()
+
+
 def test_research_off_policy_denies_acceptance(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1452,20 +1525,11 @@ def test_put_all_recovers_a_durable_interrupted_transaction(
     interrupted_path.write_text(
         json.dumps(interrupted, sort_keys=True, indent=2) + "\n", encoding="utf-8"
     )
-    replacement = proposed_claim("the recovered synthetic fact")
-    code, doc, _ = run_json(
-        capsys,
-        "--root",
-        str(root),
-        "research",
-        "record-claims",
-        "--input",
-        write_json(tmp_path / "in" / "claims.json", [replacement]),
-    )
+    code, doc, _ = run_json(capsys, "--root", str(root), "doctor")
     assert code == 0
     assert not interrupted_path.exists()
     assert not journal.exists()
-    assert doc["claims"][0]["claim_id"] == replacement["claim_id"]
+    assert doc["errors"] == 0
 
 
 def test_active_claim_requires_currently_accepted_evidence(

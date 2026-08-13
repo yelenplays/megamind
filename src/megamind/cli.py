@@ -1636,7 +1636,12 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         notices = _valid_records(root, "corrections")
         claims = [
             validate_claim(
-                item, quotations=known_quotations, evidence=known_evidence, notices=notices
+                item,
+                quotations=known_quotations,
+                evidence=known_evidence,
+                notices=notices,
+                policy=policy,
+                enforce_policy=True,
             )
             for item in values
         ]
@@ -1674,7 +1679,12 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             notices = _valid_records(root, "corrections")
             claims = [
                 validate_claim(
-                    item, quotations=known_quotations, evidence=known_evidence, notices=notices
+                    item,
+                    quotations=known_quotations,
+                    evidence=known_evidence,
+                    notices=notices,
+                    policy=policy,
+                    enforce_policy=True,
                 )
                 for item in raw["claims"]
             ]
