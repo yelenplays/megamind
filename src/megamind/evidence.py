@@ -691,9 +691,18 @@ def validate_quotation(
         raise EvidenceError(f"quotation schema must be {QUOTATION_SCHEMA}")
     quotation_id = _str("quotation_id", data.get("quotation_id"), nonempty=True, limit=64)
     evidence_id = _str("quotation evidence_id", data.get("evidence_id"), nonempty=True, limit=64)
-    if evidence is not None and evidence_id not in evidence:
-        raise EvidenceError(f"quotation references an unknown evidence record: {evidence_id}")
     against_hash = _hash("quotation against_hash", data.get("against_hash"))
+    if evidence is not None:
+        if evidence_id not in evidence:
+            raise EvidenceError(f"quotation references an unknown evidence record: {evidence_id}")
+        # Otherwise the span is bound to whatever text the caller supplied
+        # rather than to the frozen snapshot, and forged text could resolve.
+        frozen = str(evidence[evidence_id]["snapshot"]["normalized_sha256"])
+        if against_hash != frozen:
+            raise EvidenceError(
+                f"quotation against_hash {against_hash} is not the normalized snapshot of "
+                f"evidence record {evidence_id} ({frozen})"
+            )
     if quote_ceiling_chars <= 0:
         raise EvidenceError("quotation ceiling must be positive")
     quote = _selector_quote("quotation quote", data.get("quote"), quote_ceiling_chars)

@@ -359,12 +359,22 @@ def _check_references(
     Doctor is that owner.
     """
     for identifier, quotation in sorted(records["quotations"].items()):
-        if quotation["evidence_id"] not in records["evidence"]:
+        artifact = records["evidence"].get(quotation["evidence_id"])
+        if artifact is None:
             findings.append(
                 _error(
                     "evidence",
                     _evidence_rel("quotations", identifier),
                     f"quotation cites unknown evidence record {quotation['evidence_id']}",
+                )
+            )
+        elif str(artifact["snapshot"]["normalized_sha256"]) != quotation["against_hash"]:
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("quotations", identifier),
+                    f"quotation against_hash {quotation['against_hash']} is not the normalized "
+                    f"snapshot of evidence record {quotation['evidence_id']}",
                 )
             )
     for identifier, claim in sorted(records["claims"].items()):

@@ -1658,3 +1658,131 @@ def test_doctor_reports_a_correction_notice_from_another_artifact(
         "belongs to a different evidence record" in finding["message"]
         for finding in doctor["findings"]
     )
+
+
+FORGED_TEXT = "A forged claim about the synthetic product."
+FORGED_QUOTE = {"exact": "forged claim", "prefix": "A ", "suffix": " about"}
+
+
+def test_quotation_must_be_bound_to_its_artifact_snapshot(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    record = research_evidence()
+    evidence_id = str(record["evidence_id"])
+    evidence_input = write_json(tmp_path / "in" / "evidence.json", record)
+    artifact = ["--root", str(root), "research", "record-artifact", "--wiki", "StarterWiki"]
+    code, deferred, _ = run_json(capsys, *artifact, "--input", evidence_input)
+    assert code == 0
+    assert deferred["status"] == "deferred"
+
+    # A span whose against_hash is the digest of text the host chose, not of
+    # the artifact's frozen snapshot.
+    forged_file = tmp_path / "in" / "forged.txt"
+    forged_file.parent.mkdir(parents=True, exist_ok=True)
+    forged_file.write_text(FORGED_TEXT, encoding="utf-8")
+    forged = research_quotation(evidence_id, FORGED_TEXT, FORGED_QUOTE)
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-quotations",
+        "--wiki",
+        "StarterWiki",
+        "--normalized-file",
+        str(forged_file),
+        "--input",
+        write_json(tmp_path / "in" / "forged.json", [forged]),
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert str(forged["against_hash"]) in doc["message"]
+    assert evidence_id in doc["message"]
+    assert not (root / MEGAMIND_DIR / "evidence" / "quotations").exists()
+
+    # The acceptance gate the forged span was meant to flip stays unknown.
+    code, still_deferred, _ = run_json(capsys, *artifact, "--input", evidence_input)
+    assert code == 0
+    assert still_deferred["status"] == "deferred"
+    gates = {g["gate"]: g["verdict"] for g in still_deferred["evidence"]["acceptance"]["gates"]}
+    assert gates["G10"] == "unknown"
+
+    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
+    assert code == 0, doctor
+
+
+def test_quotation_refuses_another_artifacts_snapshot_hash(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    first, _ = accepted_artifact(tmp_path, capsys, root, label="a")
+    second = research_evidence("https://authority.test/other", SECOND_TEXT)
+    code, _, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-artifact",
+        "--wiki",
+        "StarterWiki",
+        "--input",
+        write_json(tmp_path / "in" / "evidence-b.json", second),
+    )
+    assert code == 0
+    normalized_file = tmp_path / "in" / "normalized-a.txt"
+    normalized_file.parent.mkdir(parents=True, exist_ok=True)
+    normalized_file.write_text(RESEARCH_TEXT, encoding="utf-8")
+
+    # The first artifact's snapshot digest, offered as the second's.
+    crossed = research_quotation(str(second["evidence_id"]), RESEARCH_TEXT)
+    assert crossed["against_hash"] == first["snapshot"]["normalized_sha256"]
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-quotations",
+        "--wiki",
+        "StarterWiki",
+        "--normalized-file",
+        str(normalized_file),
+        "--input",
+        write_json(tmp_path / "in" / "crossed.json", [crossed]),
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert str(second["evidence_id"]) in doc["message"]
+
+
+def test_doctor_reports_a_quotation_bound_to_foreign_text(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    record = research_evidence()
+    code, _, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-artifact",
+        "--wiki",
+        "StarterWiki",
+        "--input",
+        write_json(tmp_path / "in" / "evidence.json", record),
+    )
+    assert code == 0
+    # Admission refuses this, so doctor's own binding check is exercised by
+    # planting the record the way a hand edit or a foreign tool would.
+    forged = validate_quotation(
+        research_quotation(str(record["evidence_id"]), FORGED_TEXT, FORGED_QUOTE), FORGED_TEXT
+    )
+    planted = root / MEGAMIND_DIR / "evidence" / "quotations" / f"{forged['quotation_id']}.json"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text(json.dumps(forged, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
+    assert code == 1
+    assert any(
+        "is not the normalized snapshot of" in finding["message"] for finding in doctor["findings"]
+    )

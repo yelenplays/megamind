@@ -496,8 +496,10 @@ current notice, and its head is the posture that removes retracted support.
 `reconcile` from claims needs `--today` and stores those claims with the
 contradictions it derives. Every citation resolves against the store before the
 citing record is admitted, so a hand-written contradiction or `packet` naming a
-claim this vault does not hold is refused rather than committed, and a claim's
-support must name the artifact its span was hash-bound to. `status` takes
+claim this vault does not hold is refused rather than committed. A quotation's
+`against_hash` must be the named artifact's own normalized snapshot digest, and
+a claim's support must name the artifact its span was hash-bound to, so the
+binding runs unbroken from snapshot to scored claim. `status` takes
 `--full` and reports unreadable records under `problems[]`, and every action
 needs an initialized vault. Full source bytes stay in host quarantine.
 

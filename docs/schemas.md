@@ -885,13 +885,16 @@ is resolved against the store before that record is admitted: a quotation names
 a stored artifact, a claim names stored quotations and artifacts, a
 contradiction names stored claims, a correction notice names a stored artifact
 and the notice it supersedes, and a packet names stored claims and
-contradictions.  Where a reference is a pair, both halves must agree: a claim's
-support must name the artifact its span was hash-bound to, and a notice may
-only supersede a notice of the same artifact.  A span proves text against one
-snapshot, so crediting it to a second artifact - and with it that artifact's
-acceptance, quality, and correction posture - is refused rather than scored.  Admission and doctor therefore enforce one invariant rather
-than competing over it, and a vault never lands in a state its own doctor
-reports as broken.
+contradictions.  Where a reference is a pair, both halves must agree: a
+quotation's `against_hash` must be the `snapshot.normalized_sha256` of the
+artifact it names, a claim's support must name the artifact its span was
+hash-bound to, and a notice may only supersede a notice of the same artifact.
+The hash binding therefore runs unbroken from the frozen snapshot through the
+span to the claim: a span cannot be bound to text the caller supplied instead
+of the artifact's own, and crediting a span to a second artifact - and with it
+that artifact's acceptance, quality, and correction posture - is refused rather
+than scored.  Admission and doctor enforce one invariant rather than competing
+over it, and a vault never lands in a state its own doctor reports as broken.
 
 The local job spine is represented by `megamind/research-plan/v1`,
 `megamind/research-job/v1`, `megamind/source-candidate/v1`,
