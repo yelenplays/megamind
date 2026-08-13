@@ -2009,10 +2009,28 @@ def test_packet_refuses_unknown_claim_and_contradiction_references(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = governed_vault(tmp_path)
+    code, plan_doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "plan",
+        "--input",
+        write_json(
+            tmp_path / "in" / "packet-plan.json",
+            {
+                "gap_id": "packet-integrity",
+                "wiki": "StarterWiki",
+                "question": "What is the synthetic fact?",
+            },
+        ),
+    )
+    assert code == 0, plan_doc
+    plan_id = str(plan_doc["plan"]["plan_id"])
 
     def packet(claim_ids: list[str], contradiction_ids: list[str]) -> dict[str, Any]:
         body = {
-            "plan_id": "plan-1",
+            "plan_id": plan_id,
             "claim_ids": sorted(claim_ids),
             "contradiction_ids": sorted(contradiction_ids),
             "interpretation": "",
