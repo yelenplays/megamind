@@ -37,7 +37,7 @@ def test_assess_claim_above_the_floor(tmp_path: Path, capsys: pytest.CaptureFixt
     assert err == ""
     assert doc["schema_version"] == "megamind/confidence-report/v1"
     assert doc["kind"] == "claim"
-    assert doc["score"] == 0.95
+    assert doc["score"] == 0.9
     assert doc["meets_floor"] is True
     assert doc["reliance_floor"] == 0.75
     assert doc["components"]

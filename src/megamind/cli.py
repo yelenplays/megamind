@@ -73,7 +73,6 @@ from .evolve import (
 )
 from .fsops import PathEscapeError
 from .gardening import (
-    RESULT_SCHEMA,
     WAVE_SCHEMA,
     CapacityInput,
     GapRecord,
@@ -1095,11 +1094,11 @@ def cmd_research_result(args: argparse.Namespace, root: Path) -> tuple[Doc, int]
     )
     result = ingest_research_result(root, nomination, result_data)
     return {
-        "schema_version": RESULT_SCHEMA,
+        "schema_version": result.schema,
         **result.to_data(),
         "help": _help(
-            "Review the immutable-source ingest proposal; Megamind does not "
-            "fetch or publish the source"
+            "Review the v2 immutable-source proposal; v1 is a restrictive legacy "
+            "nomination, and Megamind does not fetch or publish the source"
         ),
     }, 0
 
@@ -1828,7 +1827,10 @@ def build_parser() -> AxiParser:
     p_wave.add_argument("--captain-work", action="store_true")
     p_wave.add_argument("--today", default=argparse.SUPPRESS)
 
-    p_result = sub.add_parser("research-result", help="ingest a host research result as a proposal")
+    p_result = sub.add_parser(
+        "research-result",
+        help="ingest v2 host facts as a proposal; v1 remains restrictive legacy input",
+    )
     _common_flags(p_result)
     p_result.add_argument("--nomination-json", required=True)
     p_result.add_argument("--result-json", required=True)

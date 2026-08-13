@@ -34,6 +34,7 @@ def test_calibration_fixture_pins_the_claim_rubric() -> None:
                 quality=str(source["quality"]),
                 origin=str(source["origin"]),
                 eligible=bool(source.get("eligible", True)),
+                origin_id=str(source.get("origin_id", "")),
             )
             for source in case["sources"]  # type: ignore[index]
         ]
@@ -55,7 +56,12 @@ def test_calibration_fixture_pins_the_claim_rubric() -> None:
 def test_calibration_components_explain_every_case() -> None:
     for case in _calibration_cases():
         sources = [
-            Source(str(s["quality"]), str(s["origin"]), bool(s.get("eligible", True)))  # type: ignore[index]
+            Source(
+                str(s["quality"]),
+                str(s["origin"]),
+                bool(s.get("eligible", True)),
+                str(s.get("origin_id", "")),
+            )  # type: ignore[index]
             for s in case["sources"]  # type: ignore[index]
         ]
         result = claim_confidence(sources)
@@ -96,7 +102,10 @@ def test_claim_sources_from_one_origin_count_once() -> None:
         lifecycle="active",
     )
     two_origins = claim_confidence(
-        [Source("primary", "notes"), Source("primary", "changelog")],
+        [
+            Source("primary", "notes", origin_id="notes-origin"),
+            Source("primary", "changelog", origin_id="changelog-origin"),
+        ],
         freshness="fresh",
         lifecycle="active",
     )
@@ -120,6 +129,41 @@ def test_stale_and_undated_evidence_never_reaches_the_floor() -> None:
     undated = claim_confidence([Source("primary", "a")], lifecycle="active", freshness="unknown")
     assert stale.score is not None and stale.score < RELIANCE_FLOOR
     assert undated.score is not None and undated.score < RELIANCE_FLOOR
+
+
+def test_unknown_origin_independence_never_awards_corroboration() -> None:
+    result = claim_confidence(
+        [
+            Source("primary", "https://source.example/A"),
+            Source("primary", "https://source.example/B"),
+            Source("primary", "https://blog.example/repost-of-A"),
+        ],
+        lifecycle="active",
+        freshness="fresh",
+    )
+    assert result.score == 0.9
+    assert result.meets_floor is True
+    assert not any(
+        component["factor"] == "corroboration" and component["effect"] != "+0.00"
+        for component in result.components
+    )
+
+
+def test_retracted_support_is_removed_before_confidence_scoring() -> None:
+    result = claim_confidence(
+        [
+            Source(
+                "primary",
+                "doi:10.1056/NEJMoa2007621",
+                origin_id="doi",
+                correction_status="retracted",
+            )
+        ],
+        lifecycle="active",
+        freshness="fresh",
+    )
+    assert result.score is None
+    assert not result.meets_floor
 
 
 # --- answer rubric ------------------------------------------------------------

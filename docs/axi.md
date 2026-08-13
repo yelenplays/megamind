@@ -34,7 +34,7 @@ with a stable `schema_version`:
 | `megamind/gaps-result/v1`, `megamind/gap-result/v1` | `gap` |
 | `megamind/gap-transition/v1`, `megamind/gap-attempt/v1` | `gap` mutations |
 | `megamind/research-wave/v1` | `research-wave` |
-| `megamind/research-result/v1` | `research-result` |
+| `megamind/research-result/v1` or `v2` | `research-result` (v1 restrictive legacy; v2 typed acceptance) |
 | `megamind/provisional-wiki-result/v1` | `provision-wiki` |
 | `megamind/benchmark-result/v1`, `megamind/benchmark-check/v1` | `bench run`, `bench check` |
 | `megamind/evaluation-key/v1` | `experiment keygen` |
@@ -160,8 +160,9 @@ passed and otherwise explicitly unknown.
 `assess claim` scores one claim from `--source quality:origin` evidence
 (`primary`, `synthesis`, `hypothesis`, `prior`; `--ineligible-source` counts
 for nothing), `--lifecycle`, `--freshness`, and `--contradicted`; sources
-derived from one origin count once, unresolved contradictions freeze the
-claim below the floor, and stale or undated evidence can never reach it.
+derived from one `origin_id` count once; unknown independence collapses to
+one origin, unresolved contradictions freeze the claim below the floor, and
+stale or undated evidence can never reach it.
 `assess answer --claim SCORE|unknown ...` caps an answer at its weakest
 materially relied-upon claim. Both emit `megamind/confidence-report/v1` with
 the full component rationale.

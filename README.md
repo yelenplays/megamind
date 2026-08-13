@@ -165,10 +165,13 @@ megamind-axi research-result --nomination-json <json> --result-json <json>
   three-worker fleet, a worker already on the target wiki, active captain
   work, or less than a 25 percent quota reserve is a typed pause or refusal.
   Megamind starts no worker and calls no quota tool.
-- **Host research results** return by correlation id and are replay-safe;
-  eligible sources become an immutable-source ingest proposal. A result with no
-  eligible source is rejected before anything is written. Nothing is fetched,
-  and `raw/` stays human-curated.
+- **Host research results** return by correlation id and are replay-safe.
+  v1 results remain readable only as restrictive legacy nominations; v2
+  acceptance requires typed host facts for derived origin identity, dated
+  retrieval/publication, snapshot digests, rights/quotation posture, and a
+  clean correction check. Megamind derives eligibility and writes no proposal
+  for missing, unknown, malformed, contradictory, or retracted facts. Nothing
+  is fetched, and `raw/` stays human-curated.
 - **Provisional wikis** (`provision-wiki`) are the qualified local creation
   path: accepted domain, repeat demand, multiple topics, overlap, scope and
   exclusions, owner, source policy, privacy and model access, seed topics, and

@@ -8,6 +8,7 @@ recovery reporting. Nothing here touches the network.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 from pathlib import Path
@@ -21,6 +22,34 @@ from megamind.registry import load_registry, save_registry
 from test_cli import run_json, run_toon
 
 CAPACITY = ("--capacity-known", "--applicable-quota", "100", "--reserve-quota", "50")
+
+
+def accepted_source(origin: str, summary: str = "") -> dict[str, object]:
+    def digest(value: str) -> str:
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    return {
+        "origin": origin,
+        "summary": summary,
+        "acceptance": {
+            "origin_id": f"derived:{origin}",
+            "retrieval": {"date": "2026-08-13", "precision": "exact"},
+            "publication": {"date": "2026-08", "precision": "month"},
+            "snapshot": {"sha256": digest("snapshot"), "normalized_sha256": digest("normalized")},
+            "rights": {
+                "license": "CC-BY-4.0",
+                "quote_policy": "quote-bounded",
+                "snapshot_policy": "local-snapshot-allowed",
+            },
+            "corrections": {
+                "status": "clean",
+                "checked_at": {"date": "2026-08-13", "precision": "exact"},
+                "method": "synthetic",
+                "notice_ids": [],
+            },
+        },
+    }
+
 
 PROVISION_FLAGS = (
     "--domain",
@@ -89,7 +118,11 @@ def test_every_gardening_document_renders_identically_in_toon_and_json(
         "topic": "rate limits",
         "relationship": "direct",
     }
-    result = {"correlation_id": "c1", "sources": [{"origin": "synthetic", "eligible": True}]}
+    result = {
+        "schema": "megamind/research-result/v2",
+        "correlation_id": "c1",
+        "sources": [accepted_source("synthetic")],
+    }
     invocations: list[tuple[str, list[str]]] = [
         ("megamind/gaps-result/v1", ["gap", "list"]),
         (
@@ -115,7 +148,7 @@ def test_every_gardening_document_renders_identically_in_toon_and_json(
         ),
         ("megamind/research-wave/v1", ["research-wave", gap_id, *CAPACITY]),
         (
-            "megamind/research-result/v1",
+            "megamind/research-result/v2",
             [
                 "research-result",
                 "--nomination-json",
@@ -629,7 +662,11 @@ def test_research_result_replay_reuses_one_proposal(
         }
     )
     result = json.dumps(
-        {"correlation_id": "c1", "sources": [{"origin": "synthetic", "eligible": True}]}
+        {
+            "schema": "megamind/research-result/v2",
+            "correlation_id": "c1",
+            "sources": [accepted_source("synthetic")],
+        }
     )
     argv = (
         "--root",
@@ -664,10 +701,11 @@ def test_research_result_never_retains_ineligible_content_or_credentials(
     )
     result = json.dumps(
         {
+            "schema": "megamind/research-result/v2",
             "correlation_id": "c9",
             "sources": [
-                {"origin": "synthetic", "summary": "api_key=CANARY_TOKEN", "eligible": True},
-                {"origin": "private", "summary": "CANARY_INELIGIBLE", "eligible": False},
+                accepted_source("synthetic", "api_key=CANARY_TOKEN"),
+                {"origin": "private", "summary": "CANARY_INELIGIBLE", "acceptance": {}},
             ],
         }
     )
