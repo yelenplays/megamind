@@ -708,6 +708,41 @@ def test_packet_refuses_a_forged_host_confidence(
     assert list((root / ".megamind" / "proposals").glob("*.md")) == []
 
 
+def test_packet_refuses_a_forged_frozen_claim_confidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _research_vault(tmp_path)
+    job, claim_id = _lane_to_packet_ready(capsys, root)
+    claim_path = root / ".megamind" / "research" / "claims" / f"{claim_id}.json"
+    claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    claim["confidence"] = 0.99
+    claim_path.write_text(json.dumps(claim) + "\n", encoding="utf-8")
+
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "packet",
+        "--input",
+        _write(
+            root,
+            "packet.json",
+            {
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "claims": [claim_id],
+                "interpretation": "Synthesis with a forged frozen confidence.",
+            },
+        ),
+        "--today",
+        "2026-03-01",
+    )
+
+    assert code == 1
+    assert doc["code"] == "evidence_acceptance_invalid"
+    assert _artifacts(root, "packets") == set()
+
+
 def test_packet_refuses_before_reconcile_without_freezing_anything(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

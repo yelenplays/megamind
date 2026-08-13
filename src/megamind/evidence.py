@@ -475,7 +475,16 @@ def frozen_evidence(root: Path) -> dict[str, EvidenceRecord]:
         return {}
     records: dict[str, EvidenceRecord] = {}
     for path in sorted(directory.glob("*.json")):
-        record = _record_from_data(_read_document(path, EVIDENCE_SCHEMA))
+        raw = _read_document(path, EVIDENCE_SCHEMA)
+        body = {key: value for key, value in raw.items() if key not in {"schema", "evidence_id"}}
+        identifier = raw.get("evidence_id")
+        if (
+            not isinstance(identifier, str)
+            or identifier != path.stem
+            or identifier != content_hash(json.dumps(body, sort_keys=True, separators=(",", ":")))
+        ):
+            raise EvidenceAcceptanceError(f"frozen evidence artifact is invalid: {path.name}")
+        record = _record_from_data(raw)
         records[record.evidence_id] = record
     return records
 
@@ -527,10 +536,23 @@ class FrozenPacketResolver:
         if identifier not in self.claims:
             raise EvidenceAcceptanceError("claim reference is not frozen in this vault")
         path = resolve_contained(self.root, CLAIMS_DIR / f"{identifier}.json")
-        value = _read_document(path, CLAIM_SCHEMA).get("confidence", "unknown")
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return "unknown"
-        return float(value)
+        raw = _read_document(path, CLAIM_SCHEMA)
+        records = frozen_evidence(self.root)
+        claim = make_resolved_claim(
+            {
+                key: value
+                for key, value in raw.items()
+                if key not in {"schema", "claim_id", "confidence"}
+            },
+            records,
+        )
+        if (
+            raw.get("claim_id") != identifier
+            or claim.claim_id != identifier
+            or raw.get("confidence") != claim.confidence
+        ):
+            raise EvidenceAcceptanceError("frozen claim confidence does not match frozen evidence")
+        return claim.confidence
 
     def contradiction_is_unresolved(self, identifier: str) -> bool:
         if identifier not in self.contradictions:
