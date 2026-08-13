@@ -8,7 +8,10 @@ immutable content-addressed documents.
 Permission is never a host claim.  Every plan names one wiki, and
 ``research_authority`` derives the verdict and the bound policy/card/access
 digests from that wiki's validated card and from the access policy layer.  A
-host receipt can only narrow that verdict, never widen it.
+host receipt can only narrow that verdict, never widen it.  Packet confidence
+and answerability follow the same rule: they are derived from the resolved
+claim and contradiction records through a narrow resolver, never taken from
+the receipt.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from typing import Any, Protocol, cast
 
 from .access import effective_policy
 from .card import load_wiki_card
+from .confidence import RELIANCE_FLOOR, Confidence, answer_confidence
 from .fsops import MEGAMIND_DIR, append_audit, atomic_write, content_hash, resolve_contained
 from .models import KNOWLEDGE_TYPES, Document
 from .registry import (
@@ -383,6 +387,18 @@ def resolve_wiki_entry(root: Path, name: str) -> WikiEntry:
 
 class ReferenceResolver(Protocol):
     def resolve(self, kind: str, identifier: str) -> bool: ...
+
+
+class PacketFactResolver(ReferenceResolver, Protocol):
+    """Narrow seam that returns typed facts about a reference, never content.
+
+    A packet's confidence and answerability are computed from these facts, so
+    the identifiers stay opaque and no receipt value reaches the frozen packet.
+    """
+
+    def claim_confidence(self, identifier: str) -> float | str: ...
+
+    def contradiction_is_unresolved(self, identifier: str) -> bool: ...
 
 
 class MappingResolver:
@@ -750,8 +766,10 @@ class ResearchStore:
             raise ImmutableResearchError("research artifact is immutable")
         return atomic_write(self.root, directory / f"{identifier}.json", text)
 
-    def save_packet(self, packet: Mapping[str, Any]) -> Path:
-        normalized = make_packet(packet)
+    def save_packet(
+        self, packet: Mapping[str, Any], resolver: PacketFactResolver | None = None
+    ) -> Path:
+        normalized = make_packet(packet, resolver)
         return self.save_immutable(PACKET_SCHEMA, str(normalized["packet_id"]), normalized)
 
     def save_outcome(self, outcome: ResearchOutcome | Mapping[str, Any]) -> Path:
@@ -868,26 +886,61 @@ def _packet_body(packet: Mapping[str, Any]) -> dict[str, Any]:
         raise ResearchError("packet claims must be opaque references")
     if not isinstance(contradictions, list) or not all(isinstance(x, str) for x in contradictions):
         raise ResearchError("packet contradictions must be opaque references")
-    answerability = _object(packet.get("answerability", {}), "answerability")
-    confidence = packet.get("confidence", "unknown")
-    if not (isinstance(confidence, (int, float, str)) and not isinstance(confidence, bool)):
-        raise ResearchError("packet confidence is invalid")
     return {
         "job_id": _string(packet.get("job_id"), "job_id", required=True),
         "attempt_id": _string(packet.get("attempt_id"), "attempt_id", required=True),
         "claims": list(claims),
         "contradictions": list(contradictions),
         "interpretation": _string(packet.get("interpretation", ""), "interpretation"),
-        "answerability": answerability,
-        "confidence": confidence,
         "provenance": list(packet.get("provenance", []))
         if isinstance(packet.get("provenance", []), list)
         else [],
     }
 
 
+def _score(value: float | str) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def derive_packet_facts(
+    claims: list[str], contradictions: list[str], facts: PacketFactResolver | None
+) -> tuple[float | str, dict[str, Any]]:
+    """Compute packet confidence and answerability from the resolved records.
+
+    A packet never exceeds its weakest relied-upon claim, an unknown claim
+    keeps the packet unknown, and any unresolved contradiction refuses
+    answerability outright.
+    """
+    if (claims or contradictions) and facts is None:
+        raise ResearchError("packet claim and contradiction references require a resolver")
+    scores = [facts.claim_confidence(claim) for claim in claims] if facts is not None else []
+    unresolved = (
+        [item for item in contradictions if facts.contradiction_is_unresolved(item)]
+        if facts is not None
+        else []
+    )
+    resolved = [_score(value) for value in scores]
+    aggregate = answer_confidence([Confidence(score) for score in resolved])
+    if unresolved:
+        verdict = "contradicted"
+    elif not resolved or not aggregate.meets_floor:
+        verdict = "insufficient"
+    else:
+        verdict = "supported"
+    return aggregate.render(), {
+        "verdict": verdict,
+        "claims": len(resolved),
+        "unknown_claims": sum(1 for score in resolved if score is None),
+        "below_floor_claims": sum(
+            1 for score in resolved if score is not None and score < RELIANCE_FLOOR
+        ),
+        "unresolved_contradictions": len(unresolved),
+        "reliance_floor": RELIANCE_FLOOR,
+    }
+
+
 def make_packet(
-    packet: Mapping[str, Any], resolver: ReferenceResolver | None = None
+    packet: Mapping[str, Any], resolver: PacketFactResolver | None = None
 ) -> dict[str, Any]:
     if packet.get("schema") not in (None, PACKET_SCHEMA):
         raise ResearchError("packet schema is invalid")
@@ -899,6 +952,17 @@ def make_packet(
         for contradiction in body["contradictions"]:
             if not resolver.resolve("contradiction", contradiction):
                 raise ResearchError("packet contains an unresolved contradiction reference")
+    confidence, answerability = derive_packet_facts(
+        body["claims"], body["contradictions"], resolver
+    )
+    for key, derived in (("confidence", confidence), ("answerability", answerability)):
+        supplied = packet.get(key)
+        if supplied is not None and supplied != derived:
+            raise ResearchError(
+                f"packet {key} is derived from the resolved claims and cannot be supplied"
+            )
+    body["confidence"] = confidence
+    body["answerability"] = answerability
     packet_id = _hash_body(body)
     if packet.get("packet_id") not in (None, packet_id):
         raise ReplayConflict("packet_id does not match content")
@@ -913,7 +977,7 @@ def compile_packet_proposal(
     destination: str = "uncategorized",
     knowledge_type: str = "guidance",
     today: str | None = None,
-    resolver: ReferenceResolver | None = None,
+    resolver: PacketFactResolver | None = None,
 ) -> tuple[str, Path]:
     if knowledge_type not in KNOWLEDGE_TYPES:
         raise ResearchError("unknown proposal knowledge type")

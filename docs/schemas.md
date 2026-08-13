@@ -705,7 +705,15 @@ support against accepted evidence only and reaches `extracting`, and
 `research packet --input packet.json` requires a `packet-ready` job, resolves
 the packet's claim and contradiction references through a narrow resolver over
 the frozen artifacts, and compiles the packet to the existing normal
-`.megamind/proposals/<id>.md` shape. `evolve` validates the packet reference
+`.megamind/proposals/<id>.md` shape. A packet's `confidence` and
+`answerability` are derived from those resolved records, never supplied: the
+confidence is the weakest relied-upon claim and stays `unknown` when any claim
+is unknown, and `answerability` reports `contradicted` when a referenced
+contradiction is unresolved, `insufficient` when there are no claims or the
+derived confidence misses the reliance floor, and `supported` otherwise. A
+receipt that states either field with a value other than the derived one is
+refused, so replaying an emitted packet stays a no-op while a forged score
+cannot be frozen. `evolve` validates the packet reference
 inside its existing write-ahead transaction; apply remains one explicit
 approval per cycle. Core has no network or host orchestration.
 

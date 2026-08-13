@@ -67,6 +67,7 @@ from .evaluation import (
 )
 from .evidence import (
     EvidenceAcceptanceError,
+    FrozenPacketResolver,
     accept_evidence,
     frozen_evidence,
     frozen_ids,
@@ -1429,10 +1430,9 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
     if action == "packet":
         data = _json_file(args.input, "--input")
         # Packet references resolve only through this narrow resolver over the
-        # frozen claim and contradiction artifacts; ids stay opaque.
-        resolver = MappingResolver(
-            {"claim": frozen_ids(root, "claim"), "contradiction": frozen_ids(root, "contradiction")}
-        )
+        # frozen claim and contradiction artifacts; ids stay opaque, and the
+        # packet's confidence and answerability are derived from them.
+        resolver = FrozenPacketResolver(root)
         packet = make_packet(data, resolver)
         packet_id = str(packet["packet_id"])
         job, _plan_record, _authority = _authorized_job(

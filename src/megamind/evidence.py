@@ -466,6 +466,41 @@ def unresolved_contradictions(root: Path, identifiers: Iterable[str]) -> list[st
     return unresolved
 
 
+class FrozenPacketResolver:
+    """Narrow packet resolver over the frozen claim and contradiction artifacts.
+
+    It answers only what packet derivation needs - does this reference exist,
+    what confidence did this lane compute for it, is this contradiction still
+    unresolved - so packet fields never come from a host receipt.
+    """
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.claims = frozen_ids(root, "claim")
+        self.contradictions = frozen_ids(root, "contradiction")
+
+    def resolve(self, kind: str, identifier: str) -> bool:
+        if kind == "claim":
+            return identifier in self.claims
+        if kind == "contradiction":
+            return identifier in self.contradictions
+        return False
+
+    def claim_confidence(self, identifier: str) -> float | str:
+        if identifier not in self.claims:
+            raise EvidenceAcceptanceError("claim reference is not frozen in this vault")
+        path = resolve_contained(self.root, CLAIMS_DIR / f"{identifier}.json")
+        value = _read_document(path, CLAIM_SCHEMA).get("confidence", "unknown")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return "unknown"
+        return float(value)
+
+    def contradiction_is_unresolved(self, identifier: str) -> bool:
+        if identifier not in self.contradictions:
+            return True
+        return bool(unresolved_contradictions(self.root, [identifier]))
+
+
 def make_resolved_claim(data: Mapping[str, Any], records: Mapping[str, EvidenceRecord]) -> Claim:
     """Validate one host claim against frozen accepted evidence and derive its confidence.
 

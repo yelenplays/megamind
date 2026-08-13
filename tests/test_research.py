@@ -92,6 +92,23 @@ def test_research_plan_requires_a_wiki_binding() -> None:
         )
 
 
+class _StubFacts:
+    def __init__(self, claims: dict[str, float | str], unresolved: tuple[str, ...] = ()) -> None:
+        self.claims = claims
+        self.unresolved = unresolved
+
+    def resolve(self, kind: str, identifier: str) -> bool:
+        if kind == "claim":
+            return identifier in self.claims
+        return identifier in self.unresolved
+
+    def claim_confidence(self, identifier: str) -> float | str:
+        return self.claims[identifier]
+
+    def contradiction_is_unresolved(self, identifier: str) -> bool:
+        return identifier in self.unresolved
+
+
 def test_research_packet_id_and_opaque_resolver() -> None:
     packet = make_packet(
         {
@@ -100,11 +117,75 @@ def test_research_packet_id_and_opaque_resolver() -> None:
             "claims": ["opaque-claim"],
             "contradictions": [],
             "interpretation": "Bounded interpretation",
-            "answerability": {"general_method": "supported"},
-        }
+        },
+        _StubFacts({"opaque-claim": 0.8}),
     )
     assert packet["schema"] == "megamind/research-packet/v1"
     assert isinstance(packet["packet_id"], str)
+    assert packet["confidence"] == 0.8
+    assert packet["answerability"]["verdict"] == "supported"
+
+
+def test_packet_confidence_never_exceeds_its_weakest_claim() -> None:
+    packet = make_packet(
+        {
+            "job_id": "job",
+            "attempt_id": "attempt",
+            "claims": ["strong", "weak"],
+            "interpretation": "Bounded interpretation",
+        },
+        _StubFacts({"strong": 0.9, "weak": 0.5}),
+    )
+    assert packet["confidence"] == 0.5
+    assert packet["answerability"]["verdict"] == "insufficient"
+    assert packet["answerability"]["below_floor_claims"] == 1
+
+
+def test_packet_confidence_is_unknown_when_any_claim_is_unknown() -> None:
+    packet = make_packet(
+        {
+            "job_id": "job",
+            "attempt_id": "attempt",
+            "claims": ["strong", "unsupported"],
+            "interpretation": "Bounded interpretation",
+        },
+        _StubFacts({"strong": 0.9, "unsupported": "unknown"}),
+    )
+    assert packet["confidence"] == "unknown"
+    assert packet["answerability"] == {
+        "verdict": "insufficient",
+        "claims": 2,
+        "unknown_claims": 1,
+        "below_floor_claims": 0,
+        "unresolved_contradictions": 0,
+        "reliance_floor": 0.75,
+    }
+
+
+def test_packet_answerability_is_contradicted_by_an_unresolved_contradiction() -> None:
+    packet = make_packet(
+        {
+            "job_id": "job",
+            "attempt_id": "attempt",
+            "claims": ["strong"],
+            "contradictions": ["open"],
+            "interpretation": "Bounded interpretation",
+        },
+        _StubFacts({"strong": 0.9}, unresolved=("open",)),
+    )
+    assert packet["answerability"]["verdict"] == "contradicted"
+
+
+def test_packet_references_without_a_resolver_are_refused() -> None:
+    with pytest.raises(Exception, match="require a resolver"):
+        make_packet(
+            {
+                "job_id": "job",
+                "attempt_id": "attempt",
+                "claims": ["opaque-claim"],
+                "interpretation": "Bounded interpretation",
+            }
+        )
 
 
 def _research_vault(tmp_path: Path, *, enabled: bool = True) -> Path:
@@ -264,7 +345,6 @@ def test_research_lane_reaches_a_proposal_through_the_transition_table(
         "attempt_id": job["attempt_id"],
         "claims": [claim_id],
         "interpretation": "The synthetic product ships on a weekly train.",
-        "answerability": {"general_method": "supported"},
     }
     code, doc = _run(
         capsys,
@@ -279,6 +359,9 @@ def test_research_lane_reaches_a_proposal_through_the_transition_table(
     assert code == 0, doc
     assert doc["job"]["state"] == "change-proposed"
     assert (root / doc["proposal"]).is_file()
+    # The packet reports the frozen claim's confidence, not a receipt value.
+    assert doc["packet"]["confidence"] == _frozen_claim(root, claim_id)["confidence"]
+    assert doc["packet"]["answerability"]["claims"] == 1
 
     # Exact replay of the whole packet step is a no-op, not a second proposal.
     replayed_code, replayed = _run(
@@ -299,6 +382,46 @@ def test_research_lane_reaches_a_proposal_through_the_transition_table(
 def _artifacts(root: Path, directory: str) -> set[str]:
     path = root / ".megamind" / "research" / directory
     return {item.name for item in path.glob("*.json")} if path.is_dir() else set()
+
+
+def _frozen_claim(root: Path, claim_id: str) -> dict[str, Any]:
+    path = root / ".megamind" / "research" / "claims" / f"{claim_id}.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    return value
+
+
+def test_packet_refuses_a_forged_host_confidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _research_vault(tmp_path)
+    job, claim_id = _lane_to_packet_ready(capsys, root)
+    assert _frozen_claim(root, claim_id)["confidence"] != 0.99
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "packet",
+        "--input",
+        _write(
+            root,
+            "packet.json",
+            {
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "claims": [claim_id],
+                "interpretation": "Synthesis with a minted score.",
+                "confidence": 0.99,
+                "answerability": {"general_method": "supported"},
+            },
+        ),
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 1
+    assert doc["code"] == "research_invalid"
+    assert _artifacts(root, "packets") == set()
+    assert list((root / ".megamind" / "proposals").glob("*.md")) == []
 
 
 def test_packet_refuses_before_reconcile_without_freezing_anything(
@@ -387,6 +510,94 @@ def test_record_claims_refuses_a_forbidden_state_without_freezing_claims(
     assert code == 1
     assert doc["code"] == "research_transition_invalid"
     assert _artifacts(root, "claims") == before
+
+
+def test_packet_over_an_unsupported_claim_stays_unknown(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _research_vault(tmp_path)
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "permission-check",
+        "--input",
+        _write(root, "plan.json", {**PLAN_INPUT, "policy_authorized": True}),
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0, doc
+    job = doc["job"]
+    _run(
+        capsys,
+        root,
+        "research",
+        "record-discovery",
+        "--input",
+        _write(
+            root,
+            "discovery.json",
+            {
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "candidates": ["candidate-a"],
+                "usage": {"queries": 1},
+            },
+        ),
+        "--today",
+        "2026-03-01",
+    )
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "record-claims",
+        "--input",
+        _write(
+            root,
+            "claims.json",
+            {
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "claims": [
+                    {
+                        "claim_key": "unsupported",
+                        "statement": "A claim with no admitted support.",
+                        "supported_by": [],
+                    }
+                ],
+            },
+        ),
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0, doc
+    claim_id = doc["claims"][0]["claim_id"]
+    assert doc["claims"][0]["confidence"] == "unknown"
+    _run(capsys, root, "research", "reconcile", "--job-id", job["job_id"], "--today", "2026-03-01")
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "packet",
+        "--input",
+        _write(
+            root,
+            "packet.json",
+            {
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "claims": [claim_id],
+                "interpretation": "Synthesis over an unsupported claim.",
+            },
+        ),
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0, doc
+    assert doc["packet"]["confidence"] == "unknown"
+    assert doc["packet"]["answerability"]["verdict"] == "insufficient"
+    assert doc["packet"]["answerability"]["unknown_claims"] == 1
 
 
 def test_packet_refuses_an_unfrozen_claim_reference(
