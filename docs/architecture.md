@@ -69,9 +69,12 @@ always returned even when it alone exceeds the budget, so a real match never
 degrades into a silent empty result. Privacy classes shape the result:
 `digest-only` wikis never expose pages, `pointer-only` wikis never expose
 content and therefore cost nothing against the budget. Tokenization is
-lowercase word extraction with an English stopword list and naive plural
-stripping. All weights are constants in `routing.py`; changing them is a
-behavior change and needs test updates.
+lowercase word extraction with an English stopword list and plural stripping:
+a final `s` is removed from tokens longer than three characters, except for
+the exact conversational token `pros`, which must not become the unrelated
+trigger `pro`. This preserves ordinary plural normalization such as `logos` ->
+`logo` and `names` -> `name`. All weights are constants in `routing.py`;
+changing them is a behavior change and needs test updates.
 
 ## Confidence and thresholds
 

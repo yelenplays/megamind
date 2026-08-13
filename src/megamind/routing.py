@@ -150,14 +150,17 @@ THRESHOLDS: dict[str, float] = {
 }
 
 
+_NON_SINGULARIZED_TOKENS = frozenset({"pros"})
+
+
 def _normalize(token: str) -> str:
-    if len(token) > 3 and token.endswith("s"):
+    if len(token) > 3 and token.endswith("s") and token not in _NON_SINGULARIZED_TOKENS:
         return token[:-1]
     return token
 
 
 def tokenize(text: str) -> list[str]:
-    """Lowercased, stopword-filtered, naively singularized tokens, order preserved."""
+    """Lowercase and filter words, safely stripping an unambiguous final ``s``."""
     seen: set[str] = set()
     result: list[str] = []
     for raw in _WORD.findall(text.lower()):
