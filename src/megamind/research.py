@@ -350,6 +350,11 @@ def validate_packet(
     return {"schema": PACKET_SCHEMA, "packet_id": expected, **body}
 
 
+def packet_content_id(packet: Mapping[str, Any]) -> str:
+    """Return the validated immutable identity of a stored research packet."""
+    return str(validate_packet(packet)["packet_id"])
+
+
 def validate_outcome(raw: object) -> dict[str, Any]:
     data = _map("research outcome", raw)
     allowed = {

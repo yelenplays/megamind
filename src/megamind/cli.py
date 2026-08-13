@@ -156,7 +156,13 @@ from .rollout import (
 )
 from .routing import RouteResult, route
 from .scaffold import InitError, init_vault, init_wiki_root
-from .selection import SelectionError, read_preflight_result, select_offer
+from .selection import (
+    SelectionError,
+    list_existing,
+    read_preflight_result,
+    select_existing,
+    select_offer,
+)
 from .semantic import NgramBackend, SemanticBackend
 from .skillpack import skill_files, write_skill
 
@@ -459,6 +465,97 @@ def cmd_preflight(
             f'Run `{EXECUTABLE} capture --text "<what you learn>" --type fact` afterwards',
         )
     return doc, 0
+
+
+def cmd_select_existing(
+    wiki: str | None,
+    request: str,
+    selection_id: str | None,
+    model_class: str,
+    owner_id: str,
+    session_id: str,
+    estate: str | None,
+    root: Path,
+    root_label: str,
+    today: date | None,
+    full: bool,
+) -> tuple[Doc, int]:
+    if today is None:
+        raise UsageError("select-existing requires --today for the current UTC selection date")
+    refs = _resolve_roots(estate, root, root_label)
+    catalog = build_catalog(refs, today=today)
+    if wiki is None:
+        if selection_id is not None:
+            raise UsageError("--selection-id requires one wiki choice")
+        list_result = list_existing(
+            refs,
+            request,
+            model_class,
+            owner_id,
+            session_id,
+            today,
+            catalog,
+            root,
+            full=full,
+        )
+        notes: list[str] = []
+        if list_result.total_wikis > len(list_result.wikis):
+            notes.append(
+                f"wikis truncated to {len(list_result.wikis)} of {list_result.total_wikis}; "
+                "re-run with --full"
+            )
+        return {
+            "schema_version": "megamind/existing-selection-list/v1",
+            "status": "ready",
+            "request_hash": list_result.request_hash,
+            "catalog_hash": list_result.catalog_hash,
+            "model_class": list_result.model_class,
+            "owner_id": list_result.owner_id,
+            "session_id": list_result.session_id,
+            "today": list_result.today,
+            "selection_id": list_result.selection_id,
+            "wikis": list_result.wikis,
+            "notes": notes,
+            "help": _help(
+                "Choose only one wiki from wikis[]; no other name is authorized",
+                f"Run `{EXECUTABLE} select-existing <wiki> --selection-id "
+                f"{list_result.selection_id} --request '<exact request>' "
+                f"--model-class {model_class} --owner-id '<owner>' "
+                f"--session-id '<session>' --today {list_result.today}`",
+            ),
+        }, 0
+    if selection_id is None:
+        raise UsageError("a wiki choice requires --selection-id from the eligible list")
+    auth_result = select_existing(
+        refs,
+        request,
+        model_class,
+        owner_id,
+        session_id,
+        today,
+        selection_id,
+        wiki,
+        catalog,
+        root,
+    )
+    return {
+        "schema_version": "megamind/existing-selection-result/v1",
+        "status": "authorized",
+        "request_hash": auth_result.request_hash,
+        "catalog_hash": auth_result.catalog_hash,
+        "model_class": auth_result.model_class,
+        "owner_id": auth_result.owner_id,
+        "session_id": auth_result.session_id,
+        "today": auth_result.today,
+        "selection_id": auth_result.selection_id,
+        "root_facts_hash": auth_result.root_facts_hash,
+        "selection": auth_result.selection,
+        "selected": auth_result.selected,
+        "help": _help(
+            str(auth_result.selected["follow_up"]),
+            "Record the selection_id with the task; explicit choice does not raise confidence",
+        ),
+    }, 0
 
 
 def cmd_select_offer(
@@ -1620,7 +1717,11 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             "A packet is cited synthesis, never answer context or evidence",
         ), 0
     if action == "cancel":
-        job = validate_job(raw)
+        requested_job = validate_job(raw)
+        job = store.get("jobs", str(requested_job["job_id"]))
+        plan = store.get("plans", str(job["plan_id"]))
+        if str(plan["gap_id"]) != str(job["gap_id"]):
+            raise ResearchError("stored research job and plan have different gap ids")
         job["state"] = "cancelled"
         job["events"] = [*job["events"], {"event": "cancelled"}]
         return _research_doc(
@@ -1632,7 +1733,11 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             "Cancellation retains every frozen artifact",
         ), 0
     if action == "resume":
-        job = validate_job(raw)
+        requested_job = validate_job(raw)
+        job = store.get("jobs", str(requested_job["job_id"]))
+        plan = store.get("plans", str(job["plan_id"]))
+        if str(plan["gap_id"]) != str(job["gap_id"]):
+            raise ResearchError("stored research job and plan have different gap ids")
         if job["state"] in {"cancelled", "answered", "rolled-back"}:
             raise ResearchError("terminal research jobs cannot resume")
         return _research_doc(
@@ -2142,6 +2247,60 @@ def build_parser() -> AxiParser:
     )
     p_select.add_argument("--estate", default=None, help="same wiki estate used by preflight")
     p_select.add_argument("--today", default=argparse.SUPPRESS, help="same ISO date as preflight")
+
+    p_existing = sub.add_parser(
+        "select-existing",
+        help="list and authorize one explicitly chosen eligible existing wiki",
+        epilog=(
+            f'example: {EXECUTABLE} select-existing --request "pricing question" '
+            "--model-class cloud --owner-id captain --session-id session-1 "
+            "--estate ~/Wikis --today 2026-08-13"
+        ),
+    )
+    _common_flags(p_existing)
+    p_existing.add_argument(
+        "wiki", nargs="?", help="exact wiki name from the Megamind-generated eligible list"
+    )
+    p_existing.add_argument(
+        "--wiki",
+        dest="wiki_option",
+        default=None,
+        help="wiki choice (alternative to the positional)",
+    )
+    p_existing.add_argument(
+        "--request", required=True, help="the exact pending request representation"
+    )
+    p_existing.add_argument(
+        "--model-class", required=True, choices=list(MODEL_CLASSES), help="the pending model class"
+    )
+    p_existing.add_argument(
+        "--owner-id", "--owner", dest="owner_id", required=True, help="opaque owner identity"
+    )
+    p_existing.add_argument(
+        "--session-id",
+        "--session",
+        dest="session_id",
+        required=True,
+        help="opaque pending-session identity",
+    )
+    p_existing.add_argument(
+        "--selection-id",
+        "--nonce",
+        dest="selection_id",
+        default=None,
+        help="one-time selection identity returned by the list operation",
+    )
+    p_existing.add_argument("--estate", default=None, help="directory of wiki roots to consult")
+    p_existing.add_argument(
+        "--today", default=argparse.SUPPRESS, help="current UTC date (ISO), also used for freshness"
+    )
+    p_existing.add_argument(
+        "--list",
+        dest="list_mode",
+        action="store_true",
+        help="explicitly request the eligible list (the default without a wiki)",
+    )
+    p_existing.add_argument("--full", action="store_true", help="never truncate the wiki list")
 
     p_adopt = sub.add_parser(
         "adopt",
@@ -2741,6 +2900,25 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             today=_parse_today(getattr(args, "today", None)),
             full=args.full,
             semantic=NgramBackend() if args.semantic else None,
+        )
+    if command == "select-existing":
+        wiki = args.wiki_option or args.wiki
+        if args.wiki_option is not None and args.wiki is not None and args.wiki_option != args.wiki:
+            raise UsageError("positional wiki and --wiki must identify the same choice")
+        if args.list_mode and wiki is not None:
+            raise UsageError("--list cannot be combined with a wiki choice")
+        return cmd_select_existing(
+            wiki,
+            args.request,
+            args.selection_id,
+            args.model_class,
+            args.owner_id,
+            args.session_id,
+            args.estate,
+            root,
+            root_label,
+            today=_parse_today(getattr(args, "today", None)),
+            full=args.full,
         )
     if command == "select-offer":
         return cmd_select_offer(

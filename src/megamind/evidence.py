@@ -26,8 +26,10 @@ from .confidence import (
 from .fsops import (
     MEGAMIND_DIR,
     atomic_write,
+    backup_existing,
     content_hash,
     identity_bytes,
+    remove_contained,
     resolve_contained,
 )
 from .policy import (
@@ -349,7 +351,11 @@ def _validate_evidence(raw: object) -> dict[str, Any]:
             },
         )
         for key, value in derivation.items():
-            _str(f"derivation.{key}", value, limit=300)
+            if key == "timecode_coverage":
+                if not isinstance(value, bool):
+                    raise EvidenceError("derivation.timecode_coverage must be a boolean")
+            else:
+                _str(f"derivation.{key}", value, limit=300)
     if source_class == "video" and derivation is None:
         raise EvidenceError("video evidence requires derivation lineage")
     return {
@@ -626,7 +632,7 @@ def acceptance_gates(
                 },
                 {
                     "gate": "V4",
-                    "verdict": "pass" if derivation.get("timecode_coverage") else "unknown",
+                    "verdict": "pass" if derivation.get("timecode_coverage") is True else "unknown",
                     "detail": "timecode coverage",
                 },
                 {
@@ -1122,11 +1128,26 @@ class EvidenceStore:
         prepared = [
             self._prepare(kind, data, normalized_text, quote_ceiling_chars) for kind, data in items
         ]
-        paths: list[Path] = []
-        for rel, _, text in prepared:
-            atomic_write(self.root, rel, text)
-            paths.append(resolve_contained(self.root, rel))
-        return paths
+        originals: dict[Path, str | None] = {}
+        for rel, _, _ in prepared:
+            path = resolve_contained(self.root, rel)
+            originals[rel] = path.read_text(encoding="utf-8") if path.is_file() else None
+            if originals[rel] is not None:
+                backup_existing(self.root, rel, durable=True)
+        written: list[Path] = []
+        try:
+            for rel, _, text in prepared:
+                atomic_write(self.root, rel, text, durable=True)
+                written.append(rel)
+        except BaseException:
+            for rel in reversed(written):
+                original = originals[rel]
+                if original is None:
+                    remove_contained(self.root, rel, durable=True)
+                else:
+                    atomic_write(self.root, rel, original, durable=True)
+            raise
+        return [resolve_contained(self.root, rel) for rel in written]
 
     def get(self, kind: str, identifier: str) -> dict[str, Any]:
         path = resolve_contained(self.root, self._path(kind, identifier))

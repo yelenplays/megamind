@@ -384,7 +384,7 @@ def test_review_lists_proposals_at_a_canonical_wiki_root(
     assert any(proposal_id in item for item in doc["open_proposals"])
 
 
-def test_review_renders_and_caps_research_diagnostics(
+def test_review_ignores_legacy_research_artifacts(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     vault = build_vault(tmp_path)
@@ -404,18 +404,8 @@ def test_review_renders_and_caps_research_diagnostics(
 
     assert code == 0
     assert err == ""
-    assert doc["status"] == "attention"
-    assert doc["aggregates"]["research_packets"] == 21
-    assert doc["aggregates"]["pending_source_rights"] == 21
-    assert doc["aggregates"]["contradictions"] == 21
-    assert len(doc["research_packets"]) == 20
-    assert len(doc["pending_source_rights"]) == 20
-    assert len(doc["contradictions"]) == 20
-    assert set(doc["notes"]) == {
-        "research_packets truncated to 20 of 21; re-run with --full",
-        "pending_source_rights truncated to 20 of 21; re-run with --full",
-        "contradictions truncated to 20 of 21; re-run with --full",
-    }
+    assert "research_packets" not in doc
+    assert "pending_source_rights" not in doc
 
 
 def test_review_at_a_canonical_wiki_root_reports_only_compiled_pages(

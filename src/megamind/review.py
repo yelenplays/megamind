@@ -7,7 +7,6 @@ candidates. Review never changes anything.
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
@@ -98,25 +97,6 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
     # `.` or a symlinked path, and mixing the two forms raises instead of
     # emitting a report.
     root_resolved = root.resolve()
-    research_root = root_resolved / ".megamind" / "research"
-    packets = research_root / "packets"
-    if packets.is_dir():
-        report.research_packets = [
-            path.relative_to(root_resolved).as_posix() for path in sorted(packets.glob("*.json"))
-        ]
-    evidence = research_root / "evidence"
-    if evidence.is_dir():
-        for path in sorted(evidence.glob("*.json")):
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if isinstance(raw, dict):
-                if raw.get("decision") == "deferred":
-                    report.pending_source_rights.append(path.relative_to(root_resolved).as_posix())
-                if raw.get("correction_status") == "expression_of_concern":
-                    report.contradictions.append(path.relative_to(root_resolved).as_posix())
-
     all_page_bodies: dict[str, str] = {}
     page_docs: dict[str, Document] = {}
     titles: dict[str, list[str]] = {}

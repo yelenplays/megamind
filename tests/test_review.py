@@ -109,7 +109,7 @@ def test_review_is_read_only(vault: Path) -> None:
     assert sorted(str(p) for p in vault.rglob("*")) == before
 
 
-def test_research_artifacts_reported_from_an_unresolved_root(
+def test_legacy_research_artifacts_do_not_break_typed_review(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The documented default invocation runs inside the vault, so root is `.`."""
@@ -126,6 +126,5 @@ def test_research_artifacts_reported_from_an_unresolved_root(
     )
     monkeypatch.chdir(vault)
     report = review(Path("."), registry, today=TODAY)
-    assert report.research_packets == [".megamind/research/packets/abc123abc123.json"]
-    assert report.pending_source_rights == [".megamind/research/evidence/e1.json"]
-    assert report.contradictions == [".megamind/research/evidence/e1.json"]
+    assert "research_packets" not in report.to_dict()
+    assert "pending_source_rights" not in report.to_dict()

@@ -483,29 +483,36 @@ def _check_research_records(root: Path, findings: list[Finding]) -> None:
         records[kind] = valid
     _check_references(records, findings)
     research_store = ResearchStore(root)
+    research_records: dict[str, dict[str, dict[str, Any]]] = {}
     for kind in ("plans", "jobs", "packets", "outcomes", "candidates"):
         suffix = "jsonl" if kind == "jobs" else "json"
+        valid: dict[str, dict[str, Any]] = {}
         for identifier, record, problem in research_store.scan(kind):
             rel = f"{MEGAMIND_DIR}/research/{kind}/{identifier}.{suffix}"
             if record is None:
                 findings.append(_error("research", rel, problem))
                 continue
-            if kind != "packets":
-                continue
-            for claim_id in record["claim_ids"]:
-                if claim_id not in records["claims"]:
-                    findings.append(
-                        _error("research", rel, f"packet cites unknown claim {claim_id}")
+            valid[identifier] = record
+        research_records[kind] = valid
+    for identifier, job in sorted(research_records["jobs"].items()):
+        rel = f"{MEGAMIND_DIR}/research/jobs/{identifier}.jsonl"
+        plan = research_records["plans"].get(str(job["plan_id"]))
+        if plan is None:
+            findings.append(_error("research", rel, f"job cites unknown plan {job['plan_id']}"))
+        elif str(plan["gap_id"]) != str(job["gap_id"]):
+            findings.append(_error("research", rel, "job and plan have different gap ids"))
+    for identifier, packet in sorted(research_records["packets"].items()):
+        rel = f"{MEGAMIND_DIR}/research/packets/{identifier}.json"
+        for claim_id in packet["claim_ids"]:
+            if claim_id not in records["claims"]:
+                findings.append(_error("research", rel, f"packet cites unknown claim {claim_id}"))
+        for contradiction_id in packet["contradiction_ids"]:
+            if contradiction_id not in records["contradictions"]:
+                findings.append(
+                    _error(
+                        "research", rel, f"packet cites unknown contradiction {contradiction_id}"
                     )
-            for contradiction_id in record["contradiction_ids"]:
-                if contradiction_id not in records["contradictions"]:
-                    findings.append(
-                        _error(
-                            "research",
-                            rel,
-                            f"packet cites unknown contradiction {contradiction_id}",
-                        )
-                    )
+                )
 
 
 def run_doctor(root: Path) -> list[Finding]:

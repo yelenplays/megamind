@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from conftest import build_vault
+import megamind.evidence as evidence_module
 from megamind.card import CARD_PATH, load_wiki_card, save_wiki_card
 from megamind.cli import main
 from megamind.evidence import (
@@ -17,6 +18,7 @@ from megamind.evidence import (
     EVIDENCE_SCHEMA,
     QUOTATION_SCHEMA,
     EvidenceError,
+    EvidenceStore,
     reconcile_claims,
     validate_claim,
     validate_correction_notice,
@@ -87,6 +89,23 @@ def test_evidence_unknown_fields_and_retraction_are_restrictive() -> None:
     record = _evidence()
     record["corrections"] = {**record["corrections"], "status": "retracted"}  # type: ignore[index]
     assert validate_evidence_record(record)["corrections"]["status"] == "retracted"
+
+
+def test_video_timecode_coverage_requires_a_boolean() -> None:
+    record = _evidence()
+    record["source_class"] = "video"
+    record["derivation"] = {
+        "video_id": "synthetic-video",
+        "channel": "Synthetic Channel",
+        "upload_date": "2026-08-01",
+        "provider": "synthetic",
+        "language": "en",
+        "timecode_coverage": "false",
+        "transcript_sha256": "a" * 64,
+        "caption_source": "creator",
+    }
+    with pytest.raises(EvidenceError, match="timecode_coverage"):
+        validate_evidence_record(record)
 
 
 def test_quotation_is_hash_bound_and_claim_requires_resolution() -> None:
@@ -539,6 +558,39 @@ def test_research_plan_then_cancel_round_trips(
     )
     assert code == 1
     assert resumed["code"] == "research_invalid"
+
+
+def test_research_cancel_requires_a_stored_job_and_plan(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    plan_id = "f" * 12
+    job_id = content_hash(
+        json.dumps({"plan_id": plan_id, "gap_id": "gap-1"}, sort_keys=True, separators=(",", ":"))
+    )
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "cancel",
+        "--input",
+        write_json(
+            tmp_path / "in" / "forged-job.json",
+            {
+                "schema": "megamind/research-job/v1",
+                "job_id": job_id,
+                "plan_id": plan_id,
+                "gap_id": "gap-1",
+                "state": "planned",
+                "attempt": 1,
+                "events": [],
+            },
+        ),
+    )
+    assert code == 1
+    assert doc["code"] == "research_invalid"
+    assert not (root / MEGAMIND_DIR / "research" / "jobs" / f"{job_id}.jsonl").exists()
 
 
 def test_research_job_lifecycle_state_advances_in_place(
@@ -1300,6 +1352,34 @@ def test_reconcile_commits_nothing_when_a_claim_is_unwritable(
     assert doc["code"] == "evidence_invalid"
     assert not (root / MEGAMIND_DIR / "evidence" / "claims").exists()
     assert not (root / MEGAMIND_DIR / "evidence" / "contradictions").exists()
+
+
+def test_put_all_rolls_back_after_a_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = governed_vault(tmp_path)
+    store = EvidenceStore(root)
+    original_write = evidence_module.atomic_write
+    calls = 0
+
+    def fail_second_write(
+        root: Path, target: object, content: str, *, durable: bool = False
+    ) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("synthetic disk failure")
+        return original_write(root, target, content, durable=durable)
+
+    monkeypatch.setattr(evidence_module, "atomic_write", fail_second_write)
+    with pytest.raises(OSError, match="synthetic disk failure"):
+        store.put_all(
+            [
+                ("claims", proposed_claim("the synthetic fact is A")),
+                ("claims", proposed_claim("the synthetic fact is B")),
+            ]
+        )
+    assert not list((root / MEGAMIND_DIR / "evidence" / "claims").glob("*.json"))
 
 
 def test_research_status_degrades_on_an_unreadable_record(
