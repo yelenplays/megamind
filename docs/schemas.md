@@ -825,3 +825,35 @@ record that `adopt --rollback` verifies before removing generated files;
 Existing-selection audit records contain only `selection_id`, `request_hash`,
 `catalog_hash`, `event_id`, and `backup`; they never include request text,
 wiki content, owner, or session identity.
+
+## Governed evidence records (Slice 1)
+
+Research is a host-executed boundary.  Megamind never fetches URLs, reads
+quarantine bodies, or accepts a model's quality label.  A wiki may opt into a
+strict `megamind/research-policy/v1` document in its registry entry or
+canonical card.  The field is absent by default and absence denies research;
+v1 registries keep that restrictive default.
+
+The evidence lane uses strict, unknown-field-refusing records:
+`megamind/evidence-record/v1`, `megamind/quotation/v1`,
+`megamind/claim/v1`, and `megamind/contradiction/v1`.  Evidence records bind a
+canonical identity and derived `origin_id` to retrieval/publication facts,
+rights, snapshot hashes, correction status, source class, and typed G1-G12
+acceptance gates.  `unknown` is never a pass.  Retractions remove support,
+blocked retrieval is deferred, and injection scanning is advisory only.
+
+Quotation records carry both exact/prefix/suffix and half-open character
+selectors against `normalized_sha256`.  A selector is accepted as resolvable
+only when the supplied frozen normalized text reproduces it; an active claim
+must reference a resolvable quotation.  Claim confidence is calculated by the
+existing constants after acceptance and counts only derived origin ids.
+Contradiction records retain every claim and use typed precedence outcomes -
+there is no averaging and unresolved contradictions remain below reliance.
+
+The local job spine is represented by `megamind/research-plan/v1`,
+`megamind/research-job/v1`, `megamind/source-candidate/v1`,
+`megamind/research-packet/v1`, and `megamind/research-outcome/v1`.  These are
+receipts, not dispatch instructions.  Evidence and metadata are stored under
+`.megamind/evidence/` through `fsops`; full fetched bytes remain host
+quarantine.  Doctor validates all referential and content-hash identities, and
+review surfaces deferred evidence and unresolved contradictions.

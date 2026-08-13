@@ -31,6 +31,9 @@ and renders it as TOON or JSON only at the output boundary (see
 | `megamind.preflight` | Catalog-level, model-access-aware routing for substantive requests |
 | `megamind.selection` | Evidence-bound explicit choice of one current loadable preflight offer or eligible existing wiki, with no confidence or access widening |
 | `megamind.gardening` | Durable gaps, one-hop host plans, research bridge, safe event log, provisional local-wiki qualification |
+| `megamind.policy` | Strict per-wiki research-policy/v1 parsing with restrictive absent defaults |
+| `megamind.evidence` | Frozen evidence records, gate validation, hash-bound quotations, claims, contradictions |
+| `megamind.research` | Network-free plan/job/packet/outcome receipt spine; never dispatches or fetches |
 | `megamind.evaluation` | Frozen release benchmark over the public CLI, and the host-executed three-arm plan/validate/score/record contract. No model, worker, or network code |
 | `megamind.rollout` | Provider-neutral per-host/per-wiki promotion proofs, privacy-order chains, local write-ahead activation, health, and rollback receipts. No host or provider adapter |
 | `megamind.toon` | TOON encoder; the output boundary renders typed dicts |

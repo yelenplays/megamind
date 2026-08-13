@@ -247,6 +247,24 @@ definitive empty value rather than disappearing. At a canonical wiki root,
 destinations inside the card's compiled page tree (the directory of its
 declared index) and rejects `raw/`, and `review` reports only compiled pages.
 
+## megamind-axi research <action> [--input FILE]
+
+`research plan` validates and stores an inert `research-plan/v1` plus its job
+spine record. `record-discovery`, `record-artifact`, `record-claims`, and
+`reconcile` accept JSON host receipts and emit `source-candidate/v1`,
+`evidence-record/v1`, `claim/v1`, and `contradiction/v1` documents. `packet`
+stores a cited `research-packet/v1`; `status`, `cancel`, and `resume` inspect
+or advance only typed local state. Inputs are files to keep large source
+payloads out of command strings. No action performs network access, dispatch,
+transcript fetching, publication, or an external write.
+
+`record-artifact` derives G1-G12 and source-class gates from validated facts and
+the selected wiki's restrictive research policy. A missing policy denies
+acceptance. Quotation selectors are hash-bound and must re-resolve against
+frozen normalized text before an active claim may rely on them. Retractions
+remove support, unresolved contradictions remain visible, and packet
+confidence is never used as an acceptance verdict.
+
 ## Error codes
 
 `usage_error`, `not_initialized`, `registry_invalid`, `card_invalid`,
@@ -254,9 +272,10 @@ declared index) and rejects `raw/`, and `review` reports only compiled pages.
 `evolve_invalid`, `adopt_invalid`, `init_invalid`, `path_escape`,
 `frontmatter_invalid`, `io_error`, `garden_invalid`, `gap_not_found`,
 `gap_transition_invalid`, `provision_recovery_required`, `selection_invalid`,
-`evaluation_invalid`, `rollout_invalid`, `research_invalid`, `research_not_found`,
-`research_transition_invalid`, `research_replay_conflict`, `research_replan_required`,
-`research_immutable`, `evidence_acceptance_invalid`. Malformed vault content and filesystem
+`evaluation_invalid`, `rollout_invalid`, `evidence_invalid`, `research_invalid`,
+`research_policy_invalid`, `research_not_found`, `research_transition_invalid`,
+`research_replay_conflict`, `research_replan_required`, `research_immutable`,
+`evidence_acceptance_invalid`. Malformed vault content and filesystem
 failures are reported as `frontmatter_invalid` and `io_error` documents with
 exit 1; malformed frozen evaluation inputs are `evaluation_invalid`; malformed,
 unsafe, or stale rollout evidence is `rollout_invalid`; no invocation ever ends

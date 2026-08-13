@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .capture import list_proposals
 from .card import compiled_page_dir, is_canonical_page
+from .evidence import EvidenceStore
 from .evolve import PROPOSAL_MARKER
 from .fsops import resolve_contained
 from .links import extract_links, link_target_path, page_name_table, resolve_link
@@ -31,9 +32,8 @@ class ReviewReport:
     superseded_still_linked: list[dict[str, object]] = field(default_factory=list)
     dead_links: list[dict[str, object]] = field(default_factory=list)
     promotion_candidates: list[dict[str, object]] = field(default_factory=list)
-    research_packets: list[str] = field(default_factory=list)
-    pending_source_rights: list[str] = field(default_factory=list)
-    contradictions: list[str] = field(default_factory=list)
+    pending_evidence: list[dict[str, object]] = field(default_factory=list)
+    contradictions: list[dict[str, object]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -185,6 +185,28 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
                     report.superseded_still_linked.append(
                         {"superseded": target_rel, "linked_from": rel}
                     )
+
+    # Evidence review is metadata-only. Bodies and source prose are never
+    # loaded by this projection.
+    evidence_store = EvidenceStore(root)
+    for record in evidence_store.list("evidence"):
+        acceptance = record.get("acceptance", {})
+        if acceptance.get("decision") in {"deferred", "rejected"}:
+            report.pending_evidence.append(
+                {
+                    "evidence_id": record.get("evidence_id", ""),
+                    "decision": acceptance.get("decision", ""),
+                    "failure": acceptance.get("failure", ""),
+                }
+            )
+    for contradiction in evidence_store.list("contradictions"):
+        if contradiction.get("resolution") == "unresolved":
+            report.contradictions.append(
+                {
+                    "contradiction_id": contradiction.get("contradiction_id", ""),
+                    "claim_ids": ";".join(contradiction.get("claim_ids", [])),
+                }
+            )
 
     # Promotion candidates
     for wiki, wiki_dir in _iter_wiki_page_dirs(root, registry):

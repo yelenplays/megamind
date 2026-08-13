@@ -476,6 +476,18 @@ overwriting (`megamind/setup-result/v1`) and refuses a destination resolving
 inside a vault before any write. Uninstall by deleting that directory. Setup
 never makes network calls or edits shell/provider config.
 
+## `megamind-axi research <action> [--input FILE]`
+
+The offline governed evidence lane records host receipts without fetching or
+dispatching. `plan` stores an inert plan and job spine; `record-discovery`,
+`record-artifact`, `record-quotations`, `record-claims`, and `reconcile`
+validate content-addressed candidates, evidence, hash-bound quotations, claims,
+and visible contradictions. `packet` stores cited synthesis only. `status`,
+`cancel`, and `resume` inspect typed local state. Artifact acceptance derives
+common and source-class gates from frozen facts and the wiki's restrictive
+research policy; absent policy, unknown gates, retractions, and unresolved
+spans never authorize support. Full source bytes stay in host quarantine.
+
 ## Errors
 
 `megamind/error/v1` with a stable `code` (`usage_error`, `not_initialized`,
@@ -484,7 +496,8 @@ never makes network calls or edits shell/provider config.
 `init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
 `garden_invalid`, `gap_not_found`, `gap_transition_invalid`,
 `provision_recovery_required`, `selection_invalid`, `evaluation_invalid`,
-`rollout_invalid`, `research_invalid`, `research_not_found`,
-`research_transition_invalid`, `research_replay_conflict`, `research_replan_required`,
-`research_immutable`, `evidence_acceptance_invalid`), a sanitized `message`, and `help[]` with corrective
+`rollout_invalid`, `evidence_invalid`, `research_invalid`,
+`research_policy_invalid`, `research_not_found`, `research_transition_invalid`,
+`research_replay_conflict`, `research_replan_required`, `research_immutable`,
+`evidence_acceptance_invalid`), a sanitized `message`, and `help[]` with corrective
 commands.

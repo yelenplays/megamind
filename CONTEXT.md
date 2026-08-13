@@ -185,3 +185,26 @@ The sequence-complete prior promotion proofs for one host/model class, ordered
 by nondecreasing restrictive privacy rank so rollout proceeds one authorized
 binding at a time.
 _Avoid_: claim that every estate wiki was nominated, automatic governance
+
+**Evidence record**:
+A frozen, content-addressed source artifact whose identity, origin, dates,
+rights, corrections, hashes, source class, and acceptance gates are typed
+facts. It is not a source body and never comes from a model's eligibility label.
+_Avoid_: fetched page, source score
+
+**Quotation**:
+A hash-bound exact and positional selector into an evidence record's
+normalized snapshot. It is resolvable or it cannot support an active claim.
+_Avoid_: page-level citation, paraphrase without provenance
+
+**Research policy**:
+The per-wiki `research-policy/v1` permission and tier mapping. It narrows
+which validated source facts a wiki may admit; absent or malformed means
+research denied.
+_Avoid_: global source ranking, host preference
+
+**Contradiction**:
+A durable relation between claims with the same semantic key and incompatible
+statements. Both claims remain visible; typed precedence may resolve it, but
+there is no averaging.
+_Avoid_: consensus score, silent winner

@@ -16,6 +16,7 @@ from pathlib import Path
 from .access import policy_findings
 from .capture import list_proposals
 from .card import CardError, load_wiki_card
+from .evidence import EvidenceError, EvidenceStore
 from .fsops import MEGAMIND_DIR, PathEscapeError, resolve_contained
 from .gardening import validate_gap_journal
 from .links import extract_links, page_name_table, resolve_link
@@ -342,6 +343,34 @@ def _check_gap_journal(root: Path, findings: list[Finding]) -> None:
         findings.append(_error("gaps", f"{MEGAMIND_DIR}/gaps.jsonl", message))
 
 
+def _check_research_records(root: Path, findings: list[Finding]) -> None:
+    """Validate immutable evidence and research records without reading prose."""
+    evidence_store = EvidenceStore(root)
+    for kind in ("evidence", "quotations", "claims", "contradictions"):
+        directory = root / MEGAMIND_DIR / "evidence" / kind
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.json")):
+            try:
+                evidence_store.get(kind, path.stem)
+            except (EvidenceError, OSError, UnicodeDecodeError) as error:
+                rel = path.relative_to(root.resolve()).as_posix()
+                findings.append(_error("evidence", rel, str(error)))
+    research_store = ResearchStore(root)
+    for kind in ("plans", "jobs", "packets", "outcomes", "candidates"):
+        directory = root / MEGAMIND_DIR / "research" / kind
+        if not directory.is_dir():
+            continue
+        pattern = "*.jsonl" if kind == "jobs" else "*.json"
+        for path in sorted(directory.glob(pattern)):
+            identifier = path.stem.removesuffix(".jsonl")
+            try:
+                research_store.get(kind, identifier)
+            except (ResearchError, OSError, UnicodeDecodeError) as error:
+                rel = path.relative_to(root.resolve()).as_posix()
+                findings.append(_error("research", rel, str(error)))
+
+
 def run_doctor(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     try:
@@ -361,7 +390,7 @@ def run_doctor(root: Path) -> list[Finding]:
                     _error("canonical-root", required, "required canonical directory is missing")
                 )
         _check_gap_journal(root, findings)
-        _check_research_state(root, findings)
+        _check_research_records(root, findings)
         if not card.name:
             findings.append(
                 _error("card", f"{MEGAMIND_DIR}/wiki-card.json", "card has no wiki name")
@@ -378,7 +407,7 @@ def run_doctor(root: Path) -> list[Finding]:
     _check_proposals(root, findings)
     _check_symlinks(root, findings)
     _check_gap_journal(root, findings)
-    _check_research_state(root, findings)
+    _check_research_records(root, findings)
     findings.sort(key=lambda f: (f.severity != "error", f.check, f.path, f.message))
     return findings
 

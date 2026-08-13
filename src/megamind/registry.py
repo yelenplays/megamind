@@ -28,6 +28,7 @@ from .models import (
     ROUTING_MODES,
     SENSITIVITY_CLASSES,
 )
+from .policy import PolicyError, ResearchPolicy, policy_from_data, policy_to_data
 
 REGISTRY_PATH = Path(MEGAMIND_DIR) / "registry.json"
 ROUTER_FILENAME = "ROUTER.md"
@@ -138,7 +139,8 @@ class WikiEntry:
     model_access: ModelAccess = field(default_factory=ModelAccess)
     routing_mode: str = ""
     source_policy: SourcePolicy = field(default_factory=SourcePolicy)
-    research_policy: ResearchPolicy = field(default_factory=ResearchPolicy)
+    # Slice 1 research governance is absent by default: absent means denied.
+    research_policy: ResearchPolicy | None = None
     freshness: Freshness = field(default_factory=Freshness)
     examples: list[str] = field(default_factory=list)
     triggers: list[str] = field(default_factory=list)
@@ -428,9 +430,10 @@ def _wiki_from_json(position: int, value: object, version: int) -> WikiEntry:
             f"{label} source_policy", data["source_policy"]
         )
     if "research_policy" in data:
-        wiki.research_policy = _research_policy_from_json(
-            f"{label} research_policy", data["research_policy"]
-        )
+        try:
+            wiki.research_policy = policy_from_data(data["research_policy"])
+        except PolicyError as error:
+            raise RegistryError(str(error)) from error
     if "freshness" in data:
         wiki.freshness = _freshness_from_json(f"{label} freshness", data["freshness"])
     if "context_budget" in data:
@@ -596,7 +599,12 @@ def _wiki_to_data(wiki: WikiEntry, version: int) -> dict[str, object]:
             continue
         value = getattr(wiki, field_name)
         if value != getattr(default, field_name):
-            data[field_name] = asdict(value) if hasattr(value, "__dataclass_fields__") else value
+            if field_name == "research_policy":
+                data[field_name] = policy_to_data(value)
+            else:
+                data[field_name] = (
+                    asdict(value) if hasattr(value, "__dataclass_fields__") else value
+                )
     return data
 
 
