@@ -1193,6 +1193,46 @@ def test_evidence_store_enforces_quotation_bindings_at_persistence(
     ]
 
 
+def test_evidence_store_rejects_dangling_references_and_unproven_quotations(
+    tmp_path: Path,
+) -> None:
+    root = governed_vault(tmp_path)
+    store = EvidenceStore(root)
+
+    with pytest.raises(EvidenceError, match="requires frozen normalized text"):
+        store.put_all(
+            [
+                ("evidence", research_evidence()),
+                ("quotations", research_quotation(str(research_evidence()["evidence_id"]))),
+            ]
+        )
+    with pytest.raises(EvidenceError, match="unknown quotation"):
+        store.put("claims", research_claim("missing-evidence", "missing-quotation", "synthetic"))
+
+    first = proposed_claim("first")
+    second = proposed_claim("second")
+    contradiction = {
+        "schema": CONTRADICTION_SCHEMA,
+        "claim_ids": [str(first["claim_id"]), "missing-claim"],
+        "claim_key": "synthetic-fact",
+        "basis": "incompatible-value",
+        "resolution": "unresolved",
+        "resolution_detail": "",
+        "gap_id": "",
+        "created": "2026-08-13",
+        "updated": "2026-08-13",
+    }
+    contradiction["contradiction_id"] = content_hash(
+        json.dumps(
+            {"claim_ids": sorted(contradiction["claim_ids"]), "claim_key": "synthetic-fact"},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    with pytest.raises(EvidenceError, match="unknown claim"):
+        store.put_all([("claims", first), ("claims", second), ("contradictions", contradiction)])
+
+
 def test_record_quotations_commits_nothing_when_one_span_is_unwritable(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -1154,19 +1154,62 @@ class EvidenceStore:
     def recover(self) -> None:
         self._recover_transactions()
 
-    def _admission_evidence(
+    def _admission_records(
         self, items: Sequence[tuple[str, Mapping[str, Any]]] = ()
-    ) -> dict[str, dict[str, Any]]:
-        records = {
-            str(record["evidence_id"]): record
-            for _, record, _ in self.scan_readonly("evidence")
-            if record is not None
-        }
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        records: dict[str, dict[str, dict[str, Any]]] = {}
+        for kind in STORE_KINDS:
+            records[kind] = {
+                identifier: record
+                for identifier, record, _ in self.scan_readonly(kind)
+                if record is not None
+            }
         for kind, data in items:
-            if kind == "evidence":
-                record = validate_evidence_record(data)
-                records[str(record["evidence_id"])] = record
+            record = _validate(kind, data)
+            records[kind][str(record[ID_KEYS[kind]])] = record
         return records
+
+    def _validate_admission(
+        self,
+        kind: str,
+        data: Mapping[str, Any],
+        normalized_text: str | None,
+        quote_ceiling_chars: int,
+        records: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    ) -> dict[str, Any]:
+        if kind == "quotations":
+            provisional = validate_quotation(data, quote_ceiling_chars=quote_ceiling_chars)
+            if provisional["resolves"] and normalized_text is None:
+                raise EvidenceError("resolved quotation requires frozen normalized text")
+            return validate_quotation(
+                data,
+                normalized_text,
+                quote_ceiling_chars=quote_ceiling_chars,
+                evidence=records["evidence"],
+            )
+        if kind == "claims":
+            return validate_claim(
+                data,
+                quotations=records["quotations"],
+                evidence=records["evidence"],
+                notices=list(records["corrections"].values()),
+            )
+        if kind == "contradictions":
+            return validate_contradiction(data, claims=records["claims"])
+        if kind == "corrections":
+            notice = validate_correction_notice(data)
+            evidence_id = str(notice["evidence_id"])
+            if evidence_id not in records["evidence"]:
+                raise EvidenceError(f"correction notice references an unknown evidence record: {evidence_id}")
+            supersedes = str(notice["supersedes"])
+            if supersedes:
+                prior = records["corrections"].get(supersedes)
+                if prior is None:
+                    raise EvidenceError(f"correction notice supersedes an unknown notice: {supersedes}")
+                if str(prior["evidence_id"]) != evidence_id:
+                    raise EvidenceError("correction notice supersedes a notice for another evidence record")
+            return notice
+        return _validate(kind, data)
 
     def _prepare(
         self,
@@ -1174,18 +1217,16 @@ class EvidenceStore:
         data: Mapping[str, Any],
         normalized_text: str | None = None,
         quote_ceiling_chars: int = QUOTE_CEILING_CHARS,
-        evidence: Mapping[str, Mapping[str, Any]] | None = None,
+        records: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
     ) -> tuple[Path, dict[str, Any], str]:
         """Validate one record and prove it may be written, without writing."""
-        if kind == "quotations":
-            canonical = validate_quotation(
-                data,
-                normalized_text,
-                quote_ceiling_chars=quote_ceiling_chars,
-                evidence=evidence,
-            )
-        else:
-            canonical = _validate(kind, data)
+        canonical = self._validate_admission(
+            kind,
+            data,
+            normalized_text,
+            quote_ceiling_chars,
+            records if records is not None else self._admission_records(((kind, data),)),
+        )
         rel = self._path(kind, str(canonical[ID_KEYS[kind]]))
         path = resolve_contained(self.root, rel)
         text = json.dumps(canonical, sort_keys=True, indent=2) + "\n"
@@ -1215,7 +1256,7 @@ class EvidenceStore:
             data,
             normalized_text,
             quote_ceiling_chars,
-            self._admission_evidence(((kind, data),)),
+            self._admission_records(((kind, data),)),
         )
         atomic_write(self.root, rel, text)
         return resolve_contained(self.root, rel)
@@ -1235,9 +1276,9 @@ class EvidenceStore:
         over the whole set before the first byte is written.
         """
         self._recover_transactions()
-        evidence = self._admission_evidence(items)
+        records = self._admission_records(items)
         prepared = [
-            self._prepare(kind, data, normalized_text, quote_ceiling_chars, evidence)
+            self._prepare(kind, data, normalized_text, quote_ceiling_chars, records)
             for kind, data in items
         ]
         if len({rel for rel, _, _ in prepared}) != len(prepared):
