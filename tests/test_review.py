@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pytest
 
 from conftest import write
 from megamind.capture import capture
+from megamind.fsops import MEGAMIND_DIR, content_hash
 from megamind.registry import load_registry
 from megamind.review import review
 
@@ -107,6 +109,36 @@ def test_review_is_read_only(vault: Path) -> None:
     before = sorted(str(p) for p in vault.rglob("*"))
     review(vault, registry, today=TODAY)
     assert sorted(str(p) for p in vault.rglob("*")) == before
+
+
+def test_review_leaves_an_interrupted_evidence_transaction_untouched(vault: Path) -> None:
+    registry = load_registry(vault)
+    rel = Path(MEGAMIND_DIR) / "evidence" / "claims" / "interrupted.json"
+    items = [{"path": rel.as_posix(), "previous": None}]
+    transaction_id = content_hash(json.dumps({"items": items}, sort_keys=True, separators=(",", ":")))
+    journal = vault / MEGAMIND_DIR / "evidence" / "transactions" / f"{transaction_id}.json"
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        json.dumps(
+            {
+                "schema": "megamind/evidence-transaction/v1",
+                "transaction_id": transaction_id,
+                "items": items,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    interrupted = vault / rel
+    interrupted.parent.mkdir(parents=True, exist_ok=True)
+    interrupted.write_text('{"unfinished": true}\n', encoding="utf-8")
+
+    review(vault, registry, today=TODAY)
+
+    assert interrupted.is_file()
+    assert journal.is_file()
 
 
 def test_legacy_research_artifacts_do_not_break_typed_review(

@@ -171,8 +171,10 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
     # loaded by this projection. A malformed record is reported as work to do
     # rather than aborting review and the home document that points at doctor.
     evidence_store = EvidenceStore(root)
-    notices = [notice for _, notice, _ in evidence_store.scan("corrections") if notice is not None]
-    for identifier, record, problem in evidence_store.scan("evidence"):
+    notices = [
+        notice for _, notice, _ in evidence_store.scan_readonly("corrections") if notice is not None
+    ]
+    for identifier, record, problem in evidence_store.scan_readonly("evidence"):
         if record is None:
             report.pending_evidence.append(
                 {"evidence_id": identifier, "decision": "invalid", "failure": problem}
@@ -196,7 +198,7 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
                     "failure": failure,
                 }
             )
-    for identifier, contradiction, problem in evidence_store.scan("contradictions"):
+    for identifier, contradiction, problem in evidence_store.scan_readonly("contradictions"):
         if contradiction is None:
             report.contradictions.append(
                 {"contradiction_id": identifier, "claim_ids": "", "problem": problem}

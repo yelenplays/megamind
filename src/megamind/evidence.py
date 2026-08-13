@@ -1248,6 +1248,9 @@ class EvidenceStore:
 
     def get(self, kind: str, identifier: str) -> dict[str, Any]:
         self._recover_transactions()
+        return self._read(kind, identifier)
+
+    def _read(self, kind: str, identifier: str) -> dict[str, Any]:
         path = resolve_contained(self.root, self._path(kind, identifier))
         if not path.is_file():
             raise EvidenceError("evidence record not found")
@@ -1256,6 +1259,19 @@ class EvidenceStore:
         except json.JSONDecodeError as error:
             raise EvidenceError("evidence record is not valid JSON") from error
         return _validate(kind, data)
+
+    def scan_readonly(self, kind: str) -> ScanResult:
+        """List records without recovering a pending transaction."""
+        directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / kind)
+        if not directory.is_dir():
+            return []
+        results: ScanResult = []
+        for path in sorted(directory.glob("*.json")):
+            try:
+                results.append((path.stem, self._read(kind, path.stem), ""))
+            except (EvidenceError, OSError, UnicodeDecodeError) as error:
+                results.append((path.stem, None, str(error)))
+        return results
 
     def scan(self, kind: str) -> ScanResult:
         """List every record, reporting rather than raising on a bad one.
@@ -1266,13 +1282,4 @@ class EvidenceStore:
         whole read.
         """
         self._recover_transactions()
-        directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / kind)
-        if not directory.is_dir():
-            return []
-        results: ScanResult = []
-        for path in sorted(directory.glob("*.json")):
-            try:
-                results.append((path.stem, self.get(kind, path.stem), ""))
-            except (EvidenceError, OSError, UnicodeDecodeError) as error:
-                results.append((path.stem, None, str(error)))
-        return results
+        return self.scan_readonly(kind)
