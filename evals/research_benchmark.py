@@ -19,6 +19,7 @@ CASE_SCHEMA = "megamind/research-benchmark-case/v1"
 LABEL_SCHEMA = "megamind/research-source-label/v1"
 MUTATION_SCHEMA = "megamind/research-benchmark-mutation/v1"
 THRESHOLD_SCHEMA = "megamind/research-benchmark-thresholds/v1"
+TRANSCRIPT_SCHEMA = "megamind/research-transcript-fixture/v1"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _FORBIDDEN_DATA = re.compile(
@@ -68,6 +69,27 @@ _MUTATION_KEYS = {
     "expected_typed_outcome",
     "covers",
 }
+_TRANSCRIPT_KEYS = {
+    "schema",
+    "id",
+    "video_id",
+    "upload_date",
+    "date_precision",
+    "segments",
+    "caption_source",
+    "transcript_sha256",
+    "expected",
+}
+_SEGMENT_KEYS = {"start", "end", "speaker", "text"}
+_THRESHOLD_KEYS = {
+    "schema",
+    "version",
+    "corpus_sha256",
+    "hard_gates",
+    "statistical_gates",
+    "per_domain_hard_floors",
+    "hidden_holdout",
+}
 
 
 class CorpusError(ValueError):
@@ -108,6 +130,49 @@ def tree_digest(root: Path, relative_paths: list[str] | None = None) -> str:
             raise CorpusError(f"manifest names a missing or symlinked file: {relative}")
         entries.append({"path": relative, "sha256": sha256_file(path)})
     return sha256_bytes(canonical(entries))
+
+
+def transcript_normal_form(doc: Doc) -> Doc:
+    """Canonical normalized transcript payload the auditable digest is taken over.
+
+    The form covers exactly the provenance-bearing transcript content: identity,
+    upload date and its precision, caption source, and the ordered segments with
+    numeric bounds normalized to floats. The envelope schema, the benchmark
+    expectation, and the digest field itself are deliberately excluded so the
+    digest stays recomputable from the transcript alone.
+    """
+    segments = doc.get("segments")
+    if not isinstance(segments, list):
+        raise CorpusError("transcript segments must be a list")
+    normalized = []
+    for segment in segments:
+        if not isinstance(segment, dict) or set(segment) != _SEGMENT_KEYS:
+            raise CorpusError("transcript segment fields are invalid")
+        start, end = segment["start"], segment["end"]
+        for bound in (start, end):
+            if isinstance(bound, bool) or not isinstance(bound, (int, float)):
+                raise CorpusError("transcript segment bounds must be numbers")
+        normalized.append(
+            {
+                "start": float(start),
+                "end": float(end),
+                "speaker": segment["speaker"],
+                "text": segment["text"],
+            }
+        )
+    return {
+        "id": doc.get("id"),
+        "video_id": doc.get("video_id"),
+        "upload_date": doc.get("upload_date"),
+        "date_precision": doc.get("date_precision"),
+        "caption_source": doc.get("caption_source"),
+        "segments": normalized,
+    }
+
+
+def transcript_digest(doc: Doc) -> str:
+    """Digest over the canonical normalized transcript payload."""
+    return sha256_bytes(canonical(transcript_normal_form(doc)))
 
 
 def _read_json(path: Path, label: str) -> Doc:
@@ -282,6 +347,74 @@ def _validate_manifest(root: Path) -> tuple[Doc, list[str]]:
     return manifest, files
 
 
+def _load_transcripts(root: Path, files: list[str]) -> dict[str, Doc]:
+    """Validate every transcript fixture and bind it to its recomputed digest."""
+    transcripts: dict[str, Doc] = {}
+    for relative in files:
+        if not relative.startswith("transcripts/") or not relative.endswith(".json"):
+            continue
+        doc = _read_json(root / relative, f"transcript {relative}")
+        _check_unknown(doc, _TRANSCRIPT_KEYS, f"transcript {relative}")
+        if doc.get("schema") != TRANSCRIPT_SCHEMA:
+            raise CorpusError(f"transcript {relative} schema is invalid")
+        transcript_id = doc.get("id")
+        if not isinstance(transcript_id, str) or f"transcripts/{transcript_id}.json" != relative:
+            raise CorpusError(f"transcript {relative} identity does not match its path")
+        for field in ("video_id", "upload_date", "date_precision", "caption_source", "expected"):
+            value = doc.get(field)
+            if not isinstance(value, str) or not value:
+                raise CorpusError(f"transcript {transcript_id}.{field} must be a non-empty string")
+        segments = doc.get("segments")
+        if not isinstance(segments, list) or not segments:
+            raise CorpusError(f"transcript {transcript_id} has no segments")
+        for position, segment in enumerate(segments):
+            if not isinstance(segment, dict) or set(segment) != _SEGMENT_KEYS:
+                raise CorpusError(f"transcript {transcript_id} segment {position} is malformed")
+            for field in ("speaker", "text"):
+                if not isinstance(segment[field], str) or not segment[field]:
+                    raise CorpusError(
+                        f"transcript {transcript_id} segment {position}.{field} must be non-empty"
+                    )
+        normalized = transcript_normal_form(doc)["segments"]
+        for position, segment in enumerate(normalized):
+            if segment["start"] < 0 or segment["end"] < segment["start"]:
+                raise CorpusError(f"transcript {transcript_id} segment {position} is out of order")
+        declared = _require_sha(
+            doc.get("transcript_sha256"), f"transcript {transcript_id}.transcript_sha256"
+        )
+        if declared != transcript_digest(doc):
+            raise CorpusError(f"transcript digest binding failed: {transcript_id}")
+        _check_no_real_data(doc, f"transcript {transcript_id}")
+        transcripts[transcript_id] = doc
+    return transcripts
+
+
+def _check_mutation_fixture(
+    mutation_id: str,
+    fixture: Any,
+    files: list[str],
+    label_map: dict[str, Doc],
+    case_map: dict[str, Doc],
+    transcript_map: dict[str, Doc],
+) -> None:
+    """Resolve every mutation fixture reference that names a known namespace."""
+    if not isinstance(fixture, str) or not fixture:
+        raise CorpusError(f"mutation {mutation_id} has no fixture")
+    if fixture.startswith(("estate/", "snapshots/")):
+        prefix = fixture + "/"
+        if fixture not in files and not any(item.startswith(prefix) for item in files):
+            raise CorpusError(f"mutation {mutation_id} names a missing corpus path: {fixture}")
+    elif fixture.startswith("SRC-"):
+        if fixture not in label_map:
+            raise CorpusError(f"mutation {mutation_id} references unknown source: {fixture}")
+    elif fixture.startswith("case:"):
+        if fixture.split(":", 1)[1] not in case_map:
+            raise CorpusError(f"mutation {mutation_id} references unknown case: {fixture}")
+    elif fixture.startswith("transcript-"):
+        if fixture not in transcript_map:
+            raise CorpusError(f"mutation {mutation_id} references unknown transcript: {fixture}")
+
+
 def load_corpus(root: Path, *, holdout_root: Path | None = None) -> Doc:
     """Load and validate a frozen corpus, refusing absent or stale manifests."""
     root = root.resolve()
@@ -290,6 +423,7 @@ def load_corpus(root: Path, *, holdout_root: Path | None = None) -> Doc:
     labels = _read_jsonl(root / "labels.jsonl", "labels")
     mutations = _read_jsonl(root / "mutations.jsonl", "mutations")
     thresholds = _read_json(root / "thresholds.json", "thresholds")
+    _check_unknown(thresholds, _THRESHOLD_KEYS, "thresholds")
     if (
         thresholds.get("schema") != THRESHOLD_SCHEMA
         or thresholds.get("version") != manifest["version"]
@@ -297,6 +431,22 @@ def load_corpus(root: Path, *, holdout_root: Path | None = None) -> Doc:
         raise CorpusError("thresholds are not bound to this corpus version")
     if thresholds.get("corpus_sha256") != manifest["corpus_sha256"]:
         raise CorpusError("thresholds are not bound to this corpus")
+    for block in ("hard_gates", "statistical_gates"):
+        gates = thresholds.get(block)
+        if not isinstance(gates, dict) or not gates:
+            raise CorpusError(f"thresholds {block} are missing")
+        for gate, value in gates.items():
+            if not isinstance(gate, str) or not gate:
+                raise CorpusError(f"thresholds {block} name a gate without an identity")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise CorpusError(f"thresholds {block}.{gate} must be a non-negative number")
+    sealed = thresholds.get("hidden_holdout")
+    if not isinstance(sealed, dict) or sealed.get("required") is not True:
+        raise CorpusError("thresholds must require the hidden holdout")
+    if sealed.get("labels_published") is not False:
+        raise CorpusError("hidden holdout labels must not be published")
+    if sealed.get("aggregate_substitution_forbidden") is not True:
+        raise CorpusError("hidden holdout must forbid aggregate substitution")
     floors = thresholds.get("per_domain_hard_floors")
     if not isinstance(floors, dict) or set(floors) != set(manifest["domains"]):
         raise CorpusError("thresholds do not provide every per-domain hard floor")
@@ -319,6 +469,7 @@ def load_corpus(root: Path, *, holdout_root: Path | None = None) -> Doc:
         if not snapshot.is_file() or sha256_file(snapshot) != label.get("snapshot_sha256"):
             raise CorpusError(f"source snapshot binding failed: {source_id}")
         _check_no_real_data(label, f"source label {source_id}")
+    transcript_map = _load_transcripts(root, files)
     case_map: dict[str, Doc] = {}
     for case in cases:
         _check_unknown(case, _CASE_KEYS, "benchmark case")
@@ -339,6 +490,9 @@ def load_corpus(root: Path, *, holdout_root: Path | None = None) -> Doc:
         for source_id in case["sources"]:
             if source_id not in label_map:
                 raise CorpusError(f"case {case_id} references unknown source: {source_id}")
+        for transcript_id in case["transcripts"]:
+            if transcript_id not in transcript_map:
+                raise CorpusError(f"case {case_id} references unknown transcript: {transcript_id}")
         for relative in case.get("canary_paths", []):
             if relative not in files:
                 raise CorpusError(f"case {case_id} names a missing canary: {relative}")
@@ -380,6 +534,9 @@ def load_corpus(root: Path, *, holdout_root: Path | None = None) -> Doc:
             raise CorpusError(f"mutation {mutation_id} references unknown case")
         if not isinstance(mutation.get("category"), str) or not mutation["category"]:
             raise CorpusError(f"mutation {mutation_id} has no category")
+        _check_mutation_fixture(
+            mutation_id, mutation.get("fixture"), files, label_map, case_map, transcript_map
+        )
         _check_outcome(
             mutation.get("expected_typed_outcome"), f"mutation {mutation_id}.expected_typed_outcome"
         )
@@ -402,11 +559,16 @@ def load_corpus(root: Path, *, holdout_root: Path | None = None) -> Doc:
     if missing_categories:
         raise CorpusError(f"mutation coverage is incomplete: {sorted(missing_categories)[0]}")
     for canary in manifest["canaries"]:
-        if not isinstance(canary, dict) or not isinstance(canary.get("path"), str):
+        if not isinstance(canary, dict) or set(canary) != {"path", "marker"}:
             raise CorpusError("manifest canary entry is invalid")
-        canary_path = canary["path"]
+        canary_path, marker = canary["path"], canary["marker"]
+        if not isinstance(canary_path, str) or not isinstance(marker, str) or not marker:
+            raise CorpusError("manifest canary entry is invalid")
         if canary_path not in files:
             raise CorpusError(f"manifest canary is missing: {canary_path}")
+        if marker not in (root / canary_path).read_text(encoding="utf-8"):
+            raise CorpusError(f"canary marker is absent from its page: {canary_path}")
+        basename = canary_path.rsplit("/", 1)[-1]
         for relative in files:
             if relative == canary_path or not relative.endswith((".md", ".txt")):
                 continue
@@ -414,8 +576,10 @@ def load_corpus(root: Path, *, holdout_root: Path | None = None) -> Doc:
                 body = (root / relative).read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 continue
-            if canary_path in body:
+            if canary_path in body or basename in body:
                 raise CorpusError(f"canary path is linked: {canary_path}")
+            if marker in body:
+                raise CorpusError(f"canary marker is copied into {relative}: {canary_path}")
     if holdout_root is not None:
         _validate_holdout(holdout_root, manifest)
     return {

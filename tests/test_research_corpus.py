@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,7 +15,32 @@ ROOT = Path(__file__).parents[1]
 CORPUS = ROOT / "evals/fixtures/research-adversarial"
 
 sys.path.insert(0, str(ROOT / "evals"))
-from research_benchmark import CorpusError, load_corpus, sha256_file, tree_digest  # noqa: E402
+try:
+    from research_benchmark import (
+        CorpusError,
+        load_corpus,
+        sha256_file,
+        transcript_digest,
+        tree_digest,
+    )
+finally:
+    sys.path.pop(0)
+
+
+def _rebind(root: Path) -> None:
+    """Recompute the digests a hand-edit would have to forge to pass binding."""
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["corpus_sha256"] = tree_digest(root, manifest["files"])
+    manifest["component_digests"] = {
+        relative: sha256_file(root / relative) for relative in manifest["component_digests"]
+    }
+    thresholds_path = root / "thresholds.json"
+    thresholds = json.loads(thresholds_path.read_text(encoding="utf-8"))
+    thresholds["corpus_sha256"] = manifest["corpus_sha256"]
+    thresholds_path.write_text(json.dumps(thresholds), encoding="utf-8")
+    manifest["binding_file_digests"] = {"thresholds.json": sha256_file(thresholds_path)}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def test_corpus_loads_with_all_required_scenarios() -> None:
@@ -60,21 +87,7 @@ def test_generated_corpus_is_byte_identical(tmp_path: Path) -> None:
         sys.path.pop(0)
     target = tmp_path / "corpus"
     gen_research_corpus.generate(target)
-    assert tree_digest(
-        target,
-        [
-            path.relative_to(target).as_posix()
-            for path in sorted(target.rglob("*"))
-            if path.is_file() and path.name not in {"manifest.json", "thresholds.json"}
-        ],
-    ) == tree_digest(
-        CORPUS,
-        [
-            path.relative_to(CORPUS).as_posix()
-            for path in sorted(CORPUS.rglob("*"))
-            if path.is_file() and path.name not in {"manifest.json", "thresholds.json"}
-        ],
-    )
+    assert tree_digest(target) == tree_digest(CORPUS)
     assert {
         path.relative_to(target).as_posix() for path in target.rglob("*") if path.is_file()
     } == {path.relative_to(CORPUS).as_posix() for path in CORPUS.rglob("*") if path.is_file()}
@@ -135,3 +148,144 @@ def test_source_snapshot_hashes_are_bound_to_labels() -> None:
     corpus = load_corpus(CORPUS)
     for label in corpus["labels"]:
         assert sha256_file(CORPUS / label["snapshot_path"]) == label["snapshot_sha256"]
+
+
+def test_transcript_digests_are_independently_recomputable() -> None:
+    corpus = load_corpus(CORPUS)
+    referenced = {name for case in corpus["cases"] for name in case["transcripts"]}
+    paths = sorted((CORPUS / "transcripts").glob("*.json"))
+    assert paths and referenced
+    for path in paths:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        payload: dict[str, Any] = {
+            "id": doc["id"],
+            "video_id": doc["video_id"],
+            "upload_date": doc["upload_date"],
+            "date_precision": doc["date_precision"],
+            "caption_source": doc["caption_source"],
+            "segments": [
+                {
+                    "start": float(segment["start"]),
+                    "end": float(segment["end"]),
+                    "speaker": segment["speaker"],
+                    "text": segment["text"],
+                }
+                for segment in doc["segments"]
+            ],
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        assert doc["transcript_sha256"] == hashlib.sha256((encoded + "\n").encode()).hexdigest()
+        assert doc["transcript_sha256"] == transcript_digest(doc)
+    assert referenced <= {path.stem for path in paths}
+
+
+def test_edited_transcript_refuses_even_after_rebinding(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    shutil.copytree(CORPUS, root)
+    path = root / "transcripts/transcript-malicious.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["segments"][0]["text"] = "A rewritten synthetic line."
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    _rebind(root)
+    with pytest.raises(CorpusError, match="transcript digest binding failed"):
+        load_corpus(root)
+
+
+def test_case_referencing_an_unknown_transcript_refuses(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    shutil.copytree(CORPUS, root)
+    path = root / "cases.jsonl"
+    lines = path.read_text(encoding="utf-8").replace('"transcript-malicious"', '"typo-transcript"')
+    path.write_text(lines, encoding="utf-8")
+    _rebind(root)
+    with pytest.raises(CorpusError, match="unknown transcript"):
+        load_corpus(root)
+
+
+def test_thresholds_without_gate_blocks_refuse(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    shutil.copytree(CORPUS, root)
+    path = root / "thresholds.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    del value["hard_gates"]
+    path.write_text(json.dumps(value), encoding="utf-8")
+    _rebind(root)
+    with pytest.raises(CorpusError, match="hard_gates are missing"):
+        load_corpus(root)
+
+
+def test_thresholds_without_sealed_holdout_refuse(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    shutil.copytree(CORPUS, root)
+    path = root / "thresholds.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["hidden_holdout"]["aggregate_substitution_forbidden"] = False
+    path.write_text(json.dumps(value), encoding="utf-8")
+    _rebind(root)
+    with pytest.raises(CorpusError, match="aggregate substitution"):
+        load_corpus(root)
+
+
+def test_relative_canary_link_refuses(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    shutil.copytree(CORPUS, root)
+    index = root / "estate/HealthWiki/INDEX.md"
+    index.write_text(
+        index.read_text(encoding="utf-8") + "- [Notes](unlinked/private-canary.md)\n",
+        encoding="utf-8",
+    )
+    _rebind(root)
+    with pytest.raises(CorpusError, match="canary path is linked"):
+        load_corpus(root)
+
+
+def test_copied_canary_marker_refuses(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    shutil.copytree(CORPUS, root)
+    page = root / "estate/HealthWiki/general.md"
+    page.write_text(
+        page.read_text(encoding="utf-8") + "CANARY-PRIVATE-HEALTH-001\n", encoding="utf-8"
+    )
+    _rebind(root)
+    with pytest.raises(CorpusError, match="canary marker is copied"):
+        load_corpus(root)
+
+
+def test_mutation_naming_a_missing_corpus_path_refuses(tmp_path: Path) -> None:
+    root = tmp_path / "corpus"
+    shutil.copytree(CORPUS, root)
+    path = root / "mutations.jsonl"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "estate/HealthWiki/unlinked/private-canary.md",
+            "estate/PersonalWiki/unlinked/private-canary.md",
+        ),
+        encoding="utf-8",
+    )
+    _rebind(root)
+    with pytest.raises(CorpusError, match="missing corpus path"):
+        load_corpus(root)
+
+
+def test_synthetic_estate_registry_loads_with_megamind(tmp_path: Path) -> None:
+    from megamind.registry import load_registry
+
+    registry = load_registry(CORPUS / "estate")
+    wikis = {wiki.name: wiki for wiki in registry.wikis}
+    assert set(wikis) == {"HealthWiki", "FinanceWiki", "ProvisionalWiki"}
+    assert all(wiki.path for wiki in registry.wikis)
+    assert wikis["ProvisionalWiki"].provisional
+
+
+def test_generator_refuses_to_replace_a_foreign_directory(tmp_path: Path) -> None:
+    sys.path.insert(0, str(ROOT / "evals"))
+    try:
+        import gen_research_corpus
+    finally:
+        sys.path.pop(0)
+    foreign = tmp_path / "fixtures"
+    foreign.mkdir()
+    (foreign / "keepsake.txt").write_text("not a generated corpus\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not a generated corpus"):
+        gen_research_corpus.generate(foreign)
+    assert (foreign / "keepsake.txt").is_file()
