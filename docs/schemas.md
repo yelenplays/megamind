@@ -813,7 +813,7 @@ One JSON object per line: `ts` (UTC ISO), `action` (`init`, `migrate`,
 `router-refresh`, `adopt-apply`, `adopt-rollback`, `gap-transition`,
 `research-ingest-proposal`, `provisional-wiki-create`, `provisional-wiki-undo`,
 `provisional-wiki-rollback`, `existing_selection_listed`,
-`existing_selection_consumed`), and action-specific fields such as `path`,
+`existing_selection_claimed`, `existing_selection_consumed`), and action-specific fields such as `path`,
 `proposal_id`, `plan_id`, `gap_id`, `correlation_id`, `preserved`,
 `preserved_total`, and `backup`. Backups of every mutated file live in
 `.megamind/audit/backups/<name>.<content-hash>.bak`. Adoption additionally

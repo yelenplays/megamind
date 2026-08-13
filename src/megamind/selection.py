@@ -515,6 +515,7 @@ def _claim_existing_state(state_root: Path, state: Doc, wiki: str) -> None:
         "selection_id": selection_id,
         "state_hash": content_hash(json.dumps(state, sort_keys=True)),
         "choice_hash": content_hash(wiki),
+        "audit_event": _audit_event(selection_id, "claimed"),
     }
     try:
         create_file(
@@ -524,9 +525,47 @@ def _claim_existing_state(state_root: Path, state: Doc, wiki: str) -> None:
             durable=True,
         )
     except FileExistsError as error:
+        existing = _read_existing_claim(state_root, selection_id, state)
+        recovered = dict(state)
+        recovered["status"] = "consumed"
+        recovered["audit_event"] = _audit_event(selection_id, "consumed")
+        _ensure_existing_audit(state_root, _claim_audit_payload(state, existing))
+        _write_existing_state(state_root, recovered)
         raise _existing_state_error("already consumed") from error
     except OSError as error:
         raise _existing_state_error("could not be claimed") from error
+    _ensure_existing_audit(state_root, _claim_audit_payload(state, claim))
+
+
+def _claim_audit_payload(state: Doc, claim: Doc) -> Doc:
+    audit_event = claim.get("audit_event")
+    if not isinstance(audit_event, dict):
+        raise _existing_state_error("claim is malformed")
+    payload = dict(state)
+    payload["audit_event"] = audit_event
+    return payload
+
+
+def _read_existing_claim(state_root: Path, selection_id: str, state: Doc) -> Doc:
+    try:
+        raw = resolve_contained(state_root, _existing_claim_path(selection_id)).read_text(
+            encoding="utf-8"
+        )
+        claim = json.loads(raw)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise _existing_state_error("claim is malformed") from error
+    if not isinstance(claim, dict):
+        raise _existing_state_error("claim is malformed")
+    audit_event = claim.get("audit_event")
+    if (
+        claim.get("selection_id") != selection_id
+        or claim.get("state_hash") != content_hash(json.dumps(state, sort_keys=True))
+        or not isinstance(claim.get("choice_hash"), str)
+        or not isinstance(audit_event, dict)
+        or audit_event != _audit_event(selection_id, "claimed")
+    ):
+        raise _existing_state_error("claim is malformed")
+    return claim
 
 
 def _existing_candidates(refs: list[RootRef], catalog: Catalog, model_class: str) -> list[Doc]:

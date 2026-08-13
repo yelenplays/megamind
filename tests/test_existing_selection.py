@@ -308,3 +308,40 @@ def test_existing_selection_recovers_pending_audit_events(
     assert "existing_selection_consumed" in (
         vault / ".megamind" / "audit" / "log.jsonl"
     ).read_text(encoding="utf-8")
+
+
+def test_existing_selection_recovers_claimed_state(
+    vault: Path, capsys: Any, monkeypatch: Any
+) -> None:
+    code, listed, _ = run_json(capsys, *_list_args(vault))
+    assert code == 0
+    original_ensure_audit = selection._ensure_existing_audit
+
+    def fail_claim_audit(state_root: Path, payload: dict[str, Any]) -> None:
+        event = payload.get("audit_event")
+        if isinstance(event, dict) and event.get("action") == "existing_selection_claimed":
+            raise selection.SelectionError("synthetic claim interruption")
+        original_ensure_audit(state_root, payload)
+
+    monkeypatch.setattr(selection, "_ensure_existing_audit", fail_claim_audit)
+    code, document, _ = run_json(
+        capsys,
+        *_list_args(vault),
+        "BrandingWiki",
+        "--selection-id",
+        listed["selection_id"],
+    )
+    assert code == 1 and document["code"] == "selection_invalid"
+
+    monkeypatch.setattr(selection, "_ensure_existing_audit", original_ensure_audit)
+    code, document, _ = run_json(
+        capsys,
+        *_list_args(vault),
+        "BrandingWiki",
+        "--selection-id",
+        listed["selection_id"],
+    )
+    assert code == 1 and document["code"] == "selection_invalid"
+    audit = (vault / ".megamind" / "audit" / "log.jsonl").read_text(encoding="utf-8")
+    assert "existing_selection_claimed" in audit
+    assert "existing_selection_consumed" in audit
