@@ -1302,6 +1302,19 @@ def _research_doc(schema: str, payload: Mapping[str, Any], help_text: str) -> Do
     return {"schema_version": schema, **dict(payload), "help": _help(help_text)}
 
 
+def _excluded_research_workflow(action: str, job_id: str) -> tuple[Doc, int]:
+    return _research_doc(
+        "megamind/research-status/v1",
+        {
+            "status": "unavailable",
+            "action": action,
+            "job_id": job_id,
+            "reason": "packet-to-proposal compilation is outside this slice",
+        },
+        "Research packets remain inert receipts; Megamind does not compile them into proposals",
+    ), 0
+
+
 def _research_policy(registry: Registry, wiki: str) -> ResearchPolicy | None:
     """Resolve one wiki's validated research policy from its registry entry or card.
 
@@ -1430,6 +1443,8 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             if problems
             else "Record the next host receipt with `megamind-axi research ... --input FILE`",
         ), 0
+    if action == "reconcile" and args.job_id and not args.input:
+        return _excluded_research_workflow(action, args.job_id)
     if not args.input:
         raise UsageError(f"research {action} requires --input FILE")
     if action in {
@@ -1811,19 +1826,9 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
     if action == "packet":
         if isinstance(raw, Mapping) and "claims" in raw:
             job_id = raw.get("job_id")
-            if not isinstance(job_id, str):
+            if not isinstance(job_id, str) or not job_id:
                 raise ResearchError("legacy packet job_id is required")
-            job = store.get("jobs", job_id)
-            raw = {
-                "schema": PACKET_SCHEMA,
-                "plan_id": job["plan_id"],
-                "claim_ids": raw.get("claims", []),
-                "contradiction_ids": raw.get("contradictions", []),
-                "interpretation": raw.get("interpretation", ""),
-                "supported_by": [],
-                "answerability": {},
-                "confidence": "unknown",
-            }
+            return _excluded_research_workflow(action, job_id)
         packet = validate_packet(
             raw,
             claims=_known_records(root, "claims"),
@@ -2689,6 +2694,9 @@ def build_parser() -> AxiParser:
         ],
     )
     p_research.add_argument("--input", default=None, help="JSON host receipt or record file")
+    p_research.add_argument(
+        "--job-id", default="", help="legacy workflow job identity for a typed refusal"
+    )
     p_research.add_argument(
         "--normalized-file",
         default=None,

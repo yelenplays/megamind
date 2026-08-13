@@ -594,28 +594,32 @@ def _lane_to_extracting(
     return job, str(doc["claims"][0]["claim_id"])
 
 
-def _lane_to_packet_ready(
-    capsys: pytest.CaptureFixture[str], root: Path
-) -> tuple[dict[str, Any], str]:
-    job, claim_id = _lane_to_extracting(capsys, root)
-    code, doc = _run(
-        capsys, root, "research", "reconcile", "--job-id", job["job_id"], "--today", "2026-03-01"
-    )
-    assert code == 0, doc
-    assert doc["status"] == "packet-ready"
-    return job, claim_id
-
-
-def test_research_lane_reaches_a_proposal_through_the_transition_table(
+def test_legacy_packet_workflow_is_typed_unavailable(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = _research_vault(tmp_path)
-    job, claim_id = _lane_to_packet_ready(capsys, root)
+    job_id = "legacy-job"
+
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "reconcile",
+        "--job-id",
+        job_id,
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0, doc
+    assert doc["schema_version"] == "megamind/research-status/v1"
+    assert doc["status"] == "unavailable"
+    assert doc["action"] == "reconcile"
+    assert doc["job_id"] == job_id
 
     packet_input = {
-        "job_id": job["job_id"],
-        "attempt_id": job["attempt_id"],
-        "claims": [claim_id],
+        "job_id": job_id,
+        "attempt_id": "legacy-attempt",
+        "claims": ["legacy-claim"],
         "interpretation": "The synthetic product ships on a weekly train.",
     }
     code, doc = _run(
@@ -629,26 +633,12 @@ def test_research_lane_reaches_a_proposal_through_the_transition_table(
         "2026-03-01",
     )
     assert code == 0, doc
-    assert doc["job"]["state"] == "change-proposed"
-    assert (root / doc["proposal"]).is_file()
-    # The packet reports the frozen claim's confidence, not a receipt value.
-    assert doc["packet"]["confidence"] == _frozen_claim(root, claim_id)["confidence"]
-    assert doc["packet"]["answerability"]["claims"] == 1
-
-    # Exact replay of the whole packet step is a no-op, not a second proposal.
-    replayed_code, replayed = _run(
-        capsys,
-        root,
-        "research",
-        "packet",
-        "--input",
-        _write(root, "packet.json", packet_input),
-        "--today",
-        "2026-03-01",
-    )
-    assert replayed_code == 0
-    assert replayed["job"] == doc["job"]
-    assert replayed["proposal_id"] == doc["proposal_id"]
+    assert doc["schema_version"] == "megamind/research-status/v1"
+    assert doc["status"] == "unavailable"
+    assert doc["action"] == "packet"
+    assert doc["job_id"] == job_id
+    assert not (root / ".megamind" / "research" / "packets").exists()
+    assert not list((root / ".megamind" / "proposals").glob("*.json"))
 
 
 def _artifacts(root: Path, directory: str) -> set[str]:

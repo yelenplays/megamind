@@ -260,6 +260,10 @@ typed local state. Inputs are files to keep large source payloads out of
 command strings. No action performs network access, dispatch, transcript
 fetching, publication, or an external write.
 
+The legacy `reconcile --job-id` and legacy packet-input forms remain parseable,
+but return a typed `unavailable` result because packet-to-proposal compilation
+is outside this slice. They make no vault mutation.
+
 `record-artifact` derives G1-G12 and source-class gates from validated facts and
 the selected wiki's restrictive research policy. A missing policy, an unnamed
 wiki, or an explicit `"research": "off"` denies acceptance. `--wiki` must name a
