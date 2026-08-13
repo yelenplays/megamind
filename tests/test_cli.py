@@ -15,6 +15,7 @@ import pytest
 from conftest import build_vault
 from megamind import toon
 from megamind.cli import DIFF_LINE_LIMIT, SECTION_ITEM_LIMIT, main
+from megamind.policy import RESEARCH_POLICY_SCHEMA, ResearchPolicy
 from megamind.registry import WikiEntry, load_registry, save_registry
 from megamind.scaffold import init_wiki_root
 
@@ -29,6 +30,30 @@ def run_toon(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, 
     code = main(list(argv))
     captured = capsys.readouterr()
     return code, captured.out, captured.err
+
+
+def research_ready_vault(tmp_path: Path) -> Path:
+    """Return the synthetic vault with the explicit policy research requires."""
+    vault = build_vault(tmp_path)
+    registry = load_registry(vault)
+    starter = registry.wiki_by_name("StarterWiki")
+    assert starter is not None
+    starter.research_policy = ResearchPolicy.from_data(
+        {
+            "schema": RESEARCH_POLICY_SCHEMA,
+            "research": "approval",
+            "tiers": [
+                {
+                    "tier": 1,
+                    "name": "synthetic-authority",
+                    "quality": "primary",
+                    "matchers": [{"kind": "publisher", "publisher": "Synthetic Authority"}],
+                }
+            ],
+        }
+    )
+    save_registry(vault, registry)
+    return vault
 
 
 # --- home -------------------------------------------------------------------
@@ -984,7 +1009,7 @@ def test_review_attention_lists_sections(
 def test_research_documents_render_identically_in_toon_and_json(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    vault = build_vault(tmp_path)
+    vault = research_ready_vault(tmp_path)
     plan_file = tmp_path / "plan.json"
     plan_file.write_text(
         json.dumps({"gap_id": "gap-1", "wiki": "StarterWiki", "question": "What ships weekly?"}),
@@ -1010,7 +1035,7 @@ def test_research_documents_render_identically_in_toon_and_json(
 def test_research_status_truncates_without_full(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    vault = build_vault(tmp_path)
+    vault = research_ready_vault(tmp_path)
     for index in range(SECTION_ITEM_LIMIT + 2):
         plan_file = tmp_path / f"plan-{index}.json"
         plan_file.write_text(

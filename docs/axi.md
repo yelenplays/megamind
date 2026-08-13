@@ -37,7 +37,7 @@ with a stable `schema_version`:
 | `megamind/gap-transition/v1`, `megamind/gap-attempt/v1` | `gap` mutations |
 | `megamind/research-wave/v1` | `research-wave` |
 | `megamind/research-result/v1` or `v2` | `research-result` (v1 restrictive legacy; v2 typed acceptance) |
-| `megamind/research-status/v1`, `megamind/research-plan/v1`, `megamind/research-job/v1`, `megamind/source-candidate/v1`, `megamind/evidence-record/v1`, `megamind/correction-notice/v1`, `megamind/quotation/v1`, `megamind/claim/v1`, `megamind/contradiction/v1`, `megamind/research-packet/v1` | `research` actions |
+| `megamind/research-status/v1`, `megamind/research-plan/v1`, `megamind/research-job/v1`, `megamind/source-candidate/v1`, `megamind/evidence-record/v1`, `megamind/correction-notice/v1`, `megamind/quotation/v1`, `megamind/claim/v1`, `megamind/contradiction/v1`, `megamind/research-packet/v1`, `megamind/research-outcome/v1` | `research` actions |
 | `megamind/provisional-wiki-result/v1` | `provision-wiki` |
 | `megamind/benchmark-result/v1`, `megamind/benchmark-check/v1` | `bench run`, `bench check` |
 | `megamind/evaluation-key/v1` | `experiment keygen` |
@@ -255,8 +255,9 @@ spine record. `record-discovery`, `record-artifact`, `record-correction`,
 `record-quotations`, `record-claims`, and `reconcile` accept JSON host receipts and emit
 `source-candidate/v1`, `evidence-record/v1`, `correction-notice/v1`, `claim/v1`,
 and `contradiction/v1` documents. `packet` stores a cited
-`research-packet/v1`; `status`, `cancel`, and `resume` inspect or advance only
-typed local state. Inputs are files to keep large source payloads out of
+`research-packet/v1`, and `outcome` stores a terminal
+`research-outcome/v1` receipt; `status`, `cancel`, and `resume` inspect or
+advance only typed local state. Inputs are files to keep large source payloads out of
 command strings. No action performs network access, dispatch, transcript
 fetching, publication, or an external write.
 

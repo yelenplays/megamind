@@ -8,12 +8,14 @@ or turn a packet into an answer.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from .card import CARD_PATH, CardError, load_wiki_card
+from .confidence import RELIANCE_FLOOR, Confidence, answer_confidence
 from .fsops import (
     MEGAMIND_DIR,
     append_audit,
@@ -23,9 +25,7 @@ from .fsops import (
     identity_bytes,
     resolve_contained,
 )
-from .confidence import RELIANCE_FLOOR, Confidence, answer_confidence
-from .card import CARD_PATH, CardError, load_wiki_card
-from .registry import Budgets, CURRENT_VERSION, Registry, RegistryNotInitialized, load_registry
+from .registry import CURRENT_VERSION, Budgets, Registry, RegistryNotInitialized, load_registry
 
 LEGACY_JOBS_PATH = Path(MEGAMIND_DIR) / "research" / "jobs.jsonl"
 LEGACY_TRANSITIONS: Mapping[str, frozenset[str]] = MappingProxyType(
@@ -39,9 +39,7 @@ LEGACY_TRANSITIONS: Mapping[str, frozenset[str]] = MappingProxyType(
         "retrieving": frozenset({"accepting", "cancelled", "budget-exhausted"}),
         "accepting": frozenset({"extracting", "packet-ready", "cancelled"}),
         "extracting": frozenset({"reconciling", "cancelled"}),
-        "reconciling": frozenset(
-            {"packet-ready", "cancelled", "unresolved-contradiction"}
-        ),
+        "reconciling": frozenset({"packet-ready", "cancelled", "unresolved-contradiction"}),
     }
 )
 
@@ -235,9 +233,13 @@ def _legacy_plan(raw: Mapping[str, Any]) -> LegacyPlan:
     if any(not isinstance(raw.get(key), str) or not raw[key] for key in required):
         raise ResearchError("wiki must be a non-empty string")
     ceilings = raw.get("ceilings")
-    if not isinstance(ceilings, Mapping) or not ceilings or any(
-        not isinstance(value, int) or isinstance(value, bool) or value < 0
-        for value in ceilings.values()
+    if (
+        not isinstance(ceilings, Mapping)
+        or not ceilings
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in ceilings.values()
+        )
     ):
         raise ResearchError("ceilings must contain non-negative integer limits")
     body = {
@@ -249,11 +251,29 @@ def _legacy_plan(raw: Mapping[str, Any]) -> LegacyPlan:
         "access_digest": raw["access_digest"],
         "ceilings": dict(sorted((str(key), value) for key, value in ceilings.items())),
     }
-    job_id = content_hash(json.dumps({key: body[key] for key in ("wiki", "gap_id", "question")}, sort_keys=True, separators=(",", ":")))
-    plan_id = content_hash(json.dumps({"job_id": job_id, **body}, sort_keys=True, separators=(",", ":")))
+    job_id = content_hash(
+        json.dumps(
+            {key: body[key] for key in ("wiki", "gap_id", "question")},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    plan_id = content_hash(
+        json.dumps({"job_id": job_id, **body}, sort_keys=True, separators=(",", ":"))
+    )
     if raw.get("plan_id") not in (None, plan_id):
         raise ReplayConflict("plan_id does not match the plan body")
-    return LegacyPlan(plan_id, job_id, str(body["wiki"]), str(body["gap_id"]), str(body["question"]), str(body["policy_digest"]), str(body["card_digest"]), str(body["access_digest"]), dict(body["ceilings"]))
+    return LegacyPlan(
+        plan_id,
+        job_id,
+        str(body["wiki"]),
+        str(body["gap_id"]),
+        str(body["question"]),
+        str(body["policy_digest"]),
+        str(body["card_digest"]),
+        str(body["access_digest"]),
+        dict(body["ceilings"]),
+    )
 
 
 def make_plan(raw: object, *, today: str | None = None) -> dict[str, Any] | LegacyPlan:
@@ -446,16 +466,16 @@ def packet_content_id(packet: Mapping[str, Any]) -> str:
     return str(validate_packet(packet)["packet_id"])
 
 
-def make_packet(
-    packet: Mapping[str, Any], resolver: Any | None = None
-) -> dict[str, Any]:
+def make_packet(packet: Mapping[str, Any], resolver: Any | None = None) -> dict[str, Any]:
     if "claims" not in packet and "claim_ids" in packet:
         return validate_packet(packet)
     claims = packet.get("claims", [])
     contradictions = packet.get("contradictions", [])
     if not isinstance(claims, list) or not all(isinstance(item, str) for item in claims):
         raise ResearchError("packet claims must be opaque references")
-    if not isinstance(contradictions, list) or not all(isinstance(item, str) for item in contradictions):
+    if not isinstance(contradictions, list) or not all(
+        isinstance(item, str) for item in contradictions
+    ):
         raise ResearchError("packet contradictions must be opaque references")
     if (claims or contradictions) and resolver is None:
         raise ResearchError("packet claim and contradiction references require a resolver")
@@ -466,16 +486,31 @@ def make_packet(
             raise ResearchError("packet contains an unresolved contradiction reference")
     scores = [resolver.claim_confidence(item) for item in claims] if resolver is not None else []
     confidence = answer_confidence(
-        [Confidence(float(value)) if isinstance(value, (int, float)) and not isinstance(value, bool) else Confidence(None) for value in scores]
+        [
+            Confidence(float(value))
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+            else Confidence(None)
+            for value in scores
+        ]
     ).render()
     unresolved = [
-        item for item in contradictions if resolver is not None and resolver.contradiction_is_unresolved(item)
+        item
+        for item in contradictions
+        if resolver is not None and resolver.contradiction_is_unresolved(item)
     ]
     below = sum(
-        1 for value in scores if isinstance(value, (int, float)) and not isinstance(value, bool) and value < RELIANCE_FLOOR
+        1
+        for value in scores
+        if isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value < RELIANCE_FLOOR
     )
     answerability = {
-        "verdict": "contradicted" if unresolved else "supported" if scores and not below and confidence != "unknown" else "insufficient",
+        "verdict": "contradicted"
+        if unresolved
+        else "supported"
+        if scores and not below and confidence != "unknown"
+        else "insufficient",
         "claims": len(scores),
         "unknown_claims": sum(1 for value in scores if value == "unknown"),
         "below_floor_claims": below,
@@ -487,7 +522,9 @@ def make_packet(
         "attempt_id": _str("packet attempt_id", packet.get("attempt_id")),
         "claims": claims,
         "contradictions": contradictions,
-        "interpretation": _str("packet interpretation", packet.get("interpretation", ""), required=False),
+        "interpretation": _str(
+            "packet interpretation", packet.get("interpretation", ""), required=False
+        ),
         "confidence": confidence,
         "answerability": answerability,
         "provenance": [],
@@ -542,7 +579,9 @@ class _StoreSpec:
 STORE_SPECS: Mapping[str, _StoreSpec] = MappingProxyType(
     {
         "plans": _StoreSpec("plan_id", ".json", frozenset(), _make_receipt_plan),
-        "jobs": _StoreSpec("job_id", ".jsonl", frozenset({"state", "attempt", "events"}), validate_job),
+        "jobs": _StoreSpec(
+            "job_id", ".jsonl", frozenset({"state", "attempt", "events"}), validate_job
+        ),
         "packets": _StoreSpec("packet_id", ".json", frozenset(), validate_packet),
         "outcomes": _StoreSpec("outcome_id", ".json", frozenset(), validate_outcome),
         "candidates": _StoreSpec(
@@ -575,22 +614,22 @@ class ResearchStore:
             registry = load_registry(self.root)
         except RegistryNotInitialized:
             if not (self.root / CARD_PATH).is_file():
-                raise ResearchError("research state requires an explicit wiki research policy")
+                raise ResearchError(
+                    "research state requires an explicit wiki research policy"
+                ) from None
             try:
                 card = load_wiki_card(self.root)
             except CardError as error:
-                raise ResearchError("research state requires an explicit wiki research policy") from error
+                raise ResearchError(
+                    "research state requires an explicit wiki research policy"
+                ) from error
             registry = Registry(
                 version=CURRENT_VERSION,
                 budgets=Budgets(),
                 wikis=[card],
             )
         entry = registry.wiki_by_name(wiki)
-        if (
-            entry is None
-            or entry.research_policy is None
-            or not entry.research_policy.permitted
-        ):
+        if entry is None or entry.research_policy is None or not entry.research_policy.permitted:
             raise ResearchError("research state requires an explicit wiki research policy")
 
     def _admit_policy(
@@ -670,9 +709,20 @@ class ResearchStore:
             if not isinstance(value, dict):
                 raise ResearchError("invalid research job journal entry")
             fields = {
-                "schema", "job_id", "attempt_id", "state", "plan_id", "gap_id",
-                "policy_digest", "card_digest", "access_digest", "event_id", "reason",
-                "artifact_ids", "contradiction_ids", "updated",
+                "schema",
+                "job_id",
+                "attempt_id",
+                "state",
+                "plan_id",
+                "gap_id",
+                "policy_digest",
+                "card_digest",
+                "access_digest",
+                "event_id",
+                "reason",
+                "artifact_ids",
+                "contradiction_ids",
+                "updated",
             }
             if set(value) != fields or value.get("schema") != JOB_SCHEMA:
                 raise ResearchError("invalid research job journal entry")
@@ -691,18 +741,26 @@ class ResearchStore:
             }
             if any(not isinstance(value[field], str) for field in string_fields):
                 raise ResearchError("invalid research job journal entry")
-            if any(not value[field] for field in ("job_id", "attempt_id", "state", "plan_id", "gap_id", "event_id")):
+            if any(
+                not value[field]
+                for field in ("job_id", "attempt_id", "state", "plan_id", "gap_id", "event_id")
+            ):
                 raise ResearchError("invalid research job journal entry")
             for field in ("artifact_ids", "contradiction_ids"):
                 identifiers = value[field]
                 if (
                     not isinstance(identifiers, list)
-                    or any(not isinstance(identifier, str) or not identifier for identifier in identifiers)
+                    or any(
+                        not isinstance(identifier, str) or not identifier
+                        for identifier in identifiers
+                    )
                     or identifiers != sorted(set(identifiers))
                 ):
                     raise ResearchError("invalid research job journal entry")
             payload = {key: value[key] for key in fields - {"schema", "event_id", "updated"}}
-            if value.get("event_id") != content_hash(json.dumps(payload, sort_keys=True, separators=(",", ":"))):
+            if value.get("event_id") != content_hash(
+                json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            ):
                 raise ResearchError("invalid research job journal entry")
             events.append(value)
         latest: dict[str, dict[str, Any]] = {}
@@ -723,11 +781,25 @@ class ResearchStore:
                         raise ResearchError("invalid research job journal transition")
                 elif (
                     event["attempt_id"] != prior["attempt_id"]
-                    or any(event[key] != prior[key] for key in ("plan_id", "gap_id", "policy_digest", "card_digest", "access_digest"))
-                    or event["state"] not in LEGACY_TRANSITIONS.get(
-                        str(prior["state"]), frozenset()
+                    or any(
+                        event[key] != prior[key]
+                        for key in (
+                            "plan_id",
+                            "gap_id",
+                            "policy_digest",
+                            "card_digest",
+                            "access_digest",
+                        )
                     )
-                    or (prior["state"] == "accepting" and (event["artifact_ids"] != prior["artifact_ids"] or event["contradiction_ids"] != prior["contradiction_ids"]))
+                    or event["state"]
+                    not in LEGACY_TRANSITIONS.get(str(prior["state"]), frozenset())
+                    or (
+                        prior["state"] == "accepting"
+                        and (
+                            event["artifact_ids"] != prior["artifact_ids"]
+                            or event["contradiction_ids"] != prior["contradiction_ids"]
+                        )
+                    )
                 ):
                     raise ResearchError("invalid research job journal transition")
             latest[job_id] = event
@@ -737,10 +809,18 @@ class ResearchStore:
         latest: dict[str, LegacyJob] = {}
         for event in self._legacy_events():
             latest[str(event["job_id"])] = LegacyJob(
-                str(event["job_id"]), str(event["attempt_id"]), str(event["state"]),
-                str(event["plan_id"]), str(event["gap_id"]), str(event["policy_digest"]),
-                str(event["card_digest"]), str(event["access_digest"]), str(event["event_id"]),
-                str(event["reason"]), tuple(event["artifact_ids"]), tuple(event["contradiction_ids"]),
+                str(event["job_id"]),
+                str(event["attempt_id"]),
+                str(event["state"]),
+                str(event["plan_id"]),
+                str(event["gap_id"]),
+                str(event["policy_digest"]),
+                str(event["card_digest"]),
+                str(event["access_digest"]),
+                str(event["event_id"]),
+                str(event["reason"]),
+                tuple(event["artifact_ids"]),
+                tuple(event["contradiction_ids"]),
             )
         return [latest[key] for key in sorted(latest)]
 
@@ -759,11 +839,23 @@ class ResearchStore:
             if current.plan_id != plan.plan_id:
                 raise ResearchDrift("plan or bound policy/card/access digest drift requires replan")
             return current
-        attempt_id = content_hash(json.dumps({"job_id": plan.job_id, "plan_id": plan.plan_id, "attempt": 1}, sort_keys=True, separators=(",", ":")))
+        attempt_id = content_hash(
+            json.dumps(
+                {"job_id": plan.job_id, "plan_id": plan.plan_id, "attempt": 1},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
         return self.transition(
-            plan.job_id, "gap-open", plan_id=plan.plan_id, gap_id=plan.gap_id,
-            attempt_id=attempt_id, policy_digest=plan.policy_digest, card_digest=plan.card_digest,
-            access_digest=plan.access_digest, today=today,
+            plan.job_id,
+            "gap-open",
+            plan_id=plan.plan_id,
+            gap_id=plan.gap_id,
+            attempt_id=attempt_id,
+            policy_digest=plan.policy_digest,
+            card_digest=plan.card_digest,
+            access_digest=plan.access_digest,
+            today=today,
         )
 
     def transition(
@@ -792,15 +884,31 @@ class ResearchStore:
                 and state == "gap-open"
                 and attempt_id != current.attempt_id
             )
-            if current.plan_id != plan_id or current.gap_id != gap_id or (
-                current.attempt_id != attempt_id and not resumed
+            if (
+                current.plan_id != plan_id
+                or current.gap_id != gap_id
+                or (current.attempt_id != attempt_id and not resumed)
             ):
                 raise ReplayConflict("attempt identity does not match current job")
             policy_digest = policy_digest or current.policy_digest
             card_digest = card_digest or current.card_digest
             access_digest = access_digest or current.access_digest
-            effective_artifacts = sorted(set(artifact_ids or [])) if resumed else sorted(set(artifact_ids if artifact_ids is not None else current.artifact_ids))
-            effective_contradictions = sorted(set(contradiction_ids or [])) if resumed else sorted(set(contradiction_ids if contradiction_ids is not None else current.contradiction_ids))
+            effective_artifacts = (
+                sorted(set(artifact_ids or []))
+                if resumed
+                else sorted(set(artifact_ids if artifact_ids is not None else current.artifact_ids))
+            )
+            effective_contradictions = (
+                sorted(set(contradiction_ids or []))
+                if resumed
+                else sorted(
+                    set(
+                        contradiction_ids
+                        if contradiction_ids is not None
+                        else current.contradiction_ids
+                    )
+                )
+            )
             if current.state == "accepting" and (
                 effective_artifacts != sorted(current.artifact_ids)
                 or effective_contradictions != sorted(current.contradiction_ids)
@@ -816,9 +924,16 @@ class ResearchStore:
             effective_artifacts = sorted(set(artifact_ids or []))
             effective_contradictions = sorted(set(contradiction_ids or []))
         payload = {
-            "job_id": job_id, "attempt_id": attempt_id, "state": state, "plan_id": plan_id,
-            "gap_id": gap_id, "policy_digest": policy_digest, "card_digest": card_digest,
-            "access_digest": access_digest, "reason": reason, "artifact_ids": effective_artifacts,
+            "job_id": job_id,
+            "attempt_id": attempt_id,
+            "state": state,
+            "plan_id": plan_id,
+            "gap_id": gap_id,
+            "policy_digest": policy_digest,
+            "card_digest": card_digest,
+            "access_digest": access_digest,
+            "reason": reason,
+            "artifact_ids": effective_artifacts,
             "contradiction_ids": effective_contradictions,
         }
         event_id = content_hash(json.dumps(payload, sort_keys=True, separators=(",", ":")))
@@ -830,7 +945,8 @@ class ResearchStore:
         events = self._legacy_events()
         backup_existing(self.root, LEGACY_JOBS_PATH)
         atomic_write(
-            self.root, LEGACY_JOBS_PATH,
+            self.root,
+            LEGACY_JOBS_PATH,
             "".join(json.dumps(item, sort_keys=True) + "\n" for item in [*events, event]),
         )
         append_audit(
@@ -838,13 +954,28 @@ class ResearchStore:
             "research-transition",
             {"job_id": job_id, "attempt_id": attempt_id, "state": state, "event_id": event_id},
         )
-        return LegacyJob(job_id, attempt_id, state, plan_id, gap_id, policy_digest, card_digest, access_digest, event_id, reason, tuple(effective_artifacts), tuple(effective_contradictions))
+        return LegacyJob(
+            job_id,
+            attempt_id,
+            state,
+            plan_id,
+            gap_id,
+            policy_digest,
+            card_digest,
+            access_digest,
+            event_id,
+            reason,
+            tuple(effective_artifacts),
+            tuple(effective_contradictions),
+        )
 
     def assert_no_drift(
         self, job: LegacyJob, *, policy_digest: str, card_digest: str, access_digest: str
     ) -> None:
         if (job.policy_digest, job.card_digest, job.access_digest) != (
-            policy_digest, card_digest, access_digest,
+            policy_digest,
+            card_digest,
+            access_digest,
         ):
             raise ResearchDrift("policy, card, access, or plan drift requires replan")
 

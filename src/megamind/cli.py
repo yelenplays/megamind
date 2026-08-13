@@ -1344,9 +1344,7 @@ def _admitting_research_policy(registry: Registry, wiki: str) -> ResearchPolicy:
     return policy
 
 
-def _stored_plan_policy(
-    store: ResearchStore, registry: Registry, plan_id: str
-) -> ResearchPolicy:
+def _stored_plan_policy(store: ResearchStore, registry: Registry, plan_id: str) -> ResearchPolicy:
     plan = store.get("plans", plan_id)
     return _admitting_research_policy(registry, str(plan["wiki"]))
 
@@ -1492,16 +1490,54 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         plan = make_plan(candidate)
         if not isinstance(plan, dict):
             raise ResearchError("legacy permission-check plan is invalid")
-        job_id = content_hash(json.dumps({"plan_id": plan["plan_id"], "gap_id": plan["gap_id"]}, sort_keys=True, separators=(",", ":")))
+        job_id = content_hash(
+            json.dumps(
+                {"plan_id": plan["plan_id"], "gap_id": plan["gap_id"]},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
         authorized = bool(policy.permitted and raw.get("policy_authorized") is True)
-        attempt_id = content_hash(json.dumps({"job_id": job_id, "plan_id": plan["plan_id"], "attempt": 1}, sort_keys=True, separators=(",", ":")))
-        job = validate_job({"schema": JOB_SCHEMA, "job_id": job_id, "plan_id": plan["plan_id"], "gap_id": plan["gap_id"], "state": "planned" if authorized else "policy-denied", "attempt": 1, "events": []})
+        attempt_id = content_hash(
+            json.dumps(
+                {"job_id": job_id, "plan_id": plan["plan_id"], "attempt": 1},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        job = validate_job(
+            {
+                "schema": JOB_SCHEMA,
+                "job_id": job_id,
+                "plan_id": plan["plan_id"],
+                "gap_id": plan["gap_id"],
+                "state": "planned" if authorized else "policy-denied",
+                "attempt": 1,
+                "events": [],
+            }
+        )
         legacy_job = {**job, "attempt_id": attempt_id}
         if not authorized:
-            return _research_doc(JOB_SCHEMA, {"status": job["state"], "job": legacy_job, "authority": {"authorized": policy.permitted}}, "Permission is derived from the wiki policy"), 0
+            return _research_doc(
+                JOB_SCHEMA,
+                {
+                    "status": job["state"],
+                    "job": legacy_job,
+                    "authority": {"authorized": policy.permitted},
+                },
+                "Permission is derived from the wiki policy",
+            ), 0
         store.put("plans", plan)
         store.put("jobs", job)
-        return _research_doc(JOB_SCHEMA, {"status": job["state"], "job": legacy_job, "authority": {"authorized": policy.permitted}}, "Permission is derived from the wiki policy"), 0
+        return _research_doc(
+            JOB_SCHEMA,
+            {
+                "status": job["state"],
+                "job": legacy_job,
+                "authority": {"authorized": policy.permitted},
+            },
+            "Permission is derived from the wiki policy",
+        ), 0
     if action == "outcome":
         if not isinstance(raw, Mapping):
             raise ResearchError("outcome input must be an object")
@@ -1529,8 +1565,21 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         )
         _stored_plan_policy(store, registry, str(outcome["plan_id"]))
         path = store.put("outcomes", outcome)
-        legacy_outcome = {**outcome, "attempt_id": raw.get("attempt_id", ""), "state": legacy_state, "reason": raw.get("reason", "")}
-        return _research_doc(OUTCOME_SCHEMA, {"status": legacy_state, "outcome": legacy_outcome, "path": path.relative_to(root.resolve()).as_posix()}, "Outcomes are immutable local receipts"), 0
+        legacy_outcome = {
+            **outcome,
+            "attempt_id": raw.get("attempt_id", ""),
+            "state": legacy_state,
+            "reason": raw.get("reason", ""),
+        }
+        return _research_doc(
+            OUTCOME_SCHEMA,
+            {
+                "status": legacy_state,
+                "outcome": legacy_outcome,
+                "path": path.relative_to(root.resolve()).as_posix(),
+            },
+            "Outcomes are immutable local receipts",
+        ), 0
     if action == "plan":
         plan = make_plan(raw)
         if not isinstance(plan, Mapping):
@@ -1579,13 +1628,16 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         )
         if not isinstance(values, list):
             raise UsageError("record-discovery input must be a JSON list or {candidates: []}")
-        legacy_receipt = isinstance(raw, Mapping) and all(
-            isinstance(item, str) for item in values
-        )
+        legacy_receipt = isinstance(raw, Mapping) and all(isinstance(item, str) for item in values)
         if legacy_receipt:
             job_id = raw.get("job_id")
             attempt_id = raw.get("attempt_id")
-            if not isinstance(job_id, str) or not job_id or not isinstance(attempt_id, str) or not attempt_id:
+            if (
+                not isinstance(job_id, str)
+                or not job_id
+                or not isinstance(attempt_id, str)
+                or not attempt_id
+            ):
                 raise ResearchError("legacy discovery receipt requires job_id and attempt_id")
             job = store.get("jobs", job_id)
             if job["state"] != "planned":
@@ -1594,7 +1646,13 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             candidate_wiki = str(store.get("plans", str(job["plan_id"]))["wiki"])
             values = [
                 {
-                    "candidate_id": content_hash(json.dumps({"origin": item, "query_hash": ""}, sort_keys=True, separators=(",", ":"))),
+                    "candidate_id": content_hash(
+                        json.dumps(
+                            {"origin": item, "query_hash": ""},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    ),
                     "origin": item,
                     "found_by": "legacy-receipt",
                     "query_hash": "",

@@ -1258,9 +1258,10 @@ class EvidenceStore:
                 current = target.read_text(encoding="utf-8") if target.is_file() else None
                 if current is None and item["previous"] is None:
                     continue
-                if current is not None and hashlib.sha256(current.encode("utf-8")).hexdigest() == item[
-                    "staged_sha256"
-                ]:
+                if (
+                    current is not None
+                    and hashlib.sha256(current.encode("utf-8")).hexdigest() == item["staged_sha256"]
+                ):
                     continue
                 if current == item["previous"]:
                     continue
@@ -1276,7 +1277,11 @@ class EvidenceStore:
                 payload = json.loads(journal.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as error:
                 raise EvidenceError("evidence transaction journal is unreadable") from error
-            if not isinstance(payload, dict) or set(payload) != {"schema", "transaction_id", "items"}:
+            if not isinstance(payload, dict) or set(payload) != {
+                "schema",
+                "transaction_id",
+                "items",
+            }:
                 raise EvidenceError("evidence transaction journal is invalid")
             if payload["schema"] != TRANSACTION_SCHEMA or payload["transaction_id"] != journal.stem:
                 raise EvidenceError("evidence transaction journal is invalid")
@@ -1443,7 +1448,9 @@ class EvidenceStore:
             if previous is not None:
                 backup_existing(self.root, rel, durable=True)
         pending_transaction_id = self._pending_transaction_matches(prepared)
-        transaction_id = pending_transaction_id or content_hash(_stable({"items": items_for_journal}))
+        transaction_id = pending_transaction_id or content_hash(
+            _stable({"items": items_for_journal})
+        )
         journal_rel = self._transaction_path(transaction_id)
         if pending_transaction_id is None:
             atomic_write(
@@ -1471,7 +1478,11 @@ class EvidenceStore:
             {"transaction_id": transaction_id, "paths": [rel.as_posix() for rel, _, _ in prepared]},
         )
         for rel, canonical, _ in prepared:
-            append_audit(self.root, "evidence-record", {"kind": rel.parent.name, "record_id": str(canonical[ID_KEYS[rel.parent.name]])})
+            append_audit(
+                self.root,
+                "evidence-record",
+                {"kind": rel.parent.name, "record_id": str(canonical[ID_KEYS[rel.parent.name]])},
+            )
         return [resolve_contained(self.root, rel) for rel, _, _ in prepared]
 
     def get(self, kind: str, identifier: str) -> dict[str, Any]:
@@ -1581,33 +1592,71 @@ def accept_evidence(data: Mapping[str, Any]) -> _LegacyEvidence:
         raise EvidenceAcceptanceError("facts must be an object")
     accepted = correction == CLEAN_CORRECTION and all(
         facts.get(name) is True
-        for name in ("retrievable", "identity_resolved", "dated", "attributed", "publisher_resolved", "rights_determined")
+        for name in (
+            "retrievable",
+            "identity_resolved",
+            "dated",
+            "attributed",
+            "publisher_resolved",
+            "rights_determined",
+        )
     )
     body = {
-        "origin": data["origin"], "origin_id": data.get("origin_id", ""), "quality": quality,
-        "correction_status": correction, "snapshot_sha256": data["snapshot_sha256"],
-        "normalized_sha256": data["normalized_sha256"], "decision": "accepted" if accepted else "rejected" if correction == "retracted" else "deferred",
+        "origin": data["origin"],
+        "origin_id": data.get("origin_id", ""),
+        "quality": quality,
+        "correction_status": correction,
+        "snapshot_sha256": data["snapshot_sha256"],
+        "normalized_sha256": data["normalized_sha256"],
+        "decision": "accepted"
+        if accepted
+        else "rejected"
+        if correction == "retracted"
+        else "deferred",
     }
     return _LegacyEvidence(
-        content_hash(_stable(body)), str(body["origin"]), "", str(body["decision"]), quality, correction
+        content_hash(_stable(body)),
+        str(body["origin"]),
+        "",
+        str(body["decision"]),
+        quality,
+        correction,
     )
 
 
 def claim_confidence_from_records(
-    records: list[_LegacyEvidence], *, lifecycle: str = "proposed", contradicted: bool = False,
+    records: list[_LegacyEvidence],
+    *,
+    lifecycle: str = "proposed",
+    contradicted: bool = False,
     freshness: str = "unknown",
 ) -> float | str:
     if freshness not in FRESHNESS_STATES:
         raise EvidenceAcceptanceError(f"freshness must be one of {', '.join(FRESHNESS_STATES)}")
     return claim_confidence(
-        [Source(record.quality, record.origin, record.decision == "accepted", record.origin_id, record.correction_status) for record in records],
-        lifecycle=lifecycle, freshness=freshness, contradicted=contradicted,
+        [
+            Source(
+                record.quality,
+                record.origin,
+                record.decision == "accepted",
+                record.origin_id,
+                record.correction_status,
+            )
+            for record in records
+        ],
+        lifecycle=lifecycle,
+        freshness=freshness,
+        contradicted=contradicted,
     ).render()
 
 
-def make_resolved_claim(data: Mapping[str, Any], records: Mapping[str, _LegacyEvidence]) -> _LegacyClaim:
+def make_resolved_claim(
+    data: Mapping[str, Any], records: Mapping[str, _LegacyEvidence]
+) -> _LegacyClaim:
     supports = data.get("supported_by", [])
-    if not isinstance(supports, list) or any(item not in records or records[item].decision != "accepted" for item in supports):
+    if not isinstance(supports, list) or any(
+        item not in records or records[item].decision != "accepted" for item in supports
+    ):
         raise EvidenceAcceptanceError("claim contains an unresolved evidence reference")
     key, statement = data.get("claim_key"), data.get("statement")
     if not isinstance(key, str) or not key or not isinstance(statement, str) or not statement:
@@ -1615,43 +1664,98 @@ def make_resolved_claim(data: Mapping[str, Any], records: Mapping[str, _LegacyEv
     lifecycle = str(data.get("lifecycle", "proposed"))
     allowed = {"proposed", "confirmed", "active", "shaky", "rejected", "superseded"}
     if lifecycle not in allowed:
-        raise EvidenceAcceptanceError("claim lifecycle must be one of proposed, confirmed, active, shaky, rejected, superseded")
+        raise EvidenceAcceptanceError(
+            "claim lifecycle must be one of proposed, confirmed, active, shaky, "
+            "rejected, superseded"
+        )
     effective = "proposed" if lifecycle in {"active", "shaky", "confirmed"} else lifecycle
     contradicted = data.get("contradicted_by", [])
-    if not isinstance(contradicted, list) or not all(isinstance(item, str) for item in contradicted):
+    if not isinstance(contradicted, list) or not all(
+        isinstance(item, str) for item in contradicted
+    ):
         raise EvidenceAcceptanceError("contradicted_by must contain opaque references")
-    identifier = content_hash(_stable({"claim_key": key, "statement": statement, "supported_by": supports, "contradicted_by": contradicted, "lifecycle": effective}))
-    return _LegacyClaim(identifier, key, statement, tuple(supports), tuple(contradicted), effective, claim_confidence_from_records([records[item] for item in supports], lifecycle=effective, contradicted=bool(contradicted)))
+    identifier = content_hash(
+        _stable(
+            {
+                "claim_key": key,
+                "statement": statement,
+                "supported_by": supports,
+                "contradicted_by": contradicted,
+                "lifecycle": effective,
+            }
+        )
+    )
+    return _LegacyClaim(
+        identifier,
+        key,
+        statement,
+        tuple(supports),
+        tuple(contradicted),
+        effective,
+        claim_confidence_from_records(
+            [records[item] for item in supports],
+            lifecycle=effective,
+            contradicted=bool(contradicted),
+        ),
+    )
 
 
 def make_contradiction(data: Mapping[str, Any], resolver: Any) -> _LegacyContradiction:
     ids = data.get("claim_ids", [])
-    if not isinstance(ids, list) or len(ids) < 2 or any(not isinstance(item, str) or not resolver.resolve("claim", item) for item in ids):
+    if (
+        not isinstance(ids, list)
+        or len(ids) < 2
+        or any(not isinstance(item, str) or not resolver.resolve("claim", item) for item in ids)
+    ):
         raise EvidenceAcceptanceError("contradiction claim references are invalid")
     resolution = str(data.get("resolution", "unresolved"))
-    if resolution not in {"unresolved", "scope_disjoint", "supersession", "retraction", "authority_precedence"}:
+    if resolution not in {
+        "unresolved",
+        "scope_disjoint",
+        "supersession",
+        "retraction",
+        "authority_precedence",
+    }:
         raise EvidenceAcceptanceError("invalid contradiction resolution")
-    body = {"claim_ids": ids, "basis": str(data.get("basis", "")), "resolution": resolution, "gap_id": str(data.get("gap_id", ""))}
-    return _LegacyContradiction(content_hash(_stable(body)), tuple(ids), body["basis"], resolution, body["gap_id"])
+    body = {
+        "claim_ids": ids,
+        "basis": str(data.get("basis", "")),
+        "resolution": resolution,
+        "gap_id": str(data.get("gap_id", "")),
+    }
+    return _LegacyContradiction(
+        content_hash(_stable(body)), tuple(ids), body["basis"], resolution, body["gap_id"]
+    )
 
 
 def store_contradiction(root: Path, contradiction: _LegacyContradiction) -> Path:
-    relative = Path(MEGAMIND_DIR) / "research" / "contradictions" / f"{contradiction.contradiction_id}.json"
+    relative = (
+        Path(MEGAMIND_DIR)
+        / "research"
+        / "contradictions"
+        / f"{contradiction.contradiction_id}.json"
+    )
     path = resolve_contained(root, relative)
     text = json.dumps(contradiction.to_data(), indent=2, sort_keys=True) + "\n"
     if path.is_file():
         if path.read_text(encoding="utf-8") != text:
-            raise EvidenceAcceptanceError("frozen contradiction already exists with different bytes")
+            raise EvidenceAcceptanceError(
+                "frozen contradiction already exists with different bytes"
+            )
         return path
     result = atomic_write(root, relative, text)
-    append_audit(root, "research-contradiction", {"contradiction_id": contradiction.contradiction_id})
+    append_audit(
+        root, "research-contradiction", {"contradiction_id": contradiction.contradiction_id}
+    )
     return result
 
 
 def unresolved_contradictions(root: Path, identifiers: Iterable[str]) -> list[str]:
     result: list[str] = []
     for identifier in sorted(set(identifiers)):
-        path = resolve_contained(root, Path(MEGAMIND_DIR) / "research" / "contradictions" / f"{identifier}.json")
+        path = resolve_contained(
+            root, Path(MEGAMIND_DIR) / "research" / "contradictions" / f"{identifier}.json"
+        )
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
