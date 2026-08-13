@@ -45,6 +45,7 @@ QUOTATION_SCHEMA = "megamind/quotation/v1"
 CLAIM_SCHEMA = "megamind/claim/v1"
 CONTRADICTION_SCHEMA = "megamind/contradiction/v1"
 CORRECTION_SCHEMA = "megamind/correction-notice/v1"
+TRANSACTION_SCHEMA = "megamind/evidence-transaction/v1"
 
 GATE_VERDICTS = ("pass", "fail", "unknown")
 DECISIONS = ("accepted", "rejected", "deferred")
@@ -505,11 +506,18 @@ def resolve_corrections(
     }
 
 
-def _quotation_verdict(quotations: Sequence[Mapping[str, Any]]) -> str:
+def _quotation_verdict(quotations: Sequence[Mapping[str, Any]], quote_ceiling_chars: int) -> str:
     """G10 is only a pass once a hash-bound span actually re-resolved."""
     if not quotations:
         return "unknown"
-    return "pass" if any(item.get("resolves") for item in quotations) else "fail"
+    for quotation in quotations:
+        try:
+            _selector_quote("quotation quote", quotation["quote"], quote_ceiling_chars)
+        except (EvidenceError, KeyError):
+            continue
+        if quotation.get("resolves") is True:
+            return "pass"
+    return "fail"
 
 
 def _publisher_verdict(publisher: Mapping[str, Any], policy: ResearchPolicy | None) -> str:
@@ -595,7 +603,10 @@ def acceptance_gates(
         },
         {
             "gate": "G10",
-            "verdict": _quotation_verdict(quotations),
+            "verdict": _quotation_verdict(
+                quotations,
+                policy.quote_ceiling_chars if policy is not None else QUOTE_CEILING_CHARS,
+            ),
             "detail": "quotation validation is claim-bound",
         },
         {
@@ -804,6 +815,7 @@ def validate_claim(
     *,
     quotations: Mapping[str, Mapping[str, Any]] | None = None,
     evidence: Mapping[str, Mapping[str, Any]] | None = None,
+    notices: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     data = _map("claim", raw)
     _unknown(
@@ -897,6 +909,13 @@ def validate_claim(
         and any(not quotations[item["quotation_id"]].get("resolves", False) for item in supported)
     ):
         raise EvidenceError("active claim requires resolvable quotation spans")
+    if lifecycle == "active" and evidence is not None:
+        for support in supported:
+            record = evidence[support["evidence_id"]]
+            if record["acceptance"].get("decision") != "accepted":
+                raise EvidenceError("active claim requires accepted evidence")
+            if resolve_corrections(record, notices)["status"] != CLEAN_CORRECTION:
+                raise EvidenceError("active claim requires currently clean evidence")
     return {
         "schema": CLAIM_SCHEMA,
         "claim_id": expected,
@@ -1070,6 +1089,57 @@ class EvidenceStore:
             raise EvidenceError("unknown evidence store kind")
         return Path(MEGAMIND_DIR) / "evidence" / kind / f"{identifier}.json"
 
+    def _transaction_path(self, identifier: str) -> Path:
+        return Path(MEGAMIND_DIR) / "evidence" / "transactions" / f"{identifier}.json"
+
+    def _recover_transactions(self) -> None:
+        directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / "transactions")
+        if not directory.is_dir():
+            return
+        for journal in sorted(directory.glob("*.json")):
+            try:
+                payload = json.loads(journal.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise EvidenceError("evidence transaction journal is unreadable") from error
+            if not isinstance(payload, dict) or set(payload) != {
+                "schema",
+                "transaction_id",
+                "items",
+            }:
+                raise EvidenceError("evidence transaction journal is invalid")
+            if payload["schema"] != TRANSACTION_SCHEMA or payload["transaction_id"] != journal.stem:
+                raise EvidenceError("evidence transaction journal is invalid")
+            items = payload["items"]
+            if not isinstance(items, list) or not items:
+                raise EvidenceError("evidence transaction journal is invalid")
+            expected = content_hash(_stable({"items": items}))
+            if expected != journal.stem:
+                raise EvidenceError("evidence transaction journal is invalid")
+            restores: list[tuple[Path, str | None]] = []
+            for item in items:
+                if (
+                    not isinstance(item, dict)
+                    or set(item) != {"path", "previous"}
+                    or not isinstance(item["path"], str)
+                    or (item["previous"] is not None and not isinstance(item["previous"], str))
+                ):
+                    raise EvidenceError("evidence transaction journal is invalid")
+                target = Path(item["path"])
+                if (
+                    len(target.parts) != 4
+                    or target.parts[:2] != (MEGAMIND_DIR, "evidence")
+                    or target.suffix != ".json"
+                    or target != self._path(target.parts[2], target.stem)
+                ):
+                    raise EvidenceError("evidence transaction journal is invalid")
+                restores.append((target, item["previous"]))
+            for target, previous in reversed(restores):
+                if previous is None:
+                    remove_contained(self.root, target, durable=True)
+                else:
+                    atomic_write(self.root, target, previous, durable=True)
+            remove_contained(self.root, journal.relative_to(self.root.resolve()), durable=True)
+
     def _prepare(
         self,
         kind: str,
@@ -1125,29 +1195,44 @@ class EvidenceStore:
         reports it broken. Validation and the immutability check therefore run
         over the whole set before the first byte is written.
         """
+        self._recover_transactions()
         prepared = [
             self._prepare(kind, data, normalized_text, quote_ceiling_chars) for kind, data in items
         ]
-        originals: dict[Path, str | None] = {}
+        if len({rel for rel, _, _ in prepared}) != len(prepared):
+            raise EvidenceError("evidence transaction contains duplicate record targets")
+        items_for_journal: list[dict[str, str | None]] = []
         for rel, _, _ in prepared:
             path = resolve_contained(self.root, rel)
-            originals[rel] = path.read_text(encoding="utf-8") if path.is_file() else None
-            if originals[rel] is not None:
+            previous = path.read_text(encoding="utf-8") if path.is_file() else None
+            items_for_journal.append({"path": rel.as_posix(), "previous": previous})
+            if previous is not None:
                 backup_existing(self.root, rel, durable=True)
-        written: list[Path] = []
+        transaction_id = content_hash(_stable({"items": items_for_journal}))
+        journal_rel = self._transaction_path(transaction_id)
+        atomic_write(
+            self.root,
+            journal_rel,
+            json.dumps(
+                {
+                    "schema": TRANSACTION_SCHEMA,
+                    "transaction_id": transaction_id,
+                    "items": items_for_journal,
+                },
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n",
+            durable=True,
+        )
         try:
             for rel, _, text in prepared:
                 atomic_write(self.root, rel, text, durable=True)
-                written.append(rel)
         except BaseException:
-            for rel in reversed(written):
-                original = originals[rel]
-                if original is None:
-                    remove_contained(self.root, rel, durable=True)
-                else:
-                    atomic_write(self.root, rel, original, durable=True)
+            self._recover_transactions()
             raise
-        return [resolve_contained(self.root, rel) for rel in written]
+        remove_contained(self.root, journal_rel, durable=True)
+        return [resolve_contained(self.root, rel) for rel, _, _ in prepared]
 
     def get(self, kind: str, identifier: str) -> dict[str, Any]:
         path = resolve_contained(self.root, self._path(kind, identifier))

@@ -1633,8 +1633,11 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         # rely on a span and an artifact this vault actually holds and validated.
         known_quotations = _known_records(root, "quotations")
         known_evidence = _known_records(root, "evidence")
+        notices = _valid_records(root, "corrections")
         claims = [
-            validate_claim(item, quotations=known_quotations, evidence=known_evidence)
+            validate_claim(
+                item, quotations=known_quotations, evidence=known_evidence, notices=notices
+            )
             for item in values
         ]
         paths = [
@@ -1668,8 +1671,11 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
                 )
             known_quotations = _known_records(root, "quotations")
             known_evidence = _known_records(root, "evidence")
+            notices = _valid_records(root, "corrections")
             claims = [
-                validate_claim(item, quotations=known_quotations, evidence=known_evidence)
+                validate_claim(
+                    item, quotations=known_quotations, evidence=known_evidence, notices=notices
+                )
                 for item in raw["claims"]
             ]
             contradictions = reconcile_claims(claims, today=today, gap_id=args.gap_id)

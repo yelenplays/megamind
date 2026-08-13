@@ -715,6 +715,47 @@ def test_evidence_reaches_accepted_only_after_a_span_resolves(
     assert unpoliced["evidence"]["acceptance"]["quality"] == ""
 
 
+def test_artifact_rechecks_stored_quotation_against_its_wiki_ceiling(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    record = research_evidence()
+    normalized_file = tmp_path / "in" / "normalized.txt"
+    normalized_file.parent.mkdir(parents=True)
+    normalized_file.write_text(RESEARCH_TEXT, encoding="utf-8")
+    artifact = ["--root", str(root), "research", "record-artifact", "--wiki", "StarterWiki"]
+    run_json(capsys, *artifact, "--input", write_json(tmp_path / "in" / "evidence.json", record))
+    code, _, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-quotations",
+        "--wiki",
+        "StarterWiki",
+        "--normalized-file",
+        str(normalized_file),
+        "--input",
+        write_json(
+            tmp_path / "in" / "quotations.json", [research_quotation(str(record["evidence_id"]))]
+        ),
+    )
+    assert code == 0
+    registry = load_registry(root)
+    starter = registry.wiki_by_name("StarterWiki")
+    assert starter is not None and starter.research_policy is not None
+    starter.research_policy = ResearchPolicy.from_data(
+        {**starter.research_policy.to_data(), "quote_ceiling_chars": 5}
+    )
+    save_registry(root, registry)
+    code, doc, _ = run_json(
+        capsys, *artifact, "--input", write_json(tmp_path / "in" / "evidence-again.json", record)
+    )
+    assert code == 0
+    assert doc["status"] == "rejected"
+    assert "G10" in doc["evidence"]["acceptance"]["failure"]
+
+
 def test_research_off_policy_denies_acceptance(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1198,9 +1239,8 @@ def test_retraction_arrives_as_a_superseding_notice(
         "--input",
         write_json(tmp_path / "in" / "claims.json", [claim]),
     )
-    assert code == 0
-    assert claims_doc["confidence"][0]["score"] == "unknown"
-    assert claims_doc["confidence"][0]["meets_floor"] is False
+    assert code == 1
+    assert claims_doc["code"] == "evidence_invalid"
 
     code, review_doc, _ = run_json(capsys, "--root", str(root), "review")
     assert code == 0
@@ -1380,6 +1420,106 @@ def test_put_all_rolls_back_after_a_write_failure(
             ]
         )
     assert not list((root / MEGAMIND_DIR / "evidence" / "claims").glob("*.json"))
+
+
+def test_put_all_recovers_a_durable_interrupted_transaction(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    interrupted = proposed_claim("the interrupted synthetic fact")
+    rel = Path(MEGAMIND_DIR) / "evidence" / "claims" / f"{interrupted['claim_id']}.json"
+    items = [{"path": rel.as_posix(), "previous": None}]
+    transaction_id = content_hash(
+        json.dumps({"items": items}, sort_keys=True, separators=(",", ":"))
+    )
+    journal = root / MEGAMIND_DIR / "evidence" / "transactions" / f"{transaction_id}.json"
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        json.dumps(
+            {
+                "schema": "megamind/evidence-transaction/v1",
+                "transaction_id": transaction_id,
+                "items": items,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    interrupted_path = root / rel
+    interrupted_path.parent.mkdir(parents=True, exist_ok=True)
+    interrupted_path.write_text(
+        json.dumps(interrupted, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    replacement = proposed_claim("the recovered synthetic fact")
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-claims",
+        "--input",
+        write_json(tmp_path / "in" / "claims.json", [replacement]),
+    )
+    assert code == 0
+    assert not interrupted_path.exists()
+    assert not journal.exists()
+    assert doc["claims"][0]["claim_id"] == replacement["claim_id"]
+
+
+def test_active_claim_requires_currently_accepted_evidence(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    record = research_evidence()
+    normalized_file = tmp_path / "in" / "normalized.txt"
+    normalized_file.parent.mkdir(parents=True)
+    normalized_file.write_text(RESEARCH_TEXT, encoding="utf-8")
+    run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-artifact",
+        "--wiki",
+        "StarterWiki",
+        "--input",
+        write_json(tmp_path / "in" / "evidence.json", record),
+    )
+    quotation = research_quotation(str(record["evidence_id"]))
+    run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-quotations",
+        "--wiki",
+        "StarterWiki",
+        "--normalized-file",
+        str(normalized_file),
+        "--input",
+        write_json(tmp_path / "in" / "quotation.json", [quotation]),
+    )
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-claims",
+        "--input",
+        write_json(
+            tmp_path / "in" / "claim.json",
+            [
+                research_claim(
+                    str(record["evidence_id"]), str(quotation["quotation_id"]), "Unaccepted fact"
+                )
+            ],
+        ),
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert not (root / MEGAMIND_DIR / "evidence" / "claims").exists()
 
 
 def test_research_status_degrades_on_an_unreadable_record(
@@ -1650,8 +1790,8 @@ def test_claim_support_must_pair_a_span_with_its_own_artifact(
         ),
         "retracted",
     )
-    assert code == 0
-    assert withdrawn["confidence"][0]["score"] == "unknown"
+    assert code == 1
+    assert withdrawn["code"] == "evidence_invalid"
 
     code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
     assert code == 0, doctor
