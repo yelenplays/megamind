@@ -8,7 +8,12 @@ import pytest
 
 from conftest import build_vault
 from megamind.cli import main
-from megamind.evidence import accept_evidence
+from megamind.evidence import (
+    EvidenceAcceptanceError,
+    accept_evidence,
+    claim_confidence_from_records,
+    make_resolved_claim,
+)
 from megamind.registry import ResearchPolicy, load_registry, save_registry
 from megamind.research import (
     ReplayConflict,
@@ -389,6 +394,122 @@ def _frozen_claim(root: Path, claim_id: str) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(value, dict)
     return value
+
+
+def test_forged_lifecycle_cannot_lift_the_emitted_packet_verdict(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _research_vault(tmp_path)
+    _job, honest_claim_id = _lane_to_packet_ready(capsys, root)
+    honest = _frozen_claim(root, honest_claim_id)
+
+    forged_root = _research_vault(tmp_path / "forged")
+    code, doc = _run(
+        capsys,
+        forged_root,
+        "research",
+        "permission-check",
+        "--input",
+        _write(forged_root, "plan.json", {**PLAN_INPUT, "policy_authorized": True}),
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0, doc
+    forged_job = doc["job"]
+    _run(
+        capsys,
+        forged_root,
+        "research",
+        "record-discovery",
+        "--input",
+        _write(
+            forged_root,
+            "discovery.json",
+            {
+                "job_id": forged_job["job_id"],
+                "attempt_id": forged_job["attempt_id"],
+                "candidates": ["candidate-a"],
+                "usage": {"queries": 1},
+            },
+        ),
+        "--today",
+        "2026-03-01",
+    )
+    code, doc = _run(
+        capsys,
+        forged_root,
+        "research",
+        "record-artifact",
+        "--input",
+        _write(forged_root, "artifact.json", EVIDENCE_INPUT),
+    )
+    assert code == 0, doc
+    evidence_id = doc["evidence"]["evidence_id"]
+    code, doc = _run(
+        capsys,
+        forged_root,
+        "research",
+        "record-claims",
+        "--input",
+        _write(
+            forged_root,
+            "claims.json",
+            {
+                "job_id": forged_job["job_id"],
+                "attempt_id": forged_job["attempt_id"],
+                "claims": [
+                    {
+                        "claim_key": "release-cadence",
+                        "statement": "The synthetic product ships weekly.",
+                        "supported_by": [evidence_id],
+                        "lifecycle": "active",
+                    }
+                ],
+            },
+        ),
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0, doc
+    forged = doc["claims"][0]
+    # The receipt asked for `active`; the frozen claim keeps the derived
+    # lifecycle, identifier and confidence of the honest run.
+    assert forged["lifecycle"] == honest["lifecycle"] == "proposed"
+    assert forged["claim_id"] == honest_claim_id
+    assert forged["confidence"] == honest["confidence"]
+
+    _run(
+        capsys,
+        forged_root,
+        "research",
+        "reconcile",
+        "--job-id",
+        forged_job["job_id"],
+        "--today",
+        "2026-03-01",
+    )
+    code, doc = _run(
+        capsys,
+        forged_root,
+        "research",
+        "packet",
+        "--input",
+        _write(
+            forged_root,
+            "packet.json",
+            {
+                "job_id": forged_job["job_id"],
+                "attempt_id": forged_job["attempt_id"],
+                "claims": [forged["claim_id"]],
+                "interpretation": "The synthetic product ships on a weekly train.",
+            },
+        ),
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0, doc
+    assert doc["packet"]["answerability"]["verdict"] == "insufficient"
+    assert doc["packet"]["confidence"] == honest["confidence"]
 
 
 def test_packet_refuses_a_forged_host_confidence(
@@ -798,6 +919,88 @@ def test_claims_refuse_evidence_this_lane_never_accepted(
     )
     assert code == 1
     assert doc["code"] == "evidence_acceptance_invalid"
+
+
+def _accepted_record(origin_id: str = "source-a") -> Any:
+    return accept_evidence({**EVIDENCE_INPUT, "origin_id": origin_id})
+
+
+def test_claim_lifecycle_is_derived_and_a_forged_one_changes_nothing() -> None:
+    record = _accepted_record()
+    records = {record.evidence_id: record}
+    body = {
+        "claim_key": "release-cadence",
+        "statement": "The synthetic product ships weekly.",
+        "supported_by": [record.evidence_id],
+    }
+    honest = make_resolved_claim(body, records)
+    forged = make_resolved_claim({**body, "lifecycle": "active"}, records)
+    assert honest.lifecycle == "proposed"
+    assert forged.lifecycle == "proposed"
+    assert forged.claim_id == honest.claim_id
+    assert forged.confidence == honest.confidence
+
+
+def test_claim_lifecycle_observation_may_only_narrow() -> None:
+    record = _accepted_record()
+    records = {record.evidence_id: record}
+    body = {
+        "claim_key": "release-cadence",
+        "statement": "The synthetic product ships weekly.",
+        "supported_by": [record.evidence_id],
+    }
+    narrowed = make_resolved_claim({**body, "lifecycle": "rejected"}, records)
+    assert narrowed.lifecycle == "rejected"
+    assert narrowed.confidence < make_resolved_claim(body, records).confidence
+
+
+def test_unknown_claim_lifecycle_is_refused_rather_than_scored() -> None:
+    record = _accepted_record()
+    with pytest.raises(EvidenceAcceptanceError, match="lifecycle must be one of"):
+        make_resolved_claim(
+            {
+                "claim_key": "release-cadence",
+                "statement": "The synthetic product ships weekly.",
+                "supported_by": [record.evidence_id],
+                "lifecycle": "blessed",
+            },
+            {record.evidence_id: record},
+        )
+
+
+def test_a_weaker_lifecycle_observation_cannot_widen_an_extracted_claim() -> None:
+    record = _accepted_record()
+    records = {record.evidence_id: record}
+    body = {
+        "claim_key": "release-cadence",
+        "statement": "The synthetic product ships weekly.",
+        "supported_by": [record.evidence_id],
+    }
+    # `shaky` caps higher than the derived `proposed`, so it is a widening.
+    assert make_resolved_claim({**body, "lifecycle": "shaky"}, records).lifecycle == "proposed"
+
+
+def test_an_unresolved_contradiction_lowers_the_claim_score() -> None:
+    records = [_accepted_record()]
+    assert claim_confidence_from_records(
+        records, lifecycle="active", contradicted=True
+    ) < claim_confidence_from_records(records, lifecycle="active")
+
+
+def test_claim_confidence_never_assumes_freshness() -> None:
+    records = [_accepted_record()]
+    unobserved = claim_confidence_from_records(records, lifecycle="active")
+    assert unobserved == claim_confidence_from_records(
+        records, lifecycle="active", freshness="unknown"
+    )
+    assert unobserved < claim_confidence_from_records(
+        records, lifecycle="active", freshness="fresh"
+    )
+    assert (
+        claim_confidence_from_records(records, lifecycle="active", freshness="stale") < unobserved
+    )
+    with pytest.raises(EvidenceAcceptanceError, match="freshness must be one of"):
+        claim_confidence_from_records(records, freshness="recent")
 
 
 def test_retracted_evidence_is_rejected() -> None:

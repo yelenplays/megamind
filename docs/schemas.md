@@ -694,6 +694,19 @@ submitted digest that contradicts the derived one is card drift and needs a
 replan. `policy_authorized` in a receipt is an observation that can withhold a
 cycle the card allows and can never authorize one the card denies.
 
+A claim's lifecycle, freshness, and confidence are derived from the frozen
+records, never read from the receipt. Slice 1 has no promotion step, so an
+extracted claim is `proposed` at best, a retracted support makes it `rejected`
+and an observed contradiction makes it `shaky`; a receipt may state a
+lifecycle, but it is an observation that can only narrow the derived one, and
+an unknown status is refused rather than scored above an honest `proposed`.
+Freshness stays `unknown` because a passing `dated` gate says a record carries
+a date, not that the date is recent, and this lane freezes no timestamp to
+compare against a freshness policy. Since the derived lifecycle is what the
+claim identifier covers, a forged one changes neither the identifier nor the
+score. One consequence is deliberate: until a later slice can earn a stronger
+lifecycle, a Slice 1 packet reports `insufficient` rather than `supported`.
+
 The host receipt lane walks the transition table one validated step at a time:
 `permission-check` binds the card verdict and reaches `planned`,
 `record-discovery` checks the receipt against the plan ceilings and the card's

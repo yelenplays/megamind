@@ -16,9 +16,12 @@ Host workers may provide frozen JSON receipts, but cannot mint eligibility,
 quality, access, approval, or answer authorization. Every plan names one wiki,
 and the research verdict plus the bound policy, card, and access digests are
 derived from that wiki's validated card and from the access policy layer; a
-host receipt can only withhold a cycle the card allows. Claim confidence,
-packet confidence, and packet answerability are likewise derived from the
-frozen records rather than read from the receipt. Evidence and claim IDs
+host receipt can only withhold a cycle the card allows. Claim lifecycle,
+claim freshness, claim confidence, packet confidence, and packet answerability
+are likewise derived from the frozen records rather than read from the
+receipt; a stated lifecycle only narrows the derived one, and freshness the
+lane never observed stays unknown instead of becoming fresh. Evidence and claim
+IDs
 are opaque and validated only through narrow resolver interfaces. Cancellation
 retains all artifacts. Exact replay is a no-op; divergent replay and terminal
 mutation are refusals. Policy, card, access, or plan digest drift requires a

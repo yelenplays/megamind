@@ -3,6 +3,11 @@
 This is intentionally not a web client or a replacement for the sibling
 evidence-record lane.  It validates host receipts, derives restrictive gate
 results, and keeps claim/quotation/contradiction identifiers opaque.
+
+A claim's lifecycle, freshness, and confidence are derived here from the
+frozen records.  A receipt may state a lifecycle, but that is an observation
+which can only narrow the derived one, and freshness the lane never observed
+stays unknown rather than becoming fresh.
 """
 
 from __future__ import annotations
@@ -13,8 +18,16 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from .confidence import CLEAN_CORRECTION, QUALITY_BASE, Source, claim_confidence
+from .confidence import (
+    CLEAN_CORRECTION,
+    FRESHNESS_STATES,
+    LIFECYCLE_CAP,
+    QUALITY_BASE,
+    Source,
+    claim_confidence,
+)
 from .fsops import atomic_write, content_hash, resolve_contained
+from .models import LIFECYCLE_STATUSES
 from .research import RESEARCH_DIR, MappingResolver, ReferenceResolver, ResearchError
 
 EVIDENCE_SCHEMA = "megamind/evidence-record/v1"
@@ -25,6 +38,17 @@ CONTRADICTION_SCHEMA = "megamind/contradiction/v1"
 EVIDENCE_DIR = RESEARCH_DIR / "evidence"
 CLAIMS_DIR = RESEARCH_DIR / "claims"
 CONTRADICTIONS_DIR = RESEARCH_DIR / "contradictions"
+
+# A lifecycle is exactly as strong as the cap it buys, so "narrower" is the
+# lower cap, and a status with no declared cap ranks most restrictive rather
+# than landing on the unknown-lifecycle cap, which sits above proposed.
+_STRICTEST_CAP = min(LIFECYCLE_CAP.values())
+_LIFECYCLE_RANK = {
+    status: LIFECYCLE_CAP.get(status, _STRICTEST_CAP) for status in LIFECYCLE_STATUSES
+}
+# Slice 1 has no step that earns a stronger lifecycle, so this is the most a
+# freshly extracted claim can hold.
+EXTRACTED_LIFECYCLE = "proposed"
 
 
 class EvidenceResolver(ReferenceResolver, Protocol):
@@ -303,10 +327,16 @@ def make_quotation(data: Mapping[str, Any], resolver: EvidenceResolver) -> Quota
     )
 
 
+def narrower_lifecycle(first: str, second: str) -> str:
+    return first if _LIFECYCLE_RANK[first] <= _LIFECYCLE_RANK[second] else second
+
+
 def make_claim(
     data: Mapping[str, Any],
     resolver: EvidenceResolver,
     quotation_resolver: EvidenceResolver | None = None,
+    *,
+    lifecycle: str = EXTRACTED_LIFECYCLE,
 ) -> Claim:
     if set(data) - {"claim_key", "statement", "supported_by", "contradicted_by", "lifecycle"}:
         raise EvidenceAcceptanceError("claim contains unknown fields")
@@ -326,7 +356,14 @@ def make_claim(
     contradicted = data.get("contradicted_by", [])
     if not isinstance(contradicted, list) or not all(isinstance(x, str) for x in contradicted):
         raise EvidenceAcceptanceError("contradicted_by must contain opaque references")
-    lifecycle = str(data.get("lifecycle", "proposed"))
+    if lifecycle not in _LIFECYCLE_RANK:
+        raise EvidenceAcceptanceError("derived lifecycle is not a known lifecycle status")
+    observed = data.get("lifecycle", EXTRACTED_LIFECYCLE)
+    if not isinstance(observed, str) or observed not in _LIFECYCLE_RANK:
+        raise EvidenceAcceptanceError(
+            f"claim lifecycle must be one of {', '.join(LIFECYCLE_STATUSES)}"
+        )
+    effective = narrower_lifecycle(lifecycle, observed)
     claim_id = content_hash(
         json.dumps(
             {
@@ -334,13 +371,13 @@ def make_claim(
                 "statement": statement,
                 "supported_by": supports,
                 "contradicted_by": contradicted,
-                "lifecycle": lifecycle,
+                "lifecycle": effective,
             },
             sort_keys=True,
             separators=(",", ":"),
         )
     )
-    return Claim(claim_id, key, statement, tuple(supports), tuple(contradicted), lifecycle)
+    return Claim(claim_id, key, statement, tuple(supports), tuple(contradicted), effective)
 
 
 def make_contradiction(data: Mapping[str, Any], resolver: EvidenceResolver) -> Contradiction:
@@ -502,11 +539,13 @@ class FrozenPacketResolver:
 
 
 def make_resolved_claim(data: Mapping[str, Any], records: Mapping[str, EvidenceRecord]) -> Claim:
-    """Validate one host claim against frozen accepted evidence and derive its confidence.
+    """Validate one host claim against frozen accepted evidence and derive its verdict.
 
     Support references resolve only against evidence this lane already accepted,
-    so a deferred or rejected record cannot carry a claim, and the confidence is
-    computed here rather than taken from the receipt.
+    so a deferred or rejected record cannot carry a claim.  Lifecycle, freshness,
+    and confidence are all computed from those records rather than taken from
+    the receipt, and the derived lifecycle is what the claim identity covers, so
+    a forged one changes neither the identifier nor the score.
     """
     accepted = {key for key, record in records.items() if record.decision == "accepted"}
     claim = make_claim(data, MappingResolver({"evidence": accepted}))
@@ -521,15 +560,28 @@ def make_resolved_claim(data: Mapping[str, Any], records: Mapping[str, EvidenceR
 
 
 def claim_confidence_from_records(
-    records: list[EvidenceRecord], *, lifecycle: str = "proposed", contradicted: bool = False
+    records: list[EvidenceRecord],
+    *,
+    lifecycle: str = EXTRACTED_LIFECYCLE,
+    contradicted: bool = False,
+    freshness: str = "unknown",
 ) -> float | str:
+    """Score a claim from frozen records only.
+
+    ``freshness`` defaults to unknown and a caller may only raise it with a
+    freshness it actually observed: a passing ``dated`` gate says a record
+    carries a date, never that the date is recent, and this lane freezes no
+    timestamp to compare against a freshness policy.
+    """
+    if freshness not in FRESHNESS_STATES:
+        raise EvidenceAcceptanceError(f"freshness must be one of {', '.join(FRESHNESS_STATES)}")
     score = claim_confidence(
         [
             Source(r.quality, r.origin, r.decision == "accepted", r.origin_id, r.correction_status)
             for r in records
         ],
         lifecycle=lifecycle,
-        freshness="fresh",
+        freshness=freshness,
         contradicted=contradicted,
     )
     return score.render()
