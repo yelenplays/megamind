@@ -842,11 +842,21 @@ def validate_claim(
         quotation_id = _str(
             "claim quotation_id", support.get("quotation_id"), nonempty=True, limit=64
         )
+        evidence_id = _str("claim evidence_id", support.get("evidence_id"), nonempty=True, limit=64)
         if quotations is not None and quotation_id not in quotations:
             raise EvidenceError(f"claim references an unknown quotation: {quotation_id}")
-        evidence_id = _str("claim evidence_id", support.get("evidence_id"), nonempty=True, limit=64)
         if evidence is not None and evidence_id not in evidence:
             raise EvidenceError(f"claim references an unknown evidence record: {evidence_id}")
+        # A span proves text against the one snapshot it was hash-bound to.
+        # Crediting it to a different artifact would let a host pick whose
+        # acceptance and correction posture a quotation earns.
+        if quotations is not None:
+            span_evidence = str(quotations[quotation_id]["evidence_id"])
+            if span_evidence != evidence_id:
+                raise EvidenceError(
+                    f"claim support pairs quotation {quotation_id} with evidence record "
+                    f"{evidence_id}, but that span is bound to {span_evidence}"
+                )
         supported.append(
             {
                 "evidence_id": evidence_id,

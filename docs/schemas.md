@@ -885,7 +885,11 @@ is resolved against the store before that record is admitted: a quotation names
 a stored artifact, a claim names stored quotations and artifacts, a
 contradiction names stored claims, a correction notice names a stored artifact
 and the notice it supersedes, and a packet names stored claims and
-contradictions.  Admission and doctor therefore enforce one invariant rather
+contradictions.  Where a reference is a pair, both halves must agree: a claim's
+support must name the artifact its span was hash-bound to, and a notice may
+only supersede a notice of the same artifact.  A span proves text against one
+snapshot, so crediting it to a second artifact - and with it that artifact's
+acceptance, quality, and correction posture - is refused rather than scored.  Admission and doctor therefore enforce one invariant rather
 than competing over it, and a vault never lands in a state its own doctor
 reports as broken.
 

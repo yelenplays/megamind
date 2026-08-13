@@ -64,7 +64,11 @@ posture, so it resolves to `unknown` - restrictive - and doctor reports it.
 
 Records that reference each other are written only once every member of the set
 is proven writable, and every reference is resolved against the store at
-admission rather than only reported afterwards.  Committing part of such a set,
+admission rather than only reported afterwards.  A reference that names two
+records must be coherent across both: a claim's support may only pair a span
+with the artifact that span was hash-bound to, because the hash binding would
+otherwise stop at the quotation and let a host choose which artifact's
+acceptance and correction posture a borrowed span earns.  Committing part of such a set,
 or a record naming an identity this vault does not hold, would leave a vault
 whose own doctor reports it broken, which is a state no supported command may
 reach.  Doctor stays the owner of the same invariant for records that arrive by

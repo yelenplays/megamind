@@ -19,6 +19,7 @@ from megamind.evidence import (
     EvidenceError,
     reconcile_claims,
     validate_claim,
+    validate_correction_notice,
     validate_evidence_record,
     validate_quotation,
 )
@@ -327,9 +328,10 @@ def write_json(path: Path, payload: object) -> str:
     return str(path)
 
 
-def research_evidence() -> dict[str, Any]:
-    normalized = hashlib.sha256(RESEARCH_TEXT.encode()).hexdigest()
-    canonical = "https://authority.test/guidance"
+def research_evidence(
+    canonical: str = "https://authority.test/guidance", text: str = RESEARCH_TEXT
+) -> dict[str, Any]:
+    normalized = hashlib.sha256(text.encode()).hexdigest()
     return {
         "schema": EVIDENCE_SCHEMA,
         "evidence_id": content_hash(canonical + normalized),
@@ -356,7 +358,7 @@ def research_evidence() -> dict[str, Any]:
         "snapshot": {
             "sha256": "b" * 64,
             "normalized_sha256": normalized,
-            "bytes": len(RESEARCH_TEXT),
+            "bytes": len(text),
             "content_type": "text/plain",
             "archive_url": "",
             "archive_datetime": "",
@@ -379,10 +381,12 @@ def research_evidence() -> dict[str, Any]:
     }
 
 
-def research_quotation(evidence_id: str) -> dict[str, Any]:
-    normalized = hashlib.sha256(RESEARCH_TEXT.encode()).hexdigest()
-    quote = {"exact": "frozen fact", "prefix": "A ", "suffix": " about"}
-    start = RESEARCH_TEXT.index(quote["exact"])
+def research_quotation(
+    evidence_id: str, text: str = RESEARCH_TEXT, quote: dict[str, str] | None = None
+) -> dict[str, Any]:
+    normalized = hashlib.sha256(text.encode()).hexdigest()
+    quote = quote or {"exact": "frozen fact", "prefix": "A ", "suffix": " about"}
+    start = text.index(quote["exact"])
     position = {"start": start, "end": start + len(quote["exact"])}
     return {
         "schema": QUOTATION_SCHEMA,
@@ -897,8 +901,7 @@ def test_quotations_and_claims_refuse_unknown_evidence_at_admission(
     assert ghost in doc["message"]
     assert not (root / MEGAMIND_DIR / "evidence" / "quotations").exists()
 
-    record = accepted_artifact(tmp_path, capsys, root)
-    quotation = research_quotation(str(record["evidence_id"]))
+    _, quotation = accepted_artifact(tmp_path, capsys, root)
     claim = research_claim(ghost, str(quotation["quotation_id"]), "the synthetic fact holds")
     code, doc, _ = run_json(
         capsys,
@@ -1057,17 +1060,24 @@ def test_card_research_policy_governs_acceptance(
 
 
 def accepted_artifact(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], root: Path
-) -> dict[str, Any]:
-    """Drive the supported path to a stored, accepted artifact."""
-    record = research_evidence()
-    evidence_input = write_json(tmp_path / "in" / "evidence.json", record)
-    normalized_file = tmp_path / "in" / "normalized.txt"
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    root: Path,
+    record: dict[str, Any] | None = None,
+    text: str = RESEARCH_TEXT,
+    quote: dict[str, str] | None = None,
+    label: str = "a",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Drive the supported path to a stored, accepted artifact and its span."""
+    record = record if record is not None else research_evidence()
+    evidence_input = write_json(tmp_path / "in" / f"evidence-{label}.json", record)
+    normalized_file = tmp_path / "in" / f"normalized-{label}.txt"
     normalized_file.parent.mkdir(parents=True, exist_ok=True)
-    normalized_file.write_text(RESEARCH_TEXT, encoding="utf-8")
+    normalized_file.write_text(text, encoding="utf-8")
+    quotation = research_quotation(str(record["evidence_id"]), text, quote)
     artifact = ["--root", str(root), "research", "record-artifact", "--wiki", "StarterWiki"]
     run_json(capsys, *artifact, "--input", evidence_input)
-    run_json(
+    code, _, _ = run_json(
         capsys,
         "--root",
         str(root),
@@ -1078,22 +1088,20 @@ def accepted_artifact(
         "--normalized-file",
         str(normalized_file),
         "--input",
-        write_json(
-            tmp_path / "in" / "quotations.json",
-            [research_quotation(str(record["evidence_id"]))],
-        ),
+        write_json(tmp_path / "in" / f"quotations-{label}.json", [quotation]),
     )
+    assert code == 0
     code, doc, _ = run_json(capsys, *artifact, "--input", evidence_input)
     assert code == 0
     assert doc["status"] == "accepted"
-    return record
+    return record, quotation
 
 
 def test_retraction_arrives_as_a_superseding_notice(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = governed_vault(tmp_path)
-    record = accepted_artifact(tmp_path, capsys, root)
+    record, _ = accepted_artifact(tmp_path, capsys, root)
     evidence_id = str(record["evidence_id"])
 
     code, notice_doc, _ = run_json(
@@ -1172,7 +1180,7 @@ def test_correction_chain_must_supersede_the_current_notice(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = governed_vault(tmp_path)
-    record = accepted_artifact(tmp_path, capsys, root)
+    record, _ = accepted_artifact(tmp_path, capsys, root)
     evidence_id = str(record["evidence_id"])
     first = correction_notice(evidence_id, "corrected", "2026-09-01")
     code, first_doc, _ = run_json(
@@ -1475,3 +1483,178 @@ def test_evidence_invalid_help_names_the_correction_action(
     assert code == 1
     assert doc["code"] == "evidence_invalid"
     assert any("record-correction" in entry for entry in doc["help"])
+
+
+SECOND_TEXT = "A different frozen record about the synthetic product."
+SECOND_QUOTE = {"exact": "frozen record", "prefix": "different ", "suffix": " about"}
+
+
+def test_claim_support_must_pair_a_span_with_its_own_artifact(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    first, first_span = accepted_artifact(tmp_path, capsys, root, label="a")
+    second, second_span = accepted_artifact(
+        tmp_path,
+        capsys,
+        root,
+        research_evidence("https://authority.test/other", SECOND_TEXT),
+        SECOND_TEXT,
+        SECOND_QUOTE,
+        label="b",
+    )
+    assert first["evidence_id"] != second["evidence_id"]
+
+    def record_claim(claim: dict[str, Any], name: str) -> tuple[int, dict[str, Any]]:
+        code, doc, _ = run_json(
+            capsys,
+            "--root",
+            str(root),
+            "--today",
+            "2026-09-02",
+            "research",
+            "record-claims",
+            "--wiki",
+            "StarterWiki",
+            "--input",
+            write_json(tmp_path / "in" / f"claim-{name}.json", [claim]),
+        )
+        return code, doc
+
+    # The span the second artifact actually produced is honest support for it.
+    code, honest = record_claim(
+        research_claim(
+            str(second["evidence_id"]),
+            str(second_span["quotation_id"]),
+            "the second synthetic fact holds",
+        ),
+        "honest",
+    )
+    assert code == 0
+    assert honest["confidence"][0]["score"] == 0.9
+
+    # Crediting the first artifact's span to the second is refused outright.
+    mispaired = research_claim(
+        str(second["evidence_id"]),
+        str(first_span["quotation_id"]),
+        "the mispaired synthetic fact holds",
+    )
+    code, doc = record_claim(mispaired, "mispaired")
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert str(first_span["quotation_id"]) in doc["message"]
+    assert str(first["evidence_id"]) in doc["message"]
+
+    # A retraction of the first artifact cannot be escaped by relabelling.
+    code, _, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-correction",
+        "--input",
+        write_json(
+            tmp_path / "in" / "notice.json",
+            correction_notice(str(first["evidence_id"]), "retracted", "2026-09-01"),
+        ),
+    )
+    assert code == 0
+    code, doc = record_claim(mispaired, "mispaired-after-retraction")
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    code, withdrawn = record_claim(
+        research_claim(
+            str(first["evidence_id"]),
+            str(first_span["quotation_id"]),
+            "the first synthetic fact holds",
+        ),
+        "retracted",
+    )
+    assert code == 0
+    assert withdrawn["confidence"][0]["score"] == "unknown"
+
+    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
+    assert code == 0, doctor
+
+
+def test_doctor_reports_a_mispaired_claim_support(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    first, first_span = accepted_artifact(tmp_path, capsys, root, label="a")
+    second, _ = accepted_artifact(
+        tmp_path,
+        capsys,
+        root,
+        research_evidence("https://authority.test/other", SECOND_TEXT),
+        SECOND_TEXT,
+        SECOND_QUOTE,
+        label="b",
+    )
+    # Admission refuses this, so doctor's own pairing check is exercised by
+    # planting the record the way a hand edit or a foreign tool would.
+    claim = validate_claim(
+        research_claim(
+            str(second["evidence_id"]),
+            str(first_span["quotation_id"]),
+            "the mispaired synthetic fact holds",
+        )
+    )
+    planted = root / MEGAMIND_DIR / "evidence" / "claims" / f"{claim['claim_id']}.json"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text(json.dumps(claim, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
+    assert code == 1
+    assert any(
+        "is bound to" in finding["message"] and str(first["evidence_id"]) in finding["message"]
+        for finding in doctor["findings"]
+    )
+
+
+def test_doctor_reports_a_correction_notice_from_another_artifact(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    first, _ = accepted_artifact(tmp_path, capsys, root, label="a")
+    second, _ = accepted_artifact(
+        tmp_path,
+        capsys,
+        root,
+        research_evidence("https://authority.test/other", SECOND_TEXT),
+        SECOND_TEXT,
+        SECOND_QUOTE,
+        label="b",
+    )
+    code, notice_doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-correction",
+        "--input",
+        write_json(
+            tmp_path / "in" / "notice.json",
+            correction_notice(str(first["evidence_id"]), "retracted", "2026-09-01"),
+        ),
+    )
+    assert code == 0
+    # A notice for the second artifact may not supersede the first's chain.
+    crossed = validate_correction_notice(
+        correction_notice(
+            str(second["evidence_id"]),
+            "retracted",
+            "2026-09-02",
+            str(notice_doc["notice"]["notice_id"]),
+        )
+    )
+    planted = root / MEGAMIND_DIR / "evidence" / "corrections" / f"{crossed['notice_id']}.json"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text(json.dumps(crossed, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
+    assert code == 1
+    assert any(
+        "belongs to a different evidence record" in finding["message"]
+        for finding in doctor["findings"]
+    )

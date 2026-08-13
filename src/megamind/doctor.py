@@ -369,12 +369,23 @@ def _check_references(
             )
     for identifier, claim in sorted(records["claims"].items()):
         for support in claim["supported_by"]:
-            if support["quotation_id"] not in records["quotations"]:
+            cited = records["quotations"].get(support["quotation_id"])
+            if cited is None:
                 findings.append(
                     _error(
                         "evidence",
                         _evidence_rel("claims", identifier),
                         f"claim cites unknown quotation {support['quotation_id']}",
+                    )
+                )
+            elif str(cited["evidence_id"]) != support["evidence_id"]:
+                findings.append(
+                    _error(
+                        "evidence",
+                        _evidence_rel("claims", identifier),
+                        f"claim pairs quotation {support['quotation_id']} with evidence record "
+                        f"{support['evidence_id']}, but that span is bound to "
+                        f"{cited['evidence_id']}",
                     )
                 )
             if support["evidence_id"] not in records["evidence"]:
@@ -418,12 +429,22 @@ def _check_correction_chains(
                 )
             )
         supersedes = str(notice["supersedes"])
-        if supersedes and supersedes not in notices:
+        prior = notices.get(supersedes) if supersedes else None
+        if supersedes and prior is None:
             findings.append(
                 _error(
                     "evidence",
                     _evidence_rel("corrections", identifier),
                     f"correction notice supersedes unknown notice {supersedes}",
+                )
+            )
+        elif prior is not None and str(prior["evidence_id"]) != str(notice["evidence_id"]):
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("corrections", identifier),
+                    f"correction notice supersedes {supersedes}, which belongs to a different "
+                    f"evidence record {prior['evidence_id']}",
                 )
             )
     for evidence_id in sorted({str(notice["evidence_id"]) for notice in notices.values()}):
