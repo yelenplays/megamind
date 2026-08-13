@@ -981,6 +981,22 @@ def test_unresolved_contradictions_refuses_a_forged_resolution(
         unresolved_contradictions(root, [contradiction.contradiction_id])
 
 
+def test_store_contradiction_refuses_different_existing_bytes(tmp_path: Path) -> None:
+    contradiction = make_contradiction(
+        {
+            "claim_ids": ["claim-a", "claim-b"],
+            "basis": "Synthetic conflict.",
+            "resolution": "unresolved",
+        },
+        MappingResolver({"claim": {"claim-a", "claim-b"}}),
+    )
+    path = store_contradiction(tmp_path, contradiction)
+    path.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(EvidenceAcceptanceError, match="different bytes"):
+        store_contradiction(tmp_path, contradiction)
+
+
 def test_packet_refuses_before_reconcile_without_freezing_anything(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -1606,7 +1606,15 @@ def make_contradiction(data: Mapping[str, Any], resolver: Any) -> _LegacyContrad
 
 def store_contradiction(root: Path, contradiction: _LegacyContradiction) -> Path:
     relative = Path(MEGAMIND_DIR) / "research" / "contradictions" / f"{contradiction.contradiction_id}.json"
-    return atomic_write(root, relative, json.dumps(contradiction.to_data(), indent=2, sort_keys=True) + "\n")
+    path = resolve_contained(root, relative)
+    text = json.dumps(contradiction.to_data(), indent=2, sort_keys=True) + "\n"
+    if path.is_file():
+        if path.read_text(encoding="utf-8") != text:
+            raise EvidenceAcceptanceError("frozen contradiction already exists with different bytes")
+        return path
+    result = atomic_write(root, relative, text)
+    append_audit(root, "research-contradiction", {"contradiction_id": contradiction.contradiction_id})
+    return result
 
 
 def unresolved_contradictions(root: Path, identifiers: Iterable[str]) -> list[str]:
