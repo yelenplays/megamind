@@ -1500,16 +1500,20 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         # The quote ceiling is the wiki's own rights posture, so a policy-less
         # invocation keeps the restrictive structural limit instead of a wider one.
         ceiling = policy.quote_ceiling_chars if policy is not None else QUOTE_CEILING_CHARS
+        known_evidence = _known_records(root, "evidence")
         quotations = [
-            validate_quotation(item, normalized_text, quote_ceiling_chars=ceiling)
+            validate_quotation(
+                item, normalized_text, quote_ceiling_chars=ceiling, evidence=known_evidence
+            )
             for item in values
         ]
         paths = [
-            EvidenceStore(root)
-            .put("quotations", item, normalized_text, quote_ceiling_chars=ceiling)
-            .relative_to(root.resolve())
-            .as_posix()
-            for item in quotations
+            path.relative_to(root.resolve()).as_posix()
+            for path in EvidenceStore(root).put_all(
+                [("quotations", item) for item in quotations],
+                normalized_text,
+                quote_ceiling_chars=ceiling,
+            )
         ]
         return _research_doc(
             "megamind/quotation/v1",
@@ -1529,9 +1533,13 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             raise UsageError("record-claims input must be a JSON list or {claims: []}")
         evidence_store = EvidenceStore(root)
         # Citation targets are resolved against the store, so a claim can only
-        # rely on a span this vault actually holds and validated.
+        # rely on a span and an artifact this vault actually holds and validated.
         known_quotations = _known_records(root, "quotations")
-        claims = [validate_claim(item, quotations=known_quotations) for item in values]
+        known_evidence = _known_records(root, "evidence")
+        claims = [
+            validate_claim(item, quotations=known_quotations, evidence=known_evidence)
+            for item in values
+        ]
         paths = [
             path.relative_to(root.resolve()).as_posix()
             for path in evidence_store.put_all([("claims", item) for item in claims])
@@ -1561,8 +1569,10 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
                 raise UsageError(
                     "reconcile from claims requires --today ISO_DATE to date the contradiction"
                 )
+            known_quotations = _known_records(root, "quotations")
+            known_evidence = _known_records(root, "evidence")
             claims = [
-                validate_claim(item, quotations=_known_records(root, "quotations"))
+                validate_claim(item, quotations=known_quotations, evidence=known_evidence)
                 for item in raw["claims"]
             ]
             contradictions = reconcile_claims(claims, today=today, gap_id=args.gap_id)

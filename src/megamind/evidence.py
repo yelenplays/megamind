@@ -668,6 +668,7 @@ def validate_quotation(
     normalized_text: str | None = None,
     *,
     quote_ceiling_chars: int = QUOTE_CEILING_CHARS,
+    evidence: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     data = _map("quotation", raw)
     _unknown(
@@ -690,6 +691,8 @@ def validate_quotation(
         raise EvidenceError(f"quotation schema must be {QUOTATION_SCHEMA}")
     quotation_id = _str("quotation_id", data.get("quotation_id"), nonempty=True, limit=64)
     evidence_id = _str("quotation evidence_id", data.get("evidence_id"), nonempty=True, limit=64)
+    if evidence is not None and evidence_id not in evidence:
+        raise EvidenceError(f"quotation references an unknown evidence record: {evidence_id}")
     against_hash = _hash("quotation against_hash", data.get("against_hash"))
     if quote_ceiling_chars <= 0:
         raise EvidenceError("quotation ceiling must be positive")
@@ -782,7 +785,10 @@ def validate_quotation(
 
 
 def validate_claim(
-    raw: object, *, quotations: Mapping[str, Mapping[str, Any]] | None = None
+    raw: object,
+    *,
+    quotations: Mapping[str, Mapping[str, Any]] | None = None,
+    evidence: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     data = _map("claim", raw)
     _unknown(
@@ -837,12 +843,13 @@ def validate_claim(
             "claim quotation_id", support.get("quotation_id"), nonempty=True, limit=64
         )
         if quotations is not None and quotation_id not in quotations:
-            raise EvidenceError("claim references an unknown quotation")
+            raise EvidenceError(f"claim references an unknown quotation: {quotation_id}")
+        evidence_id = _str("claim evidence_id", support.get("evidence_id"), nonempty=True, limit=64)
+        if evidence is not None and evidence_id not in evidence:
+            raise EvidenceError(f"claim references an unknown evidence record: {evidence_id}")
         supported.append(
             {
-                "evidence_id": _str(
-                    "claim evidence_id", support.get("evidence_id"), nonempty=True, limit=64
-                ),
+                "evidence_id": evidence_id,
                 "quotation_id": quotation_id,
                 "role": role,
             }
@@ -1079,7 +1086,13 @@ class EvidenceStore:
         atomic_write(self.root, rel, text)
         return resolve_contained(self.root, rel)
 
-    def put_all(self, items: Sequence[tuple[str, Mapping[str, Any]]]) -> list[Path]:
+    def put_all(
+        self,
+        items: Sequence[tuple[str, Mapping[str, Any]]],
+        normalized_text: str | None = None,
+        *,
+        quote_ceiling_chars: int = QUOTE_CEILING_CHARS,
+    ) -> list[Path]:
         """Write a related set only once every record in it is provably writable.
 
         Records that reference each other must land together or not at all,
@@ -1087,7 +1100,9 @@ class EvidenceStore:
         reports it broken. Validation and the immutability check therefore run
         over the whole set before the first byte is written.
         """
-        prepared = [self._prepare(kind, data) for kind, data in items]
+        prepared = [
+            self._prepare(kind, data, normalized_text, quote_ceiling_chars) for kind, data in items
+        ]
         paths: list[Path] = []
         for rel, _, text in prepared:
             atomic_write(self.root, rel, text)

@@ -856,12 +856,30 @@ def test_doctor_reports_dangling_evidence_references(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = governed_vault(tmp_path)
+    # Admission refuses this, so doctor's own referential pass is exercised by
+    # planting the record the way a hand edit or a foreign tool would.
+    quotation = validate_quotation(
+        research_quotation(content_hash("https://absent.test/x" + "0" * 64)), RESEARCH_TEXT
+    )
+    planted = root / MEGAMIND_DIR / "evidence" / "quotations" / f"{quotation['quotation_id']}.json"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text(json.dumps(quotation, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
+    assert code == 1
+    assert any(
+        "cites unknown evidence record" in finding["message"] for finding in doctor["findings"]
+    )
+
+
+def test_quotations_and_claims_refuse_unknown_evidence_at_admission(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
     normalized_file = tmp_path / "in" / "normalized.txt"
     normalized_file.parent.mkdir(parents=True, exist_ok=True)
     normalized_file.write_text(RESEARCH_TEXT, encoding="utf-8")
-    # A quotation recorded against an artifact this vault never stored.
-    quotation = research_quotation(content_hash("https://absent.test/x" + "0" * 64))
-    code, _, _ = run_json(
+    ghost = content_hash("https://absent.test/x" + "0" * 64)
+    code, doc, _ = run_json(
         capsys,
         "--root",
         str(root),
@@ -872,14 +890,74 @@ def test_doctor_reports_dangling_evidence_references(
         "--normalized-file",
         str(normalized_file),
         "--input",
-        write_json(tmp_path / "in" / "quotations.json", [quotation]),
+        write_json(tmp_path / "in" / "quotations.json", [research_quotation(ghost)]),
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert ghost in doc["message"]
+    assert not (root / MEGAMIND_DIR / "evidence" / "quotations").exists()
+
+    record = accepted_artifact(tmp_path, capsys, root)
+    quotation = research_quotation(str(record["evidence_id"]))
+    claim = research_claim(ghost, str(quotation["quotation_id"]), "the synthetic fact holds")
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-claims",
+        "--wiki",
+        "StarterWiki",
+        "--input",
+        write_json(tmp_path / "in" / "claims.json", [claim]),
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert ghost in doc["message"]
+    assert not (root / MEGAMIND_DIR / "evidence" / "claims").exists()
+
+    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
+    assert code == 0, doctor
+
+
+def test_record_quotations_commits_nothing_when_one_span_is_unwritable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    record = research_evidence()
+    normalized_file = tmp_path / "in" / "normalized.txt"
+    normalized_file.parent.mkdir(parents=True, exist_ok=True)
+    normalized_file.write_text(RESEARCH_TEXT, encoding="utf-8")
+    code, _, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-artifact",
+        "--wiki",
+        "StarterWiki",
+        "--input",
+        write_json(tmp_path / "in" / "evidence.json", record),
     )
     assert code == 0
-    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
-    assert code == 1
-    assert any(
-        "cites unknown evidence record" in finding["message"] for finding in doctor["findings"]
+    good = research_quotation(str(record["evidence_id"]))
+    bad = {**good, "position": {"start": 2, "end": 9999}}
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-quotations",
+        "--wiki",
+        "StarterWiki",
+        "--normalized-file",
+        str(normalized_file),
+        "--input",
+        write_json(tmp_path / "in" / "quotations.json", [good, bad]),
     )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert not (root / MEGAMIND_DIR / "evidence" / "quotations").exists()
 
 
 def test_review_surfaces_deferred_evidence_and_unresolved_contradictions(
@@ -953,6 +1031,9 @@ def test_card_research_policy_governs_acceptance(
     evidence_input = write_json(tmp_path / "in" / "evidence.json", record)
     normalized_file = tmp_path / "in" / "normalized.txt"
     normalized_file.write_text(RESEARCH_TEXT, encoding="utf-8")
+    artifact = ["--root", str(card_root), "research", "record-artifact", "--wiki", "CardWiki"]
+    code, _, _ = run_json(capsys, *artifact, "--input", evidence_input)
+    assert code == 0
     run_json(
         capsys,
         "--root",
@@ -969,17 +1050,7 @@ def test_card_research_policy_governs_acceptance(
             [research_quotation(str(record["evidence_id"]))],
         ),
     )
-    code, doc, _ = run_json(
-        capsys,
-        "--root",
-        str(card_root),
-        "research",
-        "record-artifact",
-        "--wiki",
-        "CardWiki",
-        "--input",
-        evidence_input,
-    )
+    code, doc, _ = run_json(capsys, *artifact, "--input", evidence_input)
     assert code == 0
     assert doc["status"] == "accepted"
     assert doc["evidence"]["acceptance"]["quality"] == "primary"

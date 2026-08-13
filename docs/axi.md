@@ -266,8 +266,10 @@ registered wiki or a canonical card; an unresolvable name is a `usage_error`
 rather than a silent policy-free acceptance. Quotation selectors are hash-bound
 and must re-resolve against frozen normalized text before an active claim may
 rely on them; G10 stays `unknown` until at least one stored span for that
-artifact resolves, so the normal order is `record-artifact`,
-`record-quotations`, then `record-artifact` again to re-derive acceptance. Only
+artifact resolves, so the order is `record-artifact`, `record-quotations`, then
+`record-artifact` again to re-derive acceptance. That order is enforced, not
+merely advised: a quotation naming an artifact this vault does not hold is
+refused, as is a claim naming an artifact or span it does not hold. Only
 the derived acceptance block may be rewritten that way: every frozen fact of a
 stored record stays immutable, and re-recording an artifact with any of them
 changed is an `evidence_invalid` refusal. Unresolved contradictions remain

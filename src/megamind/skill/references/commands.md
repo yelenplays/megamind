@@ -487,8 +487,10 @@ and visible contradictions. `packet` stores cited synthesis only. `status`,
 common and source-class gates from frozen facts and the wiki's restrictive
 research policy named by `--wiki`; absent or `off` policy, unknown gates,
 retractions, and unresolved spans never authorize support. G10 stays unknown
-until a stored span resolves, so re-run `record-artifact` after
-`record-quotations` to re-derive acceptance. A frozen fact is never edited:
+until a stored span resolves, so record the artifact first, then
+`record-quotations`, then re-run `record-artifact` to re-derive acceptance; a
+quotation or claim naming an artifact this vault does not hold is refused
+rather than committed. A frozen fact is never edited:
 `record-correction` appends a `correction-notice/v1` superseding the artifact's
 current notice, and its head is the posture that removes retracted support.
 `reconcile` from claims needs `--today` and stores those claims with the
