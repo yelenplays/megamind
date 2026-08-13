@@ -24,7 +24,7 @@ from .fsops import (
     atomic_write,
     backup_existing,
     content_hash,
-    create_file,
+    create_private_file,
     resolve_contained,
 )
 from .preflight import (
@@ -495,9 +495,10 @@ def _write_existing_state(state_root: Path, payload: Doc) -> None:
 
 def _create_existing_state(state_root: Path, payload: Doc) -> bool:
     try:
-        create_file(
-            state_root,
-            _existing_state_path(state_root, str(payload["selection_id"])),
+        create_private_file(
+            resolve_contained(
+                state_root, _existing_state_path(state_root, str(payload["selection_id"]))
+            ),
             _state_document(payload),
             durable=True,
         )
@@ -518,9 +519,8 @@ def _claim_existing_state(state_root: Path, state: Doc, wiki: str) -> None:
         "audit_event": _audit_event(selection_id, "claimed"),
     }
     try:
-        create_file(
-            state_root,
-            _existing_claim_path(selection_id),
+        create_private_file(
+            resolve_contained(state_root, _existing_claim_path(selection_id)),
             json.dumps(claim, sort_keys=True) + "\n",
             durable=True,
         )

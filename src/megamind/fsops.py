@@ -143,29 +143,6 @@ def create_private_file(target: Path, content: str, *, durable: bool = False) ->
     return target
 
 
-def create_file(root: Path, target: str | Path, content: str, *, durable: bool = False) -> Path:
-    """Atomically create one new root-contained file, refusing replacement."""
-    resolved = resolve_contained(root, target)
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    handle = os.open(resolved, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    try:
-        payload = content.encode("utf-8")
-        written = 0
-        while written < len(payload):
-            written += os.write(handle, payload[written:])
-        os.fsync(handle)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.close(handle)
-        with contextlib.suppress(OSError):
-            os.unlink(resolved)
-        raise
-    os.close(handle)
-    if durable:
-        sync_directory(resolved.parent)
-    return resolved
-
-
 def atomic_write(root: Path, target: str | Path, content: str, *, durable: bool = False) -> Path:
     """Write content atomically to a root-contained path, creating parent dirs."""
     resolved = resolve_contained(root, target)

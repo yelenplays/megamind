@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -345,3 +346,28 @@ def test_existing_selection_recovers_claimed_state(
     audit = (vault / ".megamind" / "audit" / "log.jsonl").read_text(encoding="utf-8")
     assert "existing_selection_claimed" in audit
     assert "existing_selection_consumed" in audit
+
+
+def test_existing_selection_state_and_claim_are_owner_only(vault: Path, capsys: Any) -> None:
+    code, listed, _ = run_json(capsys, *_list_args(vault))
+    assert code == 0
+    state_path = vault / ".megamind" / "audit" / "existing-selection" / f"{listed['selection_id']}.json"
+    assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+
+    code, selected, _ = run_json(
+        capsys,
+        *_list_args(vault),
+        "BrandingWiki",
+        "--selection-id",
+        listed["selection_id"],
+    )
+    assert code == 0 and selected["status"] == "authorized"
+    claim_path = (
+        vault
+        / ".megamind"
+        / "audit"
+        / "existing-selection"
+        / "claims"
+        / f"{listed['selection_id']}.json"
+    )
+    assert stat.S_IMODE(claim_path.stat().st_mode) == 0o600
