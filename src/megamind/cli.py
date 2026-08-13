@@ -66,11 +66,13 @@ from .evaluation import (
     write_document,
 )
 from .evidence import (
+    QUOTE_CEILING_CHARS,
     EvidenceError,
     EvidenceStore,
     acceptance_gates,
     decide_acceptance,
     reconcile_claims,
+    score_claim,
     validate_claim,
     validate_contradiction,
     validate_evidence_record,
@@ -102,7 +104,7 @@ from .gardening import (
     rollback_provision,
 )
 from .models import FrontmatterError, parse_document
-from .policy import tier_for_facts
+from .policy import ResearchPolicy, admitted_quality, freshness_state, tier_for_facts
 from .preflight import MODEL_CLASSES, run_preflight
 from .registry import (
     CURRENT_VERSION,
@@ -1198,23 +1200,107 @@ def _research_doc(schema: str, payload: Mapping[str, Any], help_text: str) -> Do
     return {"schema_version": schema, **dict(payload), "help": _help(help_text)}
 
 
-def cmd_research(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
+def _research_policy(registry: Registry, wiki: str) -> ResearchPolicy | None:
+    """Resolve one wiki's validated research policy from its registry entry or card.
+
+    An unresolvable name is a usage error rather than a silent policy-free
+    acceptance: a governance command must never treat a typo as a wiki that
+    happens to have no policy.
+    """
+    if not wiki:
+        return None
+    entry = registry.wiki_by_name(wiki)
+    if entry is None:
+        raise UsageError(f"unknown wiki: {wiki}")
+    return entry.research_policy
+
+
+def _stored_quotations(root: Path, evidence_id: str) -> list[dict[str, Any]]:
+    """The already-validated hash-bound spans recorded against one artifact."""
+    return [
+        quotation
+        for _, quotation, _ in EvidenceStore(root).scan("quotations")
+        if quotation is not None and quotation["evidence_id"] == evidence_id
+    ]
+
+
+def _claim_confidences(
+    root: Path,
+    claims: Sequence[Mapping[str, Any]],
+    policy: ResearchPolicy | None,
+    today: str,
+) -> list[Doc]:
+    """Score each recorded claim with the existing, unchanged constants.
+
+    Freshness and contradiction are read from stored typed facts rather than
+    supplied by the caller, so a host cannot buy confidence by asserting that
+    its own evidence is current or unconflicted.
+    """
+    store = EvidenceStore(root)
+    evidence = {
+        str(record["evidence_id"]): record
+        for _, record, _ in store.scan("evidence")
+        if record is not None
+    }
+    conflicted: set[str] = set()
+    for _, contradiction, _ in store.scan("contradictions"):
+        if contradiction is not None and contradiction["resolution"] == "unresolved":
+            conflicted.update(str(claim_id) for claim_id in contradiction["claim_ids"])
+    rows: list[Doc] = []
+    for claim in claims:
+        as_of = ""
+        for support in claim["supported_by"]:
+            record = evidence.get(str(support["evidence_id"]))
+            if record is None:
+                continue
+            candidate = str(record["evidence_as_of"] or record["published_at"])
+            if candidate and (not as_of or candidate < as_of):
+                as_of = candidate
+        freshness = freshness_state(policy, str(claim["type"]), as_of, today)
+        score = score_claim(
+            claim,
+            evidence,
+            freshness=freshness,
+            contradicted=str(claim["claim_id"]) in conflicted,
+        )
+        rows.append(
+            {
+                "claim_id": str(claim["claim_id"]),
+                "freshness": freshness,
+                "contradicted": str(claim["claim_id"]) in conflicted,
+                "score": score.render(),
+                "meets_floor": score.meets_floor,
+            }
+        )
+    return rows
+
+
+def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc, int]:
     """Record one offline research-stage receipt from a JSON file.
 
     The command family intentionally accepts files rather than giant strings;
     the file is a host artifact and is never interpreted as instructions.
     """
     action = args.research_action
+    # Every action reads or writes vault state, so an uninitialized root is
+    # refused before any write instead of scattering a stray .megamind/ tree.
+    registry = _load_routing_registry(root)
     store = ResearchStore(root)
+    wiki = getattr(args, "wiki", "")
+    claim_type = getattr(args, "claim_type", "fact")
+    policy = _research_policy(registry, wiki)
     if action == "status":
+        notes: list[str] = []
+        full = bool(getattr(args, "full", False))
         return _research_doc(
             "megamind/research-status/v1",
             {
                 "status": "ok",
-                "plans": store.list("plans"),
-                "jobs": store.list("jobs"),
-                "packets": store.list("packets"),
-                "outcomes": store.list("outcomes"),
+                "plans": _capped(store.list("plans"), full, notes, "plans"),
+                "jobs": _capped(store.list("jobs"), full, notes, "jobs"),
+                "packets": _capped(store.list("packets"), full, notes, "packets"),
+                "outcomes": _capped(store.list("outcomes"), full, notes, "outcomes"),
+                "notes": notes,
             },
             "Record the next host receipt with `megamind-axi research ... --input FILE`",
         ), 0
@@ -1270,6 +1356,11 @@ def cmd_research(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
         ]
         if len(candidates) != len(values):
             raise ResearchError("every discovery candidate must be an object")
+        if policy is not None and len(candidates) > policy.max_sources_per_cycle:
+            raise ResearchError(
+                f"discovery exceeds the wiki budget of "
+                f"{policy.max_sources_per_cycle} sources per cycle"
+            )
         paths = [
             store.put("candidates", candidate).relative_to(root.resolve()).as_posix()
             for candidate in candidates
@@ -1281,17 +1372,11 @@ def cmd_research(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
         ), 0
     if action == "record-artifact":
         record = validate_evidence_record(raw)
-        policy = None
-        wiki = getattr(args, "wiki", "")
-        if wiki:
-            registry = _load_routing_registry(root)
-            entry = registry.wiki_by_name(wiki)
-            if entry is not None:
-                policy = entry.research_policy
-        claim_type = getattr(args, "claim_type", "fact")
-        gates = acceptance_gates(record, policy, claim_type)
-        # G10 remains unknown until a quotation record resolves against the
-        # frozen normalized snapshot. Unknown is deliberately not pass.
+        # G10 stays unknown until a quotation resolves against the frozen
+        # normalized snapshot, so acceptance is re-derived from whatever spans
+        # this vault already holds. Unknown is deliberately not pass.
+        quotations = _stored_quotations(root, str(record["evidence_id"]))
+        gates = acceptance_gates(record, policy, claim_type, quotations)
         decision, failure = decide_acceptance(gates)
         derived_tier = tier_for_facts(
             policy,
@@ -1304,11 +1389,13 @@ def cmd_research(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
         )
         # Quality and tier are minted here from the validated wiki policy.
         # Any host-supplied labels in the input are observations and are never
-        # copied into the behavior-changing acceptance block.
+        # copied into the behavior-changing acceptance block. A per-class
+        # ceiling may narrow the tier's quality but can never widen it.
+        quality = admitted_quality(policy, derived_tier, str(record["source_class"]))
         record["acceptance"] = {
             "decision": decision,
-            "tier": derived_tier.tier if derived_tier else None,
-            "quality": derived_tier.quality if derived_tier else "",
+            "tier": derived_tier.tier if derived_tier and quality else None,
+            "quality": quality,
             "failure": failure,
             "gates": gates,
         }
@@ -1339,10 +1426,16 @@ def cmd_research(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
             normalized_text = Path(args.normalized_file).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as error:
             raise UsageError("--normalized-file cannot be read") from error
-        quotations = [validate_quotation(item, normalized_text) for item in values]
+        # The quote ceiling is the wiki's own rights posture, so a policy-less
+        # invocation keeps the restrictive structural limit instead of a wider one.
+        ceiling = policy.quote_ceiling_chars if policy is not None else QUOTE_CEILING_CHARS
+        quotations = [
+            validate_quotation(item, normalized_text, quote_ceiling_chars=ceiling)
+            for item in values
+        ]
         paths = [
             EvidenceStore(root)
-            .put("quotations", item, normalized_text)
+            .put("quotations", item, normalized_text, quote_ceiling_chars=ceiling)
             .relative_to(root.resolve())
             .as_posix()
             for item in quotations
@@ -1350,7 +1443,8 @@ def cmd_research(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
         return _research_doc(
             "megamind/quotation/v1",
             {"status": "recorded", "quotations": quotations, "paths": paths},
-            "Quotation selectors were checked against the frozen normalized text",
+            "Re-run `megamind-axi research record-artifact` to re-derive acceptance "
+            "now that these spans resolve",
         ), 0
     if action == "record-claims":
         values = (
@@ -1362,14 +1456,27 @@ def cmd_research(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
         )
         if not isinstance(values, list):
             raise UsageError("record-claims input must be a JSON list or {claims: []}")
-        claims = [validate_claim(item) for item in values]
+        evidence_store = EvidenceStore(root)
+        # Citation targets are resolved against the store, so a claim can only
+        # rely on a span this vault actually holds and validated.
+        known_quotations = {
+            identifier: record
+            for identifier, record, _ in evidence_store.scan("quotations")
+            if record is not None
+        }
+        claims = [validate_claim(item, quotations=known_quotations) for item in values]
         paths = [
-            EvidenceStore(root).put("claims", item).relative_to(root.resolve()).as_posix()
+            evidence_store.put("claims", item).relative_to(root.resolve()).as_posix()
             for item in claims
         ]
         return _research_doc(
             "megamind/claim/v1",
-            {"status": "recorded", "claims": claims, "paths": paths},
+            {
+                "status": "recorded",
+                "claims": claims,
+                "paths": paths,
+                "confidence": _claim_confidences(root, claims, policy, today),
+            },
             "Claims are inert until their evidence and quotation references validate",
         ), 0
     if action == "reconcile":
@@ -1381,8 +1488,12 @@ def cmd_research(args: argparse.Namespace, root: Path) -> tuple[Doc, int]:
             else None
         )
         if isinstance(raw, dict) and "claims" in raw:
+            if not today:
+                raise UsageError(
+                    "reconcile from claims requires --today ISO_DATE to date the contradiction"
+                )
             claims = [validate_claim(item) for item in raw["claims"]]
-            contradictions = reconcile_claims(claims, today=args.today or "", gap_id=args.gap_id)
+            contradictions = reconcile_claims(claims, today=today, gap_id=args.gap_id)
         elif isinstance(values, list):
             contradictions = [validate_contradiction(item) for item in values]
         else:
@@ -2200,7 +2311,11 @@ def build_parser() -> AxiParser:
         default=None,
         help="frozen normalized text used to resolve quotation spans",
     )
-    p_research.add_argument("--today", default="", help="host-supplied ISO date for reconciliation")
+    p_research.add_argument(
+        "--today",
+        default=argparse.SUPPRESS,
+        help="host-supplied ISO date for reconciliation and freshness",
+    )
     p_research.add_argument(
         "--gap-id", default="", help="existing gap identity for contradiction linkage"
     )
@@ -2645,7 +2760,7 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             raise UsageError("gap transition requires --status")
         return cmd_gap(args, root, _garden_today(args))
     if command == "research":
-        return cmd_research(args, root)
+        return cmd_research(args, root, _garden_today(args))
     if command == "research-wave":
         return cmd_research_wave(args, root, _garden_today(args))
     if command == "research-result":

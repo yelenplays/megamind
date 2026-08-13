@@ -187,9 +187,15 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
                     )
 
     # Evidence review is metadata-only. Bodies and source prose are never
-    # loaded by this projection.
+    # loaded by this projection. A malformed record is reported as work to do
+    # rather than aborting review and the home document that points at doctor.
     evidence_store = EvidenceStore(root)
-    for record in evidence_store.list("evidence"):
+    for identifier, record, problem in evidence_store.scan("evidence"):
+        if record is None:
+            report.pending_evidence.append(
+                {"evidence_id": identifier, "decision": "invalid", "failure": problem}
+            )
+            continue
         acceptance = record.get("acceptance", {})
         if acceptance.get("decision") in {"deferred", "rejected"}:
             report.pending_evidence.append(
@@ -199,12 +205,18 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
                     "failure": acceptance.get("failure", ""),
                 }
             )
-    for contradiction in evidence_store.list("contradictions"):
+    for identifier, contradiction, problem in evidence_store.scan("contradictions"):
+        if contradiction is None:
+            report.contradictions.append(
+                {"contradiction_id": identifier, "claim_ids": "", "problem": problem}
+            )
+            continue
         if contradiction.get("resolution") == "unresolved":
             report.contradictions.append(
                 {
                     "contradiction_id": contradiction.get("contradiction_id", ""),
                     "claim_ids": ";".join(contradiction.get("claim_ids", [])),
+                    "problem": "",
                 }
             )
 

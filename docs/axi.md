@@ -259,11 +259,25 @@ payloads out of command strings. No action performs network access, dispatch,
 transcript fetching, publication, or an external write.
 
 `record-artifact` derives G1-G12 and source-class gates from validated facts and
-the selected wiki's restrictive research policy. A missing policy denies
-acceptance. Quotation selectors are hash-bound and must re-resolve against
-frozen normalized text before an active claim may rely on them. Retractions
-remove support, unresolved contradictions remain visible, and packet
-confidence is never used as an acceptance verdict.
+the selected wiki's restrictive research policy. A missing policy, an unnamed
+wiki, or an explicit `"research": "off"` denies acceptance. `--wiki` must name a
+registered wiki or a canonical card; an unresolvable name is a `usage_error`
+rather than a silent policy-free acceptance. Quotation selectors are hash-bound
+and must re-resolve against frozen normalized text before an active claim may
+rely on them; G10 stays `unknown` until at least one stored span for that
+artifact resolves, so the normal order is `record-artifact`,
+`record-quotations`, then `record-artifact` again to re-derive acceptance. Only
+the derived acceptance block may be rewritten that way: every identity-bearing
+field of a stored record stays immutable. Retractions remove support,
+unresolved contradictions remain visible, and packet confidence is never used
+as an acceptance verdict.
+
+`record-claims` returns each claim's confidence from the unchanged confidence
+constants, using stored evidence acceptance, derived origin corroboration, the
+wiki freshness policy against `--today`, and stored unresolved contradictions.
+`reconcile` from `{claims: []}` requires `--today`. `status` truncates its
+lists like every other list section and takes `--full`. Every action requires
+an initialized vault root.
 
 ## Error codes
 

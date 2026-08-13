@@ -12,13 +12,35 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .fsops import MEGAMIND_DIR, atomic_write, content_hash, resolve_contained
+from .fsops import (
+    MEGAMIND_DIR,
+    atomic_write,
+    content_hash,
+    identity_bytes,
+    resolve_contained,
+)
 
 PLAN_SCHEMA = "megamind/research-plan/v1"
 JOB_SCHEMA = "megamind/research-job/v1"
 PACKET_SCHEMA = "megamind/research-packet/v1"
 OUTCOME_SCHEMA = "megamind/research-outcome/v1"
 CANDIDATE_SCHEMA = "megamind/source-candidate/v1"
+
+# A job is lifecycle state and a candidate is a discovery observation: their
+# ids cover only the identity they are keyed by, so the remaining fields are
+# the very things a later stage advances.  Plans, packets, and outcomes hash
+# their whole body and therefore stay byte-immutable.
+MUTABLE_FIELDS: dict[str, frozenset[str]] = {
+    "plans": frozenset(),
+    "jobs": frozenset({"state", "attempt", "events"}),
+    "packets": frozenset(),
+    "outcomes": frozenset(),
+    "candidates": frozenset({"found_by", "rank", "status", "reason"}),
+}
+
+# One stored record per entry: its identifier, the validated record when it
+# reads, and the problem that stopped it when it does not.
+ScanResult = list[tuple[str, dict[str, Any] | None, str]]
 
 
 class ResearchError(ValueError):
@@ -384,8 +406,14 @@ class ResearchStore:
         rel = self._path(kind, identifier)
         path = resolve_contained(self.root, rel)
         text = json.dumps(canonical, sort_keys=True, indent=2) + "\n"
-        if path.is_file() and path.read_text(encoding="utf-8") != text:
-            raise ResearchError("content-addressed research record has different bytes")
+        if path.is_file():
+            mutable = MUTABLE_FIELDS[kind]
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as error:
+                raise ResearchError("stored research record is not valid JSON") from error
+            if identity_bytes(existing, mutable) != identity_bytes(canonical, mutable):
+                raise ResearchError("content-addressed research record has different bytes")
         atomic_write(self.root, rel, text)
         return path
 
@@ -405,18 +433,22 @@ class ResearchStore:
             "candidates": validate_candidate,
         }[kind](raw)
 
-    def list(self, kind: str) -> list[dict[str, Any]]:
+    def _identifiers(self, kind: str) -> list[str]:
         directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "research" / kind)
         if not directory.is_dir():
             return []
-        return [
-            self.get(kind, path.stem.removesuffix(".jsonl"))
-            for path in sorted(directory.glob("*.json"))
-        ] + (
-            [
-                self.get(kind, path.stem.removesuffix(".jsonl"))
-                for path in sorted(directory.glob("*.jsonl"))
-            ]
-            if kind == "jobs"
-            else []
-        )
+        pattern = "*.jsonl" if kind == "jobs" else "*.json"
+        return [path.stem for path in sorted(directory.glob(pattern))]
+
+    def list(self, kind: str) -> list[dict[str, Any]]:
+        return [self.get(kind, identifier) for identifier in self._identifiers(kind)]
+
+    def scan(self, kind: str) -> ScanResult:
+        """List every record, reporting rather than raising on a bad one."""
+        results: ScanResult = []
+        for identifier in self._identifiers(kind):
+            try:
+                results.append((identifier, self.get(kind, identifier), ""))
+            except (ResearchError, OSError, UnicodeDecodeError) as error:
+                results.append((identifier, None, str(error)))
+        return results

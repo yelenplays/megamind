@@ -485,8 +485,12 @@ validate content-addressed candidates, evidence, hash-bound quotations, claims,
 and visible contradictions. `packet` stores cited synthesis only. `status`,
 `cancel`, and `resume` inspect typed local state. Artifact acceptance derives
 common and source-class gates from frozen facts and the wiki's restrictive
-research policy; absent policy, unknown gates, retractions, and unresolved
-spans never authorize support. Full source bytes stay in host quarantine.
+research policy named by `--wiki`; absent or `off` policy, unknown gates,
+retractions, and unresolved spans never authorize support. G10 stays unknown
+until a stored span resolves, so re-run `record-artifact` after
+`record-quotations` to re-derive acceptance. `reconcile` from claims needs
+`--today`, `status` takes `--full`, and every action needs an initialized
+vault. Full source bytes stay in host quarantine.
 
 ## Errors
 

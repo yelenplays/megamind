@@ -845,15 +845,38 @@ blocked retrieval is deferred, and injection scanning is advisory only.
 Quotation records carry both exact/prefix/suffix and half-open character
 selectors against `normalized_sha256`.  A selector is accepted as resolvable
 only when the supplied frozen normalized text reproduces it; an active claim
-must reference a resolvable quotation.  Claim confidence is calculated by the
-existing constants after acceptance and counts only derived origin ids.
+must reference a resolvable quotation.  `exact` must be non-empty, the span
+must be non-empty, and it must lie inside the frozen text, so an empty or
+out-of-range selector can never stand in for a citation.  The per-wiki
+`quote_ceiling_chars` bounds every selector; without a policy the restrictive
+structural limit applies.  Claim confidence is calculated by the existing
+constants after acceptance and counts only derived origin ids; freshness comes
+from the wiki `freshness_policy` and frozen dates, never from a clock.
 Contradiction records retain every claim and use typed precedence outcomes -
 there is no averaging and unresolved contradictions remain below reliance.
+
+A policy that sets `"research": "off"`, or that declares no tiers, admits no
+tier and therefore no quality: acceptance is denied exactly as an absent policy
+denies it.  `accepted_authorities` bounds which publishers may claim
+`authority-registry` basis, `max_sources_per_cycle` bounds one discovery
+receipt, and the `video` block clamps derived quality and claim types for
+video-class evidence.  `apply` is recorded but deliberately inert: no surface
+in this slice applies anything without the existing proposal boundary.
+
+Each record's identity covers only part of its body, so immutability is scoped
+to the identity-bearing fields.  Governed derived state - evidence
+`acceptance`, quotation resolution, claim lifecycle and support, contradiction
+resolution, job state, candidate status - may be advanced in place; any edit to
+an identity-bearing field of an existing record is refused.
 
 The local job spine is represented by `megamind/research-plan/v1`,
 `megamind/research-job/v1`, `megamind/source-candidate/v1`,
 `megamind/research-packet/v1`, and `megamind/research-outcome/v1`.  These are
 receipts, not dispatch instructions.  Evidence and metadata are stored under
 `.megamind/evidence/` through `fsops`; full fetched bytes remain host
-quarantine.  Doctor validates all referential and content-hash identities, and
-review surfaces deferred evidence and unresolved contradictions.
+quarantine.  Doctor validates every content-hash identity and the references
+that span documents - quotation to evidence, claim to quotation and evidence,
+contradiction to claim, packet to claim - because no single validator can see
+more than its own record.  Review surfaces deferred evidence and unresolved
+contradictions, and reports an unreadable record as work to do instead of
+failing the whole projection.

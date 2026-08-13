@@ -28,7 +28,9 @@ quotations are content-addressed under `.megamind/evidence/` through `fsops`.
 
 Quotations use Web Annotation-style exact and positional selectors against the
 normalized snapshot hash.  They are re-resolved against frozen text before
-being marked resolvable, and an active claim requires resolvable support.
+being marked resolvable, and an active claim requires resolvable support.  An
+empty, zero-length, or out-of-range selector is refused outright rather than
+resolving vacuously against any text.
 Claims retain qualifiers and source references.  Contradictions retain both
 claims and resolve only through typed scope, supersession, retraction, or
 wiki-policy precedence; unresolved conflicts are visible and capped by the
@@ -41,11 +43,19 @@ but never dispatches, schedules, fetches, or publishes.  Packets are cited
 synthesis and are not answer context.  The existing proposal/evolve boundary
 remains the only mutation path.
 
+A record's identity covers only part of its body, so immutability is scoped to
+the identity-bearing fields.  The governed state Megamind itself derives - the
+acceptance block, quotation resolution, claim lifecycle and support,
+contradiction resolution, job state, candidate status - advances in place, and
+any edit to an identity-bearing field of an existing record is refused.  This
+is what lets a deferred artifact reach `accepted` once its spans resolve
+without ever rewriting a frozen fact.
+
 ## Consequences
 
-Absent or malformed research policy denies fresh research.  Existing v1
-registries and legacy research results remain readable with restrictive
-semantics.  Doctor validates evidence and research journals; review surfaces
+Absent, malformed, or explicitly `"research": "off"` policy denies fresh
+research.  Existing v1 registries and legacy research results remain readable
+with restrictive semantics.  Doctor validates evidence and research journals; review surfaces
 deferred records and unresolved contradictions.  Full offline replay depends
 on host quarantine retention unless a rights-approved source is imported into
 `raw/` by a separate owner action.

@@ -16,9 +16,21 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .confidence import CLEAN_CORRECTION, Source, claim_confidence
-from .fsops import MEGAMIND_DIR, atomic_write, content_hash, resolve_contained
-from .policy import CLAIM_TYPES, SOURCE_CLASSES, ResearchPolicy, tier_for_facts
+from .confidence import CLEAN_CORRECTION, QUALITY_BASE, Source, claim_confidence
+from .fsops import (
+    MEGAMIND_DIR,
+    atomic_write,
+    content_hash,
+    identity_bytes,
+    resolve_contained,
+)
+from .policy import (
+    CLAIM_TYPES,
+    SOURCE_CLASSES,
+    ResearchPolicy,
+    admits_claim_type,
+    tier_for_facts,
+)
 
 EVIDENCE_SCHEMA = "megamind/evidence-record/v1"
 QUOTATION_SCHEMA = "megamind/quotation/v1"
@@ -29,6 +41,22 @@ GATE_VERDICTS = ("pass", "fail", "unknown")
 DECISIONS = ("accepted", "rejected", "deferred")
 SOURCE_CLASS_SET = set(SOURCE_CLASSES)
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+QUOTE_CEILING_CHARS = 1000
+
+# The identity of every stored document covers only part of its body: the rest
+# is governed state Megamind itself derives (acceptance verdicts, resolution
+# outcomes, lifecycle).  Immutability therefore applies to the identity-bearing
+# fields, and a rewrite that touches anything else is refused.
+MUTABLE_FIELDS: dict[str, frozenset[str]] = {
+    "evidence": frozenset({"acceptance"}),
+    "quotations": frozenset({"resolves", "resolved_at"}),
+    "claims": frozenset({"lifecycle", "supported_by", "contradicted_by", "superseded_by"}),
+    "contradictions": frozenset({"resolution", "resolution_detail", "updated"}),
+}
+
+# One stored record per entry: its identifier, the validated record when it
+# reads, and the problem that stopped it when it does not.
+ScanResult = list[tuple[str, dict[str, Any] | None, str]]
 
 
 class EvidenceError(ValueError):
@@ -273,8 +301,10 @@ def _validate_evidence(raw: object) -> dict[str, Any]:
     if tier is not None and (isinstance(tier, bool) or not isinstance(tier, int) or tier <= 0):
         raise EvidenceError("acceptance.tier must be positive or null")
     quality = acceptance.get("quality", "")
-    if quality and quality not in {"primary", "synthesis", "hypothesis", "prior"}:
+    if quality and quality not in QUALITY_BASE:
         raise EvidenceError("acceptance.quality is invalid")
+    if decision == "accepted" and (not quality or tier is None):
+        raise EvidenceError("accepted evidence requires a derived acceptance tier and quality")
     gates = _gates(acceptance.get("gates", []))
     failure = _str("acceptance.failure", acceptance.get("failure", ""), limit=300)
     revalidate = _date("revalidate_after", data.get("revalidate_after"))
@@ -362,16 +392,54 @@ def validate_evidence_record(raw: object) -> dict[str, Any]:
     return _validate_evidence(raw)
 
 
+def _quotation_verdict(quotations: Sequence[Mapping[str, Any]]) -> str:
+    """G10 is only a pass once a hash-bound span actually re-resolved."""
+    if not quotations:
+        return "unknown"
+    return "pass" if any(item.get("resolves") for item in quotations) else "fail"
+
+
+def _publisher_verdict(publisher: Mapping[str, Any], policy: ResearchPolicy | None) -> str:
+    """A declared registry authority must appear in the wiki's accepted list."""
+    if publisher["basis"] == "unresolved":
+        return "fail"
+    authorities = policy.accepted_authorities if policy is not None else ()
+    if (
+        authorities
+        and publisher["basis"] == "authority-registry"
+        and publisher["name"] not in authorities
+    ):
+        return "fail"
+    return "pass"
+
+
 def acceptance_gates(
-    record: Mapping[str, Any], policy: ResearchPolicy | None, claim_type: str = "fact"
+    record: Mapping[str, Any],
+    policy: ResearchPolicy | None,
+    claim_type: str = "fact",
+    quotations: Sequence[Mapping[str, Any]] = (),
 ) -> list[dict[str, str]]:
-    """Derive common and class gates from facts; never trust incoming verdicts."""
+    """Derive common and class gates from facts; never trust incoming verdicts.
+
+    ``quotations`` are the already-validated hash-bound spans recorded against
+    this evidence record.  They are the only thing that can turn G10 from
+    ``unknown`` into a verdict, so acceptance stays claim-bound.
+    """
     if claim_type not in CLAIM_TYPES:
         raise EvidenceError("claim_type is invalid")
     source_class = str(record["source_class"])
     snapshot = record["snapshot"]
     corrections = record["corrections"]
     publisher = record["publisher"]
+    tier = tier_for_facts(
+        policy,
+        {
+            "publisher": publisher["name"],
+            "jurisdiction": record["jurisdiction"],
+            "document_type": source_class,
+        },
+        claim_type,
+    )
     gates = [
         {"gate": "G1", "verdict": "pass", "detail": "frozen retrieval facts present"},
         {"gate": "G2", "verdict": "pass", "detail": "canonical identity present"},
@@ -395,7 +463,7 @@ def acceptance_gates(
         },
         {
             "gate": "G6",
-            "verdict": "pass" if publisher["basis"] != "unresolved" else "fail",
+            "verdict": _publisher_verdict(publisher, policy),
             "detail": "publisher identity",
         },
         {"gate": "G7", "verdict": "pass", "detail": "rights posture determined"},
@@ -409,19 +477,15 @@ def acceptance_gates(
             "verdict": "pass" if corrections["status"] == CLEAN_CORRECTION else "fail",
             "detail": "corrections status",
         },
-        {"gate": "G10", "verdict": "unknown", "detail": "quotation validation is claim-bound"},
+        {
+            "gate": "G10",
+            "verdict": _quotation_verdict(quotations),
+            "detail": "quotation validation is claim-bound",
+        },
         {
             "gate": "G11",
             "verdict": "pass"
-            if tier_for_facts(
-                policy,
-                {
-                    "publisher": publisher["name"],
-                    "jurisdiction": record["jurisdiction"],
-                    "document_type": source_class,
-                },
-                claim_type,
-            )
+            if tier is not None and admits_claim_type(policy, source_class, claim_type)
             else "unknown",
             "detail": "wiki research policy",
         },
@@ -475,16 +539,26 @@ def decide_acceptance(gates: Sequence[Mapping[str, str]]) -> tuple[str, str]:
     return "accepted", ""
 
 
-def _selector_quote(label: str, value: object, limit: int = 1000) -> dict[str, str]:
+def _selector_quote(label: str, value: object, limit: int = QUOTE_CEILING_CHARS) -> dict[str, str]:
     data = _map(label, value)
     _unknown(label, data, {"exact", "prefix", "suffix"})
-    return {
+    quote = {
         key: _str(f"{label}.{key}", data.get(key, ""), limit=limit)
         for key in ("exact", "prefix", "suffix")
     }
+    # An empty exact selector resolves against any frozen text and therefore
+    # proves nothing about the snapshot it claims to cite.
+    if not quote["exact"].strip():
+        raise EvidenceError(f"{label}.exact must be a non-empty string")
+    return quote
 
 
-def validate_quotation(raw: object, normalized_text: str | None = None) -> dict[str, Any]:
+def validate_quotation(
+    raw: object,
+    normalized_text: str | None = None,
+    *,
+    quote_ceiling_chars: int = QUOTE_CEILING_CHARS,
+) -> dict[str, Any]:
     data = _map("quotation", raw)
     _unknown(
         "quotation",
@@ -507,7 +581,9 @@ def validate_quotation(raw: object, normalized_text: str | None = None) -> dict[
     quotation_id = _str("quotation_id", data.get("quotation_id"), nonempty=True, limit=64)
     evidence_id = _str("quotation evidence_id", data.get("evidence_id"), nonempty=True, limit=64)
     against_hash = _hash("quotation against_hash", data.get("against_hash"))
-    quote = _selector_quote("quotation quote", data.get("quote"))
+    if quote_ceiling_chars <= 0:
+        raise EvidenceError("quotation ceiling must be positive")
+    quote = _selector_quote("quotation quote", data.get("quote"), quote_ceiling_chars)
     position = _map("quotation position", data.get("position", {}))
     _unknown("quotation position", position, {"start", "end"})
     start_value, end_value = position.get("start"), position.get("end")
@@ -517,9 +593,9 @@ def validate_quotation(raw: object, normalized_text: str | None = None) -> dict[
         or start_value < 0
         or isinstance(end_value, bool)
         or not isinstance(end_value, int)
-        or end_value < start_value
+        or end_value <= start_value
     ):
-        raise EvidenceError("quotation position must be a non-negative half-open range")
+        raise EvidenceError("quotation position must be a non-empty half-open range")
     start, end = start_value, end_value
     media = _map("quotation media", data.get("media", {}))
     _unknown("quotation media", media, {"t_start", "t_end", "segment_ids"})
@@ -546,6 +622,10 @@ def validate_quotation(raw: object, normalized_text: str | None = None) -> dict[
         actual_hash = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
         if actual_hash != against_hash:
             raise EvidenceError("quotation text does not match against_hash")
+        # Python slicing clamps silently, so an out-of-range span would other-
+        # wise read as an empty string that matches an empty selector.
+        if end > len(normalized_text):
+            raise EvidenceError("quotation position runs past the frozen normalized text")
         exact = normalized_text[start:end]
         actual = (
             exact == quote["exact"]
@@ -792,11 +872,12 @@ def score_claim(
         if record is None:
             continue
         acceptance = record["acceptance"]
+        quality = str(acceptance.get("quality", ""))
         sources.append(
             Source(
-                str(acceptance.get("quality", "")),
+                quality,
                 record["canonical_url"],
-                acceptance.get("decision") == "accepted",
+                acceptance.get("decision") == "accepted" and quality in QUALITY_BASE,
                 record["origin_id"],
                 record["corrections"]["status"],
             )
@@ -829,6 +910,8 @@ class EvidenceStore:
         kind: str,
         data: Mapping[str, Any],
         normalized_text: str | None = None,
+        *,
+        quote_ceiling_chars: int = QUOTE_CEILING_CHARS,
     ) -> Path:
         validators = {
             "evidence": validate_evidence_record,
@@ -837,7 +920,9 @@ class EvidenceStore:
             "contradictions": validate_contradiction,
         }
         if kind == "quotations":
-            canonical = validate_quotation(data, normalized_text)
+            canonical = validate_quotation(
+                data, normalized_text, quote_ceiling_chars=quote_ceiling_chars
+            )
         else:
             canonical = validators[kind](data)
         identifier = str(
@@ -852,10 +937,16 @@ class EvidenceStore:
         )
         path = resolve_contained(self.root, self._path(kind, identifier))
         text = json.dumps(canonical, sort_keys=True, indent=2) + "\n"
-        if path.is_file() and path.read_text(encoding="utf-8") != text:
-            raise EvidenceError(
-                "content-addressed evidence record already exists with different bytes"
-            )
+        if path.is_file():
+            mutable = MUTABLE_FIELDS[kind]
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as error:
+                raise EvidenceError("stored evidence record is not valid JSON") from error
+            if identity_bytes(existing, mutable) != identity_bytes(canonical, mutable):
+                raise EvidenceError(
+                    "content-addressed evidence record already exists with different bytes"
+                )
         atomic_write(self.root, self._path(kind, identifier), text)
         return path
 
@@ -880,3 +971,22 @@ class EvidenceStore:
         if not directory.is_dir():
             return []
         return [self.get(kind, path.stem) for path in sorted(directory.glob("*.json"))]
+
+    def scan(self, kind: str) -> ScanResult:
+        """List every record, reporting rather than raising on a bad one.
+
+        A projection over the store must stay usable when one file is corrupt:
+        an unreadable record is the exact thing the reader needs to be told
+        about, so it is returned as a typed problem instead of aborting the
+        whole read. ``list`` stays strict for callers that need all-or-nothing.
+        """
+        directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / kind)
+        if not directory.is_dir():
+            return []
+        results: ScanResult = []
+        for path in sorted(directory.glob("*.json")):
+            try:
+                results.append((path.stem, self.get(kind, path.stem), ""))
+            except (EvidenceError, OSError, UnicodeDecodeError) as error:
+                results.append((path.stem, None, str(error)))
+        return results

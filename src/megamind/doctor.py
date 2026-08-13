@@ -12,11 +12,12 @@ import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from .access import policy_findings
 from .capture import list_proposals
 from .card import CardError, load_wiki_card
-from .evidence import EvidenceError, EvidenceStore
+from .evidence import EvidenceStore
 from .fsops import MEGAMIND_DIR, PathEscapeError, resolve_contained
 from .gardening import validate_gap_journal
 from .links import extract_links, page_name_table, resolve_link
@@ -30,7 +31,7 @@ from .registry import (
     generate_router,
     load_registry,
 )
-from .research import ResearchError, ResearchStore
+from .research import ResearchStore
 
 PROPOSAL_STATUSES = ("proposed", "applied", "rejected")
 
@@ -343,32 +344,87 @@ def _check_gap_journal(root: Path, findings: list[Finding]) -> None:
         findings.append(_error("gaps", f"{MEGAMIND_DIR}/gaps.jsonl", message))
 
 
+def _evidence_rel(kind: str, identifier: str) -> str:
+    return f"{MEGAMIND_DIR}/evidence/{kind}/{identifier}.json"
+
+
+def _check_references(
+    records: dict[str, dict[str, dict[str, Any]]], findings: list[Finding]
+) -> None:
+    """Every cross-record reference must name a record this vault holds.
+
+    Each validator can only prove its own document, so the identities that
+    span documents (claim to quotation, claim to evidence, quotation to
+    evidence, packet to claim) have no owner until the whole set is readable.
+    Doctor is that owner.
+    """
+    for identifier, quotation in sorted(records["quotations"].items()):
+        if quotation["evidence_id"] not in records["evidence"]:
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("quotations", identifier),
+                    f"quotation cites unknown evidence record {quotation['evidence_id']}",
+                )
+            )
+    for identifier, claim in sorted(records["claims"].items()):
+        for support in claim["supported_by"]:
+            if support["quotation_id"] not in records["quotations"]:
+                findings.append(
+                    _error(
+                        "evidence",
+                        _evidence_rel("claims", identifier),
+                        f"claim cites unknown quotation {support['quotation_id']}",
+                    )
+                )
+            if support["evidence_id"] not in records["evidence"]:
+                findings.append(
+                    _error(
+                        "evidence",
+                        _evidence_rel("claims", identifier),
+                        f"claim cites unknown evidence record {support['evidence_id']}",
+                    )
+                )
+    for identifier, contradiction in sorted(records["contradictions"].items()):
+        for claim_id in contradiction["claim_ids"]:
+            if claim_id not in records["claims"]:
+                findings.append(
+                    _error(
+                        "evidence",
+                        _evidence_rel("contradictions", identifier),
+                        f"contradiction cites unknown claim {claim_id}",
+                    )
+                )
+
+
 def _check_research_records(root: Path, findings: list[Finding]) -> None:
     """Validate immutable evidence and research records without reading prose."""
     evidence_store = EvidenceStore(root)
+    records: dict[str, dict[str, dict[str, Any]]] = {}
     for kind in ("evidence", "quotations", "claims", "contradictions"):
-        directory = root / MEGAMIND_DIR / "evidence" / kind
-        if not directory.is_dir():
-            continue
-        for path in sorted(directory.glob("*.json")):
-            try:
-                evidence_store.get(kind, path.stem)
-            except (EvidenceError, OSError, UnicodeDecodeError) as error:
-                rel = path.relative_to(root.resolve()).as_posix()
-                findings.append(_error("evidence", rel, str(error)))
+        valid: dict[str, dict[str, Any]] = {}
+        for identifier, record, problem in evidence_store.scan(kind):
+            if record is None:
+                findings.append(_error("evidence", _evidence_rel(kind, identifier), problem))
+                continue
+            valid[identifier] = record
+        records[kind] = valid
+    _check_references(records, findings)
     research_store = ResearchStore(root)
     for kind in ("plans", "jobs", "packets", "outcomes", "candidates"):
-        directory = root / MEGAMIND_DIR / "research" / kind
-        if not directory.is_dir():
-            continue
-        pattern = "*.jsonl" if kind == "jobs" else "*.json"
-        for path in sorted(directory.glob(pattern)):
-            identifier = path.stem.removesuffix(".jsonl")
-            try:
-                research_store.get(kind, identifier)
-            except (ResearchError, OSError, UnicodeDecodeError) as error:
-                rel = path.relative_to(root.resolve()).as_posix()
-                findings.append(_error("research", rel, str(error)))
+        suffix = "jsonl" if kind == "jobs" else "json"
+        for identifier, record, problem in research_store.scan(kind):
+            rel = f"{MEGAMIND_DIR}/research/{kind}/{identifier}.{suffix}"
+            if record is None:
+                findings.append(_error("research", rel, problem))
+                continue
+            if kind != "packets":
+                continue
+            for claim_id in record["claim_ids"]:
+                if claim_id not in records["claims"]:
+                    findings.append(
+                        _error("research", rel, f"packet cites unknown claim {claim_id}")
+                    )
 
 
 def run_doctor(root: Path) -> list[Finding]:

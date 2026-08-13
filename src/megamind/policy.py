@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from .confidence import QUALITY_BASE, SOURCE_QUALITIES
@@ -302,7 +303,7 @@ def tier_for_facts(
     The matcher implementation is intentionally small and deterministic; a
     host may supply facts, but it cannot supply a tier or quality verdict.
     """
-    if policy is None or claim_type not in CLAIM_TYPES:
+    if policy is None or not policy.permitted or claim_type not in CLAIM_TYPES:
         return None
     for tier in policy.tiers:
         if claim_type not in tier.claim_types:
@@ -328,3 +329,70 @@ def tier_for_facts(
             if matched:
                 return tier
     return None
+
+
+WEAKEST_QUALITY = SOURCE_QUALITIES[-1]
+
+
+def clamp_quality(first: str, second: str) -> str:
+    """The weaker of two quality labels; an unknown label clamps to the weakest.
+
+    Quality ceilings compose in one direction only, so a per-class ceiling can
+    narrow a tier's quality but a tier can never widen a ceiling.
+    """
+    if first not in QUALITY_BASE or second not in QUALITY_BASE:
+        return WEAKEST_QUALITY
+    return first if QUALITY_BASE[first] <= QUALITY_BASE[second] else second
+
+
+def admitted_quality(
+    policy: ResearchPolicy | None, tier: ResearchTier | None, source_class: str
+) -> str:
+    """The quality a wiki policy admits for a matched tier and source class."""
+    if policy is None or tier is None:
+        return ""
+    if source_class == "video":
+        return clamp_quality(tier.quality, policy.video.max_quality)
+    return tier.quality
+
+
+def admits_claim_type(policy: ResearchPolicy | None, source_class: str, claim_type: str) -> bool:
+    """Whether a source class may carry a claim type at all under this policy."""
+    if policy is None:
+        return False
+    if source_class == "video":
+        return claim_type in policy.video.claim_types
+    return claim_type in CLAIM_TYPES
+
+
+def _iso(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def freshness_state(policy: ResearchPolicy | None, claim_type: str, as_of: str, today: str) -> str:
+    """Derive a typed freshness state from the wiki policy and frozen dates.
+
+    Freshness is a lookup over host-frozen dates, never a wall-clock read: an
+    absent policy entry, an absent date, or an unparseable one stays ``unknown``
+    so the confidence rubric keeps its restrictive cap instead of guessing.
+    """
+    entry = policy.freshness_policy.get(claim_type) if policy is not None else None
+    today_date = _iso(today) if today else None
+    if entry is None or today_date is None:
+        return "unknown"
+    expires_raw = entry.get("expires_at")
+    expires = _iso(expires_raw) if isinstance(expires_raw, str) and expires_raw else None
+    if isinstance(expires_raw, str) and expires_raw and expires is None:
+        return "unknown"
+    if expires is not None and today_date > expires:
+        return "stale"
+    half = entry.get("half_life_days")
+    if isinstance(half, int) and not isinstance(half, bool):
+        as_of_date = _iso(as_of) if as_of else None
+        if as_of_date is None:
+            return "unknown"
+        return "stale" if (today_date - as_of_date).days > half else "fresh"
+    return "fresh" if expires is not None else "unknown"
