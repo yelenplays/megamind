@@ -188,7 +188,7 @@ def test_v2_missing_acceptance_facts_are_typed_ineligible(tmp_path: Path, missin
         ),
         pytest.param(
             {"publication": {"date": "2026-08", "precision": "unknown"}},
-            "acceptance publication has unknown precision: unknown",
+            "acceptance publication precision must be one of exact, month, year",
             id="unknown-precision",
         ),
         pytest.param(
@@ -208,17 +208,17 @@ def test_v2_missing_acceptance_facts_are_typed_ineligible(tmp_path: Path, missin
         ),
         pytest.param(
             {"rights.quote_policy": "quote-freely"},
-            "acceptance rights quote_policy is unknown: quote-freely",
+            "acceptance rights quote_policy must be one of no-quote, quote-bounded, quote-free",
             id="unknown-quote-policy",
         ),
         pytest.param(
             {"rights.snapshot_policy": "store-anywhere"},
-            "acceptance rights snapshot_policy is unknown: store-anywhere",
+            "acceptance rights snapshot_policy must be one of local-snapshot-allowed, no-store",
             id="unknown-snapshot-policy",
         ),
         pytest.param(
             {"corrections.status": "probably-fine"},
-            "acceptance corrections status is unknown: probably-fine",
+            "acceptance corrections status must be one of clean, corrected",
             id="unknown-correction-status",
         ),
         pytest.param(
@@ -290,6 +290,42 @@ def test_v2_acceptance_strings_are_redacted_and_bounded_before_the_durable_write
         assert "/Users/synthetic" not in document
         assert "[redacted]" in document
         assert "[path]" in document
+
+
+@pytest.mark.parametrize(
+    "acceptance",
+    [
+        pytest.param(
+            patched_acceptance({"rights.quote_policy": "api_key=CANARY_TOKEN"}),
+            id="credential-shaped-value",
+        ),
+        pytest.param(
+            patched_acceptance({"corrections.status": "/Users/synthetic/notices.md"}),
+            id="local-path-value",
+        ),
+        pytest.param(
+            patched_acceptance({"publication": {"date": "2026-08", "precision": "CANARY_TOKEN"}}),
+            id="credential-shaped-precision",
+        ),
+        pytest.param(
+            {**acceptance_facts(), "api_key=CANARY_TOKEN": "x" * 5000},
+            id="unknown-acceptance-key",
+        ),
+        pytest.param(
+            patched_acceptance({"rights": {"CANARY_TOKEN": "x" * 5000}}),
+            id="unknown-nested-key",
+        ),
+    ],
+)
+def test_v2_refusal_reasons_are_bounded_and_never_echo_host_values(
+    tmp_path: Path, acceptance: dict[str, object]
+) -> None:
+    """A refusal names the field and its vocabulary, never the offending value."""
+    reason = refused_reason(tmp_path, acceptance)
+    assert reason.startswith("acceptance_invalid:")
+    assert "CANARY_TOKEN" not in reason
+    assert "/Users/synthetic" not in reason
+    assert len(reason) <= 300
 
 
 def test_v1_is_readable_but_caller_eligibility_and_injection_are_not_authority(

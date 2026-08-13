@@ -35,12 +35,14 @@ back to the lexical order whenever it is not `ok`.
 
 Route, claim, and answer confidence are separate, and 0.75 is the reliance
 floor for all three. Use `megamind-axi assess claim --source
-<quality>:<origin>[::<origin_id>[::<status>]] [--lifecycle active]
-[--freshness fresh] [--contradicted]` to score one claim from its evidence
-(only a declared `origin_id` corroborates and sources sharing one count once,
-an omitted identity is unknown independence and never corroborates, a
-correction status other than `clean` removes the source, and contradictions
-and stale or undated evidence stay below the floor), and
+<quality>:<origin> [--lifecycle active] [--freshness fresh] [--contradicted]`
+to score one claim from its evidence (contradictions and stale or undated
+evidence stay below the floor). The origin is display-only, so that shorthand
+states unknown independence and never corroborates; declare the derived facts
+with `--source-json '{"quality":"primary","origin":"...","origin_id":"...",
+"correction_status":"clean"}'` when you have them (sources sharing one
+`origin_id` count once, and a status other than `clean` removes the source),
+and
 `megamind-axi assess answer --claim <score|unknown> ...` to cap an answer at
 its weakest relied-upon claim. `unknown` is a definitive state, never a
 number to work around.

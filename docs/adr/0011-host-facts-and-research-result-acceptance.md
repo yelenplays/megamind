@@ -30,12 +30,22 @@ retrieval date is refused. A retracted source is removed from support rather
 than down-weighted. Unknown independence collapses to one corroboration origin.
 
 Both derived facts are stated at the executable boundary rather than inferred
-below it: `assess claim --source quality:origin[::origin_id[::status]]` is the
-only way a caller declares independence and correction posture, and the origin
-string never becomes either one. `megamind.confidence` owns that vocabulary and
-the corroboration bucket, so acceptance validation and scoring cannot drift.
+below it: `assess claim --source-json '{"quality":...,"origin":...,
+"origin_id":...,"correction_status":...}'` is the only way a caller declares
+independence and correction posture. They are named keys rather than an in-band
+separator because an origin is free text - an IPv6 literal, `std::vector`, or
+`Space::Page` all contain plausible separators - and a display string that can
+be read as a derived identity is exactly the failure this ADR exists to
+prevent. The plain `--source quality:origin` shorthand remains, restrictively:
+it states unknown independence and can never corroborate.
+`megamind.confidence` owns that vocabulary and the corroboration bucket, so
+acceptance validation and scoring cannot drift.
+
 Acceptance strings that reach the durable proposal are bounded and redacted at
-the same projection boundary as origins and summaries.
+the same projection boundary as origins and summaries. Refusal reasons cross
+that boundary too: they are built from this module's own constants, naming the
+field and the allowed vocabulary rather than the offending value, and are
+bounded before they reach the returned document.
 
 v1 remains readable as a restrictive legacy nomination. Its `eligible` field
 has no evidence, quality, rights, lifecycle, destination, or future

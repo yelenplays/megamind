@@ -153,6 +153,8 @@ ROUTE_FIELDS_ALL = [
 DIFF_LINE_LIMIT = 60
 SECTION_ITEM_LIMIT = 20
 FINDINGS_LIMIT = 50
+# The exact key set of one --source-json evidence object.
+_SOURCE_JSON_FIELDS = {"quality", "origin", "origin_id", "correction_status", "eligible"}
 
 # The key set of megamind/evolve-result/v1, in render order, with the empty
 # value each key carries in a state it does not describe. Tuples mark list
@@ -875,36 +877,63 @@ def _confidence_doc(kind: str, inputs: Doc, result: Confidence) -> tuple[Doc, in
 
 
 def _parse_source_spec(spec: str, eligible: bool) -> Source:
-    """Parse ``<quality>:<origin>[::<origin_id>[::<correction_status>]]``.
+    """Parse the shorthand ``<quality>:<origin>``.
 
-    The origin stays a display fact and may itself contain colons, so the two
-    typed evidence facts are named after an explicit ``::`` marker: neither
-    independence nor a clean correction posture is ever inferred from a URL.
+    Everything after the first colon is the origin, so a display string that
+    contains ``::`` (an IPv6 literal, ``std::vector``, ``Space::Page``) stays
+    one opaque origin. The shorthand is deliberately restrictive: it can state
+    no independence and no correction posture, so it can never corroborate.
+    Use ``--source-json`` to declare those derived facts explicitly.
     """
-    usage = f"source must be <quality>:<origin>[::<origin_id>[::<status>]], got: {spec!r}"
-    quality, separator, remainder = spec.partition(":")
-    fields = remainder.split("::")
+    quality, separator, origin = spec.partition(":")
+    if not separator or not origin.strip() or not quality.strip():
+        raise UsageError(f"source must be <quality>:<origin>, got: {spec!r}")
     quality = quality.strip()
-    if not separator or not quality or not fields[0].strip() or len(fields) > 3:
-        raise UsageError(usage)
     if quality not in SOURCE_QUALITIES:
         raise UsageError(
             f"unknown source quality: {quality} (expected one of {', '.join(SOURCE_QUALITIES)})"
         )
-    origin_id = fields[1].strip() if len(fields) > 1 else ""
-    if len(fields) > 1 and not origin_id:
-        raise UsageError(f"source origin_id must be non-empty when it is declared: {spec!r}")
-    status = fields[2].strip() if len(fields) > 2 else CLEAN_CORRECTION
-    if status not in CORRECTION_STATUSES:
+    return Source(quality=quality, origin=origin.strip(), eligible=eligible)
+
+
+def _parse_source_json(raw: str) -> Source:
+    """Decode one typed evidence source from an explicit JSON object.
+
+    Independence and correction posture are named fields here and nowhere
+    else: no separator inside the free-form origin can be mistaken for either,
+    so a display string can never be promoted into a derived fact.
+    """
+    data = _json_object(raw, "--source-json")
+    if not set(data) <= _SOURCE_JSON_FIELDS:
         raise UsageError(
-            f"unknown source correction status: {status} "
-            f"(expected one of {', '.join(CORRECTION_STATUSES)})"
+            "--source-json contains unknown field(s); allowed: "
+            f"{', '.join(sorted(_SOURCE_JSON_FIELDS))}"
         )
+    quality = data.get("quality")
+    if not isinstance(quality, str) or quality not in SOURCE_QUALITIES:
+        raise UsageError(f"--source-json quality must be one of {', '.join(SOURCE_QUALITIES)}")
+    origin = data.get("origin")
+    if not isinstance(origin, str) or not origin.strip():
+        raise UsageError("--source-json origin must be a non-empty string")
+    origin_id = data.get("origin_id", "")
+    if not isinstance(origin_id, str) or (origin_id and not origin_id.strip()):
+        raise UsageError(
+            "--source-json origin_id must be the derived origin identity; omit it "
+            "when independence is unknown"
+        )
+    status = data.get("correction_status", CLEAN_CORRECTION)
+    if not isinstance(status, str) or status not in CORRECTION_STATUSES:
+        raise UsageError(
+            f"--source-json correction_status must be one of {', '.join(CORRECTION_STATUSES)}"
+        )
+    eligible = data.get("eligible", True)
+    if not isinstance(eligible, bool):
+        raise UsageError("--source-json eligible must be true or false")
     return Source(
         quality=quality,
-        origin=fields[0].strip(),
+        origin=origin.strip(),
         eligible=eligible,
-        origin_id=origin_id,
+        origin_id=origin_id.strip(),
         correction_status=status,
     )
 
@@ -912,12 +941,14 @@ def _parse_source_spec(spec: str, eligible: bool) -> Source:
 def cmd_assess_claim(
     sources: list[str],
     ineligible_sources: list[str],
+    source_json: list[str],
     lifecycle: str,
     freshness: str,
     contradicted: bool,
 ) -> tuple[Doc, int]:
     parsed = [_parse_source_spec(spec, True) for spec in sources]
     parsed += [_parse_source_spec(spec, False) for spec in ineligible_sources]
+    parsed += [_parse_source_json(raw) for raw in source_json]
     result = claim_confidence(
         parsed,
         lifecycle="" if lifecycle == "unknown" else lifecycle,
@@ -927,6 +958,7 @@ def cmd_assess_claim(
     inputs: Doc = {
         "sources": sources,
         "ineligible_sources": ineligible_sources,
+        "source_json": source_json,
         "lifecycle": lifecycle,
         "freshness": freshness,
         "contradicted": contradicted,
@@ -1739,9 +1771,16 @@ def build_parser() -> AxiParser:
         help="deterministic claim/answer confidence against the 0.75 reliance floor",
         epilog=(
             f"examples:\n"
-            f"  {EXECUTABLE} assess claim --source primary:release-notes::vendor-a "
-            "--source primary:changelog::vendor-b --lifecycle active --freshness fresh\n"
-            f"  {EXECUTABLE} assess claim --source primary:study::doi-10-1000-xyz::retracted\n"
+            f"  {EXECUTABLE} assess claim --source primary:release-notes "
+            "--lifecycle active --freshness fresh\n"
+            f"  {EXECUTABLE} assess claim "
+            '--source-json \'{"quality":"primary","origin":"release notes",'
+            '"origin_id":"vendor-a"}\' '
+            '--source-json \'{"quality":"primary","origin":"changelog",'
+            '"origin_id":"vendor-b"}\' --lifecycle active --freshness fresh\n'
+            f"  {EXECUTABLE} assess claim "
+            '--source-json \'{"quality":"primary","origin":"study",'
+            '"origin_id":"doi:10.1000/xyz","correction_status":"retracted"}\'\n'
             f"  {EXECUTABLE} assess answer --claim 0.9 --claim 0.6\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1756,22 +1795,36 @@ def build_parser() -> AxiParser:
         "--source",
         action="append",
         default=[],
-        metavar="QUALITY:ORIGIN[::ORIGIN_ID[::STATUS]]",
+        metavar="QUALITY:ORIGIN",
         help=(
             f"eligible source ({'|'.join(SOURCE_QUALITIES)}); repeat per source. "
-            "ORIGIN_ID is the independently derived origin identity that alone "
-            "corroborates; omitting it means unknown independence, which never "
-            "corroborates. STATUS is the correction posture: "
-            f"{', '.join(CORRECTION_STATUSES)} (default {CLEAN_CORRECTION}); "
-            "anything but clean removes the source from support"
+            "The origin is display-only, so this shorthand states unknown "
+            "independence and never corroborates; use --source-json to declare "
+            "a derived origin_id or a correction status"
         ),
     )
     p_claim.add_argument(
         "--ineligible-source",
         action="append",
         default=[],
-        metavar="QUALITY:ORIGIN[::ORIGIN_ID[::STATUS]]",
+        metavar="QUALITY:ORIGIN",
         help="source the consuming context may not use; it counts for nothing",
+    )
+    p_claim.add_argument(
+        "--source-json",
+        action="append",
+        default=[],
+        metavar="JSON",
+        help=(
+            "one source as a JSON object with quality, origin, and the derived "
+            "facts: origin_id is the independently derived identity that alone "
+            "corroborates (sources sharing one count once; omit it and "
+            "independence is unknown, which never corroborates), "
+            f"correction_status is one of {', '.join(CORRECTION_STATUSES)} "
+            f"(default {CLEAN_CORRECTION}) and anything but clean removes the "
+            "source from support, and eligible false counts for nothing; "
+            "repeat per source"
+        ),
     )
     p_claim.add_argument(
         "--lifecycle",
@@ -2245,6 +2298,7 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             return cmd_assess_claim(
                 args.source,
                 args.ineligible_source,
+                args.source_json,
                 args.lifecycle,
                 args.freshness,
                 args.contradicted,

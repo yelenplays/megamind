@@ -303,7 +303,9 @@ source carries an `acceptance` block with required host-supplied typed facts:
 
 Megamind derives eligibility from these validated facts. Missing, unknown,
 malformed, contradictory, non-clean correction, or retracted facts produce a
-typed ineligible reason and never become support. Contradiction is checked
+typed ineligible reason and never become support. That reason names the field
+and the vocabulary it violated, never the offending value, and is bounded
+before it reaches the document. Contradiction is checked
 across facts, not only within one: a `clean` status carrying `notice_ids` is
 refused, and so is a publication whose earliest possible day falls after the
 exact retrieval date (a coarse `month` or `year` publication is an interval,

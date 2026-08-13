@@ -127,18 +127,29 @@ the surfaced candidates only.
 
 `megamind/confidence-report/v1`: deterministic confidence against the 0.75
 reliance floor, with the full `components[]` rationale. `assess claim` takes
-`--source <quality>:<origin>[::<origin_id>[::<status>]]`
-(`primary|synthesis|hypothesis|prior`, repeat per source),
-`--ineligible-source` in the same form (counts for nothing),
+`--source <quality>:<origin>` (`primary|synthesis|hypothesis|prior`, repeat
+per source), `--ineligible-source` in the same form (counts for nothing),
 `--lifecycle <state|unknown>`, `--freshness fresh|stale|unknown`, and
-`--contradicted`. The origin is display-only, so pass the independently
-derived `origin_id` whenever you have one: sources sharing one count once, and
-an omitted identity is unknown independence that never corroborates - two
-copies of the same page, or a repost, must never be given different ids.
-`<status>` is the correction posture
-(`clean|corrected|expression_of_concern|retracted|unknown`, default `clean`);
-anything but `clean` removes that source from support instead of lowering it,
-so a retracted-only claim is `unknown`. Unresolved
+`--contradicted`. Everything after the first colon is the origin, so an
+origin containing `::` (`http://[::1]/x`, `std::vector`, `Space::Page`) stays
+one opaque display string. That shorthand states unknown independence and
+never corroborates. Declare derived facts out of band instead, one JSON
+object per source:
+
+```
+--source-json '{"quality":"primary","origin":"release notes",
+                "origin_id":"vendor-a","correction_status":"clean",
+                "eligible":true}'
+```
+
+`quality` and `origin` are required, unknown keys are refused, and omitted
+keys take the restrictive default. Pass the independently derived `origin_id`
+whenever you have one: sources sharing one count once, and an omitted
+identity never corroborates - two copies of the same page, or a repost, must
+never be given different ids. `correction_status`
+(`clean|corrected|expression_of_concern|retracted|unknown`, default `clean`)
+removes that source from support when it is not `clean` instead of lowering
+it, so a retracted-only claim is `unknown`. Unresolved
 contradictions freeze the claim below the floor; stale or undated evidence
 can never reach it; no eligible evidence yields `score: unknown`, never a
 fabricated number. `assess answer` takes `--claim <score|unknown>` per
@@ -264,7 +275,9 @@ Every field is required. `retrieval` and `corrections.checked_at` must be
 after retrieval. `origin_id` is the independence identity you derived, never
 the URL and never `unknown`. A fact that is missing, unknown, malformed,
 contradictory, non-clean, or retracted is a typed ineligible source, not an
-error to work around: report it and correct the fact. A `v1` result stays
+error to work around: report it and correct the fact. Its `reason` names the
+field and the allowed vocabulary rather than echoing your value, so read it
+against the payload you sent. A `v1` result stays
 readable as a restrictive legacy nomination - its `eligible` flag is not
 evidence and mints no proposal, so a source rejected as
 `legacy_v1_requires_v2_acceptance` needs real v2 facts, not a retry.

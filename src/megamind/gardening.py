@@ -145,9 +145,16 @@ def _date(today: str | None) -> str:
 
 
 def _require_fields(value: Mapping[str, Any], allowed: set[str], label: str) -> None:
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        raise GardenError(f"{label} contains unknown field(s): {', '.join(unknown)}")
+    """Refuse unknown keys by naming the allowed set, never the offending key.
+
+    These refusals become a typed ``reason`` on the returned document, so they
+    are built from this module's own constants: a host-supplied key name is
+    data, and data never travels back out as message text.
+    """
+    if not set(value) <= allowed:
+        raise GardenError(
+            f"{label} contains unknown field(s); allowed: {', '.join(sorted(allowed))}"
+        )
 
 
 def _date_fact(value: object, label: str, *, exact_only: bool = False) -> dict[str, str]:
@@ -159,7 +166,7 @@ def _date_fact(value: object, label: str, *, exact_only: bool = False) -> dict[s
     if not isinstance(raw_date, str) or not isinstance(precision, str):
         raise GardenError(f"{label} date and precision must be strings")
     if not isinstance(precision, str) or precision not in _DATE_PRECISIONS:
-        raise GardenError(f"{label} has unknown precision: {precision}")
+        raise GardenError(f"{label} precision must be one of {', '.join(sorted(_DATE_PRECISIONS))}")
     if precision == "unknown" or (exact_only and precision != "exact"):
         raise GardenError(f"{label} precision is not sufficiently certain")
     formats = {"exact": r"^\d{4}-\d{2}-\d{2}$", "month": r"^\d{4}-\d{2}$", "year": r"^\d{4}$"}
@@ -240,9 +247,14 @@ def _validate_acceptance(source: Mapping[str, Any]) -> dict[str, Any]:
     quote_policy = rights.get("quote_policy")
     snapshot_policy = rights.get("snapshot_policy")
     if not isinstance(quote_policy, str) or quote_policy not in _QUOTE_POLICIES:
-        raise GardenError(f"acceptance rights quote_policy is unknown: {quote_policy}")
+        raise GardenError(
+            f"acceptance rights quote_policy must be one of {', '.join(sorted(_QUOTE_POLICIES))}"
+        )
     if not isinstance(snapshot_policy, str) or snapshot_policy not in _SNAPSHOT_POLICIES:
-        raise GardenError(f"acceptance rights snapshot_policy is unknown: {snapshot_policy}")
+        raise GardenError(
+            "acceptance rights snapshot_policy must be one of "
+            f"{', '.join(sorted(_SNAPSHOT_POLICIES))}"
+        )
 
     corrections = acceptance.get("corrections")
     if not isinstance(corrections, Mapping):
@@ -253,7 +265,9 @@ def _validate_acceptance(source: Mapping[str, Any]) -> dict[str, Any]:
     correction_status = corrections.get("status")
     notice_ids = corrections.get("notice_ids")
     if not isinstance(correction_status, str) or correction_status not in CORRECTION_STATUSES:
-        raise GardenError(f"acceptance corrections status is unknown: {correction_status}")
+        raise GardenError(
+            f"acceptance corrections status must be one of {', '.join(CORRECTION_STATUSES)}"
+        )
     method = _fact_text(corrections.get("method"), "acceptance corrections method", 300)
     if not isinstance(notice_ids, list) or any(not isinstance(item, str) for item in notice_ids):
         raise GardenError("acceptance corrections notice_ids must be a list of strings")
@@ -796,7 +810,9 @@ def ingest_research_result(
     _require_fields(result, _RESULT_FIELDS, "research result")
     schema = result.get("schema", RESULT_SCHEMA_V1)
     if not isinstance(schema, str) or schema not in {RESULT_SCHEMA_V1, RESULT_SCHEMA_V2}:
-        raise GardenError(f"unknown research result schema: {schema}")
+        raise GardenError(
+            f"research result schema must be {RESULT_SCHEMA_V1} or {RESULT_SCHEMA_V2}"
+        )
     if result.get("correlation_id") != nomination.correlation_id:
         raise GardenError("research result correlation_id does not match nomination")
     sources = result.get("sources", [])
@@ -831,7 +847,7 @@ def ingest_research_result(
         try:
             acceptance = _validate_acceptance(source)
         except GardenError as error:
-            ineligible.append({**base, "reason": f"acceptance_invalid: {error}"})
+            ineligible.append({**base, "reason": _short(f"acceptance_invalid: {error}", 300)})
             continue
         accepted = {**base, "origin_id": acceptance["origin_id"], "acceptance": acceptance}
         eligible.append(accepted)
