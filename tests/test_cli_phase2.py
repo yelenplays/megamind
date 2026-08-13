@@ -43,6 +43,80 @@ def test_assess_claim_above_the_floor(tmp_path: Path, capsys: pytest.CaptureFixt
     assert doc["components"]
 
 
+def test_assess_claim_corroborates_only_by_declared_origin_id(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Independence has to be declarable at the boundary, or it cannot exist."""
+    argv = (
+        "assess",
+        "claim",
+        "--source",
+        "primary:https://vendor.example/release-notes::vendor-notes",
+        "--source",
+        "primary:https://vendor.example/changelog::vendor-changelog",
+        "--lifecycle",
+        "active",
+        "--freshness",
+        "fresh",
+    )
+    code, doc, err = run_json(capsys, *argv)
+    assert code == 0
+    assert err == ""
+    assert doc["score"] == 0.95
+    assert doc["meets_floor"] is True
+    assert any(
+        component["factor"] == "corroboration" and component["effect"] == "+0.05"
+        for component in doc["components"]
+    )
+    code_toon, toon_out, _ = run_toon(capsys, *argv)
+    assert code_toon == 0
+    assert toon.encode(doc) == toon_out
+
+
+def test_assess_claim_reposted_urls_share_one_origin(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, doc, _ = run_json(
+        capsys,
+        "assess",
+        "claim",
+        "--source",
+        "primary:https://source.example/a::wire-report",
+        "--source",
+        "primary:https://blog.example/repost-of-a::wire-report",
+        "--lifecycle",
+        "active",
+        "--freshness",
+        "fresh",
+    )
+    assert code == 0
+    assert doc["score"] == 0.9
+    assert any(
+        component["factor"] == "corroboration" and component["effect"] == "+0.00"
+        for component in doc["components"]
+    )
+
+
+def test_assess_claim_retracted_source_is_removed_not_downweighted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, doc, _ = run_json(
+        capsys,
+        "assess",
+        "claim",
+        "--source",
+        "primary:study::doi-10-1000-xyz::retracted",
+        "--lifecycle",
+        "active",
+        "--freshness",
+        "fresh",
+    )
+    assert code == 0
+    assert doc["score"] == "unknown"
+    assert doc["meets_floor"] is False
+    assert any("retracted, removed" in component["detail"] for component in doc["components"])
+
+
 def test_assess_claim_unknown_stays_unknown(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -78,12 +152,16 @@ def test_assess_claim_contradiction_freezes_below_the_floor(
 def test_assess_claim_rejects_bad_source_spec(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code, doc, _ = run_json(capsys, "assess", "claim", "--source", "nonsense")
-    assert code == 2
-    assert doc["code"] == "usage_error"
-    code, doc, _ = run_json(capsys, "assess", "claim", "--source", "vibes:origin")
-    assert code == 2
-    assert doc["code"] == "usage_error"
+    for bad in (
+        "nonsense",
+        "vibes:origin",
+        "primary:origin::",
+        "primary:origin::derived::probably-fine",
+        "primary:origin::derived::clean::extra",
+    ):
+        code, doc, _ = run_json(capsys, "assess", "claim", "--source", bad)
+        assert code == 2, bad
+        assert doc["code"] == "usage_error"
 
 
 def test_assess_claim_toon_json_parity(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

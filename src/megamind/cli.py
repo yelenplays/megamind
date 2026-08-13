@@ -36,6 +36,8 @@ from .catalog import (
     visible_rows,
 )
 from .confidence import (
+    CLEAN_CORRECTION,
+    CORRECTION_STATUSES,
     LIFECYCLE_CAP,
     RELIANCE_FLOOR,
     SOURCE_QUALITIES,
@@ -873,15 +875,38 @@ def _confidence_doc(kind: str, inputs: Doc, result: Confidence) -> tuple[Doc, in
 
 
 def _parse_source_spec(spec: str, eligible: bool) -> Source:
-    quality, separator, origin = spec.partition(":")
-    if not separator or not origin.strip() or not quality.strip():
-        raise UsageError(f"source must be <quality>:<origin>, got: {spec!r}")
+    """Parse ``<quality>:<origin>[::<origin_id>[::<correction_status>]]``.
+
+    The origin stays a display fact and may itself contain colons, so the two
+    typed evidence facts are named after an explicit ``::`` marker: neither
+    independence nor a clean correction posture is ever inferred from a URL.
+    """
+    usage = f"source must be <quality>:<origin>[::<origin_id>[::<status>]], got: {spec!r}"
+    quality, separator, remainder = spec.partition(":")
+    fields = remainder.split("::")
     quality = quality.strip()
+    if not separator or not quality or not fields[0].strip() or len(fields) > 3:
+        raise UsageError(usage)
     if quality not in SOURCE_QUALITIES:
         raise UsageError(
             f"unknown source quality: {quality} (expected one of {', '.join(SOURCE_QUALITIES)})"
         )
-    return Source(quality=quality, origin=origin.strip(), eligible=eligible)
+    origin_id = fields[1].strip() if len(fields) > 1 else ""
+    if len(fields) > 1 and not origin_id:
+        raise UsageError(f"source origin_id must be non-empty when it is declared: {spec!r}")
+    status = fields[2].strip() if len(fields) > 2 else CLEAN_CORRECTION
+    if status not in CORRECTION_STATUSES:
+        raise UsageError(
+            f"unknown source correction status: {status} "
+            f"(expected one of {', '.join(CORRECTION_STATUSES)})"
+        )
+    return Source(
+        quality=quality,
+        origin=fields[0].strip(),
+        eligible=eligible,
+        origin_id=origin_id,
+        correction_status=status,
+    )
 
 
 def cmd_assess_claim(
@@ -1714,8 +1739,9 @@ def build_parser() -> AxiParser:
         help="deterministic claim/answer confidence against the 0.75 reliance floor",
         epilog=(
             f"examples:\n"
-            f"  {EXECUTABLE} assess claim --source primary:release-notes "
-            "--source primary:changelog --lifecycle active --freshness fresh\n"
+            f"  {EXECUTABLE} assess claim --source primary:release-notes::vendor-a "
+            "--source primary:changelog::vendor-b --lifecycle active --freshness fresh\n"
+            f"  {EXECUTABLE} assess claim --source primary:study::doi-10-1000-xyz::retracted\n"
             f"  {EXECUTABLE} assess answer --claim 0.9 --claim 0.6\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1730,14 +1756,21 @@ def build_parser() -> AxiParser:
         "--source",
         action="append",
         default=[],
-        metavar="QUALITY:ORIGIN",
-        help=f"eligible source ({'|'.join(SOURCE_QUALITIES)}); repeat per source",
+        metavar="QUALITY:ORIGIN[::ORIGIN_ID[::STATUS]]",
+        help=(
+            f"eligible source ({'|'.join(SOURCE_QUALITIES)}); repeat per source. "
+            "ORIGIN_ID is the independently derived origin identity that alone "
+            "corroborates; omitting it means unknown independence, which never "
+            "corroborates. STATUS is the correction posture: "
+            f"{', '.join(CORRECTION_STATUSES)} (default {CLEAN_CORRECTION}); "
+            "anything but clean removes the source from support"
+        ),
     )
     p_claim.add_argument(
         "--ineligible-source",
         action="append",
         default=[],
-        metavar="QUALITY:ORIGIN",
+        metavar="QUALITY:ORIGIN[::ORIGIN_ID[::STATUS]]",
         help="source the consuming context may not use; it counts for nothing",
     )
     p_claim.add_argument(

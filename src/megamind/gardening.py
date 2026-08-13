@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .card import card_file, serialize_wiki_card
+from .confidence import CLEAN_CORRECTION, CORRECTION_STATUSES, UNKNOWN_ORIGIN_IDS
 from .fsops import (
     MEGAMIND_DIR,
     PathEscapeError,
@@ -83,7 +84,6 @@ _SOURCE_V1_FIELDS = {"origin", "summary", "eligible"}
 _SOURCE_V2_FIELDS = {"origin", "summary", "acceptance"}
 _RESULT_FIELDS = {"schema", "correlation_id", "sources"}
 _DATE_PRECISIONS = {"exact", "month", "year"}
-_CORRECTION_STATUSES = {"clean", "corrected", "expression_of_concern", "retracted", "unknown"}
 _QUOTE_POLICIES = {"quote-free", "quote-bounded", "no-quote"}
 _SNAPSHOT_POLICIES = {"local-snapshot-allowed", "no-store"}
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -177,19 +177,49 @@ def _date_fact(value: object, label: str, *, exact_only: bool = False) -> dict[s
     return {"date": raw_date, "precision": precision}
 
 
+def _earliest_day(fact: Mapping[str, str]) -> date:
+    """The first instant a validated date fact can denote.
+
+    A coarse precision is an interval, not a point, so ordering two facts is
+    only honest against the earliest day each interval can start on.
+    """
+    raw_date = fact["date"]
+    suffix = {"exact": "", "month": "-01", "year": "-01-01"}[fact["precision"]]
+    return date.fromisoformat(raw_date + suffix)
+
+
+def _fact_text(value: object, label: str, limit: int) -> str:
+    """Bound and redact a host string before it can reach a durable record.
+
+    Acceptance facts are written into the proposal file and the returned
+    document, so they cross the same projection boundary as origins and
+    summaries: over-long input fails typed rather than being silently cut, and
+    a credential assignment or local path never survives into the vault.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise GardenError(f"{label} must be a non-empty string")
+    if len(value) > limit:
+        raise GardenError(f"{label} must be at most {limit} characters")
+    safe = _short(value, limit)
+    if not safe:
+        raise GardenError(f"{label} must be a non-empty string")
+    return safe
+
+
 def _validate_acceptance(source: Mapping[str, Any]) -> dict[str, Any]:
     """Validate host facts; source prose never participates in these gates."""
     acceptance = source.get("acceptance")
     if not isinstance(acceptance, Mapping):
         raise GardenError("research-result/v2 source acceptance must be an object")
     _require_fields(acceptance, _ACCEPTANCE_FIELDS, "acceptance")
-    origin_id = acceptance.get("origin_id")
-    if not isinstance(origin_id, str) or not origin_id.strip() or len(origin_id) > 300:
-        raise GardenError("acceptance origin_id must be a non-empty derived string")
-    if origin_id.casefold() in {"unknown", "unresolved", "undetermined"}:
+    origin_id = _fact_text(acceptance.get("origin_id"), "acceptance origin_id", 300)
+    if origin_id.casefold() in UNKNOWN_ORIGIN_IDS:
         raise GardenError("acceptance origin_id independence is unknown")
     retrieval = _date_fact(acceptance.get("retrieval"), "acceptance retrieval", exact_only=True)
     publication = _date_fact(acceptance.get("publication"), "acceptance publication")
+    # Evidence cannot be retrieved before the earliest day it could exist.
+    if _earliest_day(publication) > _earliest_day(retrieval):
+        raise GardenError("acceptance dates are contradictory: publication is after retrieval")
 
     snapshot = acceptance.get("snapshot")
     if not isinstance(snapshot, Mapping):
@@ -206,11 +236,9 @@ def _validate_acceptance(source: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(rights, Mapping):
         raise GardenError("acceptance rights must be an object")
     _require_fields(rights, {"license", "quote_policy", "snapshot_policy"}, "acceptance rights")
-    license_name = rights.get("license")
+    license_name = _fact_text(rights.get("license"), "acceptance rights license", 300)
     quote_policy = rights.get("quote_policy")
     snapshot_policy = rights.get("snapshot_policy")
-    if not isinstance(license_name, str) or not license_name.strip():
-        raise GardenError("acceptance rights license is required")
     if not isinstance(quote_policy, str) or quote_policy not in _QUOTE_POLICIES:
         raise GardenError(f"acceptance rights quote_policy is unknown: {quote_policy}")
     if not isinstance(snapshot_policy, str) or snapshot_policy not in _SNAPSHOT_POLICIES:
@@ -223,37 +251,35 @@ def _validate_acceptance(source: Mapping[str, Any]) -> dict[str, Any]:
         corrections, {"status", "checked_at", "method", "notice_ids"}, "acceptance corrections"
     )
     correction_status = corrections.get("status")
-    method = corrections.get("method")
     notice_ids = corrections.get("notice_ids")
-    if not isinstance(correction_status, str) or correction_status not in _CORRECTION_STATUSES:
+    if not isinstance(correction_status, str) or correction_status not in CORRECTION_STATUSES:
         raise GardenError(f"acceptance corrections status is unknown: {correction_status}")
-    if not isinstance(method, str) or not method.strip():
-        raise GardenError("acceptance corrections method is required")
+    method = _fact_text(corrections.get("method"), "acceptance corrections method", 300)
     if not isinstance(notice_ids, list) or any(not isinstance(item, str) for item in notice_ids):
         raise GardenError("acceptance corrections notice_ids must be a list of strings")
     checked_at = _date_fact(
         corrections.get("checked_at"), "acceptance corrections checked_at", exact_only=True
     )
-    if correction_status == "clean" and notice_ids:
+    if correction_status == CLEAN_CORRECTION and notice_ids:
         raise GardenError("acceptance corrections are contradictory: clean has notice_ids")
-    if correction_status != "clean":
+    if correction_status != CLEAN_CORRECTION:
         raise GardenError(f"source correction status is not clean: {correction_status}")
 
     return {
-        "origin_id": origin_id.strip(),
+        "origin_id": origin_id,
         "retrieval": retrieval,
         "publication": publication,
         "snapshot": hashes,
         "rights": {
-            "license": license_name.strip(),
+            "license": license_name,
             "quote_policy": quote_policy,
             "snapshot_policy": snapshot_policy,
         },
         "corrections": {
             "status": correction_status,
             "checked_at": checked_at,
-            "method": method.strip(),
-            "notice_ids": sorted(notice_ids),
+            "method": method,
+            "notice_ids": sorted(_short(item, 200) for item in notice_ids),
         },
     }
 

@@ -157,12 +157,17 @@ returns the untouched lexical order. Candidates additionally carry
 `freshness` (`updated`, `age_days`, `stale`), computed only when `--today` is
 passed and otherwise explicitly unknown.
 
-`assess claim` scores one claim from `--source quality:origin` evidence
+`assess claim` scores one claim from
+`--source quality:origin[::origin_id[::correction_status]]` evidence
 (`primary`, `synthesis`, `hypothesis`, `prior`; `--ineligible-source` counts
-for nothing), `--lifecycle`, `--freshness`, and `--contradicted`; sources
-derived from one `origin_id` count once; unknown independence collapses to
-one origin, unresolved contradictions freeze the claim below the floor, and
-stale or undated evidence can never reach it.
+for nothing), `--lifecycle`, `--freshness`, and `--contradicted`. The origin
+is display-only: only the explicitly declared `origin_id` corroborates, so
+sources derived from one `origin_id` count once and an omitted or unknown
+identity collapses to one origin. A `correction_status` other than `clean`
+(`corrected`, `expression_of_concern`, `retracted`, `unknown`) removes that
+source from support rather than lowering its weight. Unresolved
+contradictions freeze the claim below the floor, and stale or undated
+evidence can never reach it.
 `assess answer --claim SCORE|unknown ...` caps an answer at its weakest
 materially relied-upon claim. Both emit `megamind/confidence-report/v1` with
 the full component rationale.

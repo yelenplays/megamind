@@ -67,6 +67,24 @@ CORROBORATING_QUALITIES = ("primary", "synthesis")
 CORROBORATION_STEP = 0.05
 CORROBORATION_CAP = 0.10
 
+# Independence is a derived host fact, never a display string. An absent or
+# sentinel origin identity means the host could not derive one, so every such
+# source shares a single restrictive bucket instead of buying corroboration.
+UNKNOWN_ORIGIN = "__unknown_origin__"
+UNKNOWN_ORIGIN_IDS: frozenset[str] = frozenset({"unknown", "unresolved", "undetermined"})
+
+# Correction posture is a host fact too, and this tuple is its single
+# vocabulary: only clean support is scored, and every other status removes the
+# source from the evidence set instead of lowering its weight.
+CLEAN_CORRECTION = "clean"
+CORRECTION_STATUSES: tuple[str, ...] = (
+    CLEAN_CORRECTION,
+    "corrected",
+    "expression_of_concern",
+    "retracted",
+    "unknown",
+)
+
 # Deterministic caps. An unresolved contradiction freezes a claim below the
 # reliance floor; stale or undated evidence can never be relied upon either.
 CAP_CONTRADICTION = 0.5
@@ -183,7 +201,9 @@ class Source:
     ``quality`` is a key of ``QUALITY_BASE``; ``origin`` is display-only;
     ``origin_id`` is the independently derived identity used for
     corroboration.  A missing ``origin_id`` means independence is unknown and
-    all such sources share one restrictive bucket. ``eligible`` is False when
+    all such sources share one restrictive bucket. ``correction_status`` is the
+    host correction posture: anything other than ``clean`` removes the source
+    from support instead of down-weighting it. ``eligible`` is False when
     the source is not eligible for the consuming model context, in which case
     it contributes nothing at all.
     """
@@ -192,7 +212,19 @@ class Source:
     origin: str
     eligible: bool = True
     origin_id: str = ""
-    correction_status: str = "clean"
+    correction_status: str = CLEAN_CORRECTION
+
+
+def _origin_bucket(source: Source) -> str:
+    """The corroboration identity of a source, restrictive whenever unknown.
+
+    Every caller reaches corroboration through this one owner, so a missing or
+    sentinel identity can never be widened into independence by a layer above.
+    """
+    identity = source.origin_id.strip().casefold()
+    if not identity or identity in UNKNOWN_ORIGIN_IDS:
+        return UNKNOWN_ORIGIN
+    return identity
 
 
 def claim_confidence(
@@ -204,13 +236,15 @@ def claim_confidence(
     """Score one claim from its evidence, lifecycle, freshness, and conflicts."""
     components: list[Component] = []
     eligible = [
-        source for source in sources if source.eligible and source.correction_status == "clean"
+        source
+        for source in sources
+        if source.eligible and source.correction_status == CLEAN_CORRECTION
     ]
     for source in sources:
-        if not source.eligible or source.correction_status != "clean":
+        if not source.eligible or source.correction_status != CLEAN_CORRECTION:
             detail = (
                 f"{source.quality} from {source.origin}: {source.correction_status}, removed"
-                if source.correction_status != "clean"
+                if source.correction_status != CLEAN_CORRECTION
                 else f"{source.quality} from {source.origin}: ineligible, ignored"
             )
             components.append(
@@ -244,9 +278,7 @@ def claim_confidence(
     # provide a derived origin_id; unknown independence deliberately
     # collapses into one bucket instead of buying corroboration with strings.
     origins = {
-        source.origin_id or "__unknown_origin__"
-        for source in eligible
-        if source.quality in CORROBORATING_QUALITIES
+        _origin_bucket(source) for source in eligible if source.quality in CORROBORATING_QUALITIES
     }
     bonus = min(CORROBORATION_STEP * (len(origins) - 1), CORROBORATION_CAP)
     if bonus > 0:
@@ -257,7 +289,7 @@ def claim_confidence(
                 "effect": f"+{bonus:.2f}",
                 "detail": (
                     f"{len(origins)} independent origins; sources derived from one "
-                    "origin count once"
+                    "origin_id count once"
                 ),
             }
         )

@@ -303,7 +303,11 @@ source carries an `acceptance` block with required host-supplied typed facts:
 
 Megamind derives eligibility from these validated facts. Missing, unknown,
 malformed, contradictory, non-clean correction, or retracted facts produce a
-typed ineligible reason and never become support. The `origin` display string
+typed ineligible reason and never become support. Contradiction is checked
+across facts, not only within one: a `clean` status carrying `notice_ids` is
+refused, and so is a publication whose earliest possible day falls after the
+exact retrieval date (a coarse `month` or `year` publication is an interval,
+so it is ordered by the first day it can denote). The `origin` display string
 is separate from `origin_id`; only the latter may corroborate a claim, and
 unknown independence collapses to one origin. Rights and correction facts are
 owned by the host and are never fetched by Megamind. Instruction-shaped source
@@ -312,9 +316,13 @@ lifecycle fields. Accepted v2 results create a replay-safe proposal with
 schema `megamind/ingest-proposal/v2` and `immutable_raw_required: true`; no
 command fetches a URL or writes `raw/`. Correlation remains the idempotency
 key: exact replays are no-ops and divergent nomination or evidence facts
-refuse. Origins and summaries are redacted only where a credential assignment
-or a local filesystem path is structurally identified, so a cited origin such
-as `https://docs.example.com/home/getting-started` survives intact.
+refuse. Every host string that reaches the durable proposal - origins,
+summaries, and the `origin_id`, `license`, `method`, and `notice_ids`
+acceptance strings - crosses one projection boundary: it is bounded (an
+over-long acceptance string is a typed refusal, never a silent truncation) and
+redacted only where a credential assignment or a local filesystem path is
+structurally identified, so a cited origin such as
+`https://docs.example.com/home/getting-started` survives intact.
 
 A provisional registry entry carries `provisional: true`. It is created only
 when all local qualification inputs pass: accepted domain, repeat demand,

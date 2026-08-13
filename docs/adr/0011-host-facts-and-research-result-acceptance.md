@@ -24,8 +24,18 @@ proposal. Each accepted source must carry a validated acceptance block binding:
 
 Megamind derives eligibility from those facts. Missing, unknown where a gate
 needs certainty, malformed, contradictory, non-clean, or retracted facts are
-typed ineligible outcomes. A retracted source is removed from support rather
+typed ineligible outcomes. Contradiction is checked across facts as well as
+within one, so a publication whose earliest possible day falls after the exact
+retrieval date is refused. A retracted source is removed from support rather
 than down-weighted. Unknown independence collapses to one corroboration origin.
+
+Both derived facts are stated at the executable boundary rather than inferred
+below it: `assess claim --source quality:origin[::origin_id[::status]]` is the
+only way a caller declares independence and correction posture, and the origin
+string never becomes either one. `megamind.confidence` owns that vocabulary and
+the corroboration bucket, so acceptance validation and scoring cannot drift.
+Acceptance strings that reach the durable proposal are bounded and redacted at
+the same projection boundary as origins and summaries.
 
 v1 remains readable as a restrictive legacy nomination. Its `eligible` field
 has no evidence, quality, rights, lifecycle, destination, or future
