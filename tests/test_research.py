@@ -1023,3 +1023,12 @@ def test_retracted_evidence_is_rejected() -> None:
         }
     )
     assert record.decision == "rejected"
+    with pytest.raises(EvidenceAcceptanceError, match="unresolved evidence reference"):
+        make_resolved_claim(
+            {
+                "claim_key": "release-cadence",
+                "statement": "A claim resting on a retracted source.",
+                "supported_by": [record.evidence_id],
+            },
+            {record.evidence_id: record},
+        )

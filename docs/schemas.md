@@ -695,11 +695,21 @@ replan. `policy_authorized` in a receipt is an observation that can withhold a
 cycle the card allows and can never authorize one the card denies.
 
 A claim's lifecycle, freshness, and confidence are derived from the frozen
-records, never read from the receipt. Slice 1 has no promotion step, so an
-extracted claim is `proposed` at best, a retracted support makes it `rejected`
-and an observed contradiction makes it `shaky`; a receipt may state a
-lifecycle, but it is an observation that can only narrow the derived one, and
-an unknown status is refused rather than scored above an honest `proposed`.
+records, never read from the receipt. Slice 1 has no promotion step, so a claim
+extracted from accepted evidence stays `proposed`. A receipt may state a
+lifecycle, but it is an observation that can only narrow: a status whose cap
+sits above the derived `proposed` (`shaky`, `confirmed`, `active`) is
+discarded, only a strictly narrower one (`rejected`, `superseded`) is honored,
+and an unknown status is refused rather than scored above an honest `proposed`.
+
+Retraction and contradiction are handled outside the lifecycle. A retracted
+source is a `rejected` evidence record, and only `accepted` records can carry a
+claim, so a claim citing one is refused at acceptance rather than frozen with a
+weaker lifecycle. A contradiction is the frozen `megamind/contradiction/v1`
+record plus the confidence cap it imposes on the claims it names, and an
+unresolved one drives the job to the terminal `unresolved-contradiction` state;
+none of that promotes a claim to `shaky`.
+
 Freshness stays `unknown` because a passing `dated` gate says a record carries
 a date, not that the date is recent, and this lane freezes no timestamp to
 compare against a freshness policy. Since the derived lifecycle is what the
