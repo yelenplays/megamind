@@ -306,6 +306,40 @@ def test_review_lists_proposals_at_a_canonical_wiki_root(
     assert any(proposal_id in item for item in doc["open_proposals"])
 
 
+def test_review_renders_and_caps_research_diagnostics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    research_root = vault / ".megamind" / "research"
+    packets = research_root / "packets"
+    evidence = research_root / "evidence"
+    packets.mkdir(parents=True)
+    evidence.mkdir()
+    for index in range(21):
+        (packets / f"packet-{index:02}.json").write_text("{}\n", encoding="utf-8")
+        (evidence / f"evidence-{index:02}.json").write_text(
+            '{"decision":"deferred","correction_status":"expression_of_concern"}\n',
+            encoding="utf-8",
+        )
+
+    code, doc, err = run_json(capsys, "--root", str(vault), "review")
+
+    assert code == 0
+    assert err == ""
+    assert doc["status"] == "attention"
+    assert doc["aggregates"]["research_packets"] == 21
+    assert doc["aggregates"]["pending_source_rights"] == 21
+    assert doc["aggregates"]["contradictions"] == 21
+    assert len(doc["research_packets"]) == 20
+    assert len(doc["pending_source_rights"]) == 20
+    assert len(doc["contradictions"]) == 20
+    assert set(doc["notes"]) == {
+        "research_packets truncated to 20 of 21; re-run with --full",
+        "pending_source_rights truncated to 20 of 21; re-run with --full",
+        "contradictions truncated to 20 of 21; re-run with --full",
+    }
+
+
 def test_review_at_a_canonical_wiki_root_reports_only_compiled_pages(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

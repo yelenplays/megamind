@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from megamind.evolve import EvolveError, apply_plan, plan
 from megamind.links import extract_links, link_target_path
 from megamind.models import parse_document
 from megamind.registry import load_registry
+from megamind.research import ResearchStore, make_packet
 from megamind.review import review
 from megamind.routing import route
 
@@ -33,6 +35,26 @@ def test_plan_merge_into_existing_page_is_dry_run(vault: Path) -> None:
     assert computed.destination == "ProductWiki/topics/pricing-model.md"
     assert "annual discount" in computed.render_diff()
     assert page.read_text(encoding="utf-8") == before  # dry run changed nothing
+
+
+def test_plan_refuses_a_tampered_research_packet(vault: Path) -> None:
+    store = ResearchStore(vault)
+    packet = make_packet(
+        {"job_id": "job", "attempt_id": "attempt", "interpretation": "Synthetic synthesis."}
+    )
+    store.save_packet(packet)
+    proposal_id = _capture(vault, "Synthetic research-backed change.")
+    proposal_path = vault / ".megamind" / "proposals" / f"{proposal_id}.md"
+    proposal = parse_document(proposal_path.read_text(encoding="utf-8"))
+    proposal.frontmatter["provenance"] = [f"research-packet {packet['packet_id']}"]
+    proposal_path.write_text(proposal.render(), encoding="utf-8")
+    packet_path = vault / ".megamind" / "research" / "packets" / f"{packet['packet_id']}.json"
+    tampered = json.loads(packet_path.read_text(encoding="utf-8"))
+    tampered["interpretation"] = "Tampered synthesis."
+    packet_path.write_text(json.dumps(tampered) + "\n", encoding="utf-8")
+
+    with pytest.raises(EvolveError, match="research packet reference is invalid"):
+        plan(vault, load_registry(vault), proposal_id)
 
 
 def test_apply_requires_matching_plan_id(vault: Path) -> None:
