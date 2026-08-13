@@ -18,6 +18,7 @@ from megamind.registry import ResearchPolicy, load_registry, save_registry
 from megamind.research import (
     ReplayConflict,
     ResearchDrift,
+    ResearchError,
     ResearchStore,
     make_packet,
     make_plan,
@@ -81,6 +82,27 @@ def test_research_drift_requires_replan(tmp_path: Path) -> None:
         store.assert_no_drift(
             job, policy_digest="changed", card_digest="card", access_digest="access"
         )
+
+
+def test_research_journal_refuses_malformed_events(tmp_path: Path) -> None:
+    store = ResearchStore(tmp_path)
+    journal = tmp_path / ".megamind" / "research" / "jobs.jsonl"
+    journal.parent.mkdir(parents=True)
+    journal.write_text('{"schema":"megamind/research-job/v1"}\n', encoding="utf-8")
+
+    with pytest.raises(ResearchError, match="invalid research job journal entry"):
+        store.jobs()
+
+    plan = _plan()
+    store = ResearchStore(tmp_path / "tampered")
+    store.start(plan, today="2026-01-01")
+    journal = tmp_path / "tampered" / ".megamind" / "research" / "jobs.jsonl"
+    event = json.loads(journal.read_text(encoding="utf-8"))
+    event["event_id"] = "0" * 64
+    journal.write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    with pytest.raises(ResearchError, match="invalid research job journal entry"):
+        store.jobs()
 
 
 def test_research_plan_requires_a_wiki_binding() -> None:

@@ -31,6 +31,7 @@ from .fsops import (
 )
 from .links import encode_link_target, extract_links, link_target_path
 from .models import Document, parse_document
+from .research import ResearchError, packet_content_id
 from .registry import (
     REGISTRY_PATH,
     ROUTER_FILENAME,
@@ -159,12 +160,13 @@ def _validate_research_provenance(root: Path, document: Document) -> None:
             packet = json.loads(packet_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise EvolveError("research packet reference is unreadable") from error
-        if (
-            not isinstance(packet, dict)
-            or packet.get("schema") != "megamind/research-packet/v1"
-            or packet.get("packet_id") != packet_id
-        ):
+        if not isinstance(packet, dict) or packet.get("packet_id") != packet_id:
             raise EvolveError("research packet reference is invalid")
+        try:
+            if packet_content_id(packet) != packet_id:
+                raise EvolveError("research packet reference is invalid")
+        except ResearchError as error:
+            raise EvolveError("research packet reference is invalid") from error
 
 
 def _first_heading(body: str) -> str:

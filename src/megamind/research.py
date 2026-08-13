@@ -553,9 +553,9 @@ class ResearchStore:
                 value = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise ResearchError("invalid research job journal entry") from exc
-            if not isinstance(value, dict) or value.get("schema") != JOB_SCHEMA:
+            if not isinstance(value, dict):
                 raise ResearchError("invalid research job journal entry")
-            events.append(value)
+            events.append(_validated_event(value))
         return events
 
     def jobs(self) -> list[JobView]:
@@ -820,6 +820,58 @@ def _event_payload(
     }
 
 
+def _validated_event(value: Mapping[str, Any]) -> dict[str, Any]:
+    fields = {
+        "schema",
+        "job_id",
+        "attempt_id",
+        "state",
+        "plan_id",
+        "gap_id",
+        "policy_digest",
+        "card_digest",
+        "access_digest",
+        "event_id",
+        "reason",
+        "artifact_ids",
+        "updated",
+    }
+    if set(value) != fields or value.get("schema") != JOB_SCHEMA:
+        raise ResearchError("invalid research job journal entry")
+    names = ("job_id", "attempt_id", "state", "plan_id", "gap_id")
+    if any(not isinstance(value.get(name), str) or not value[name] for name in names):
+        raise ResearchError("invalid research job journal entry")
+    for name in ("policy_digest", "card_digest", "access_digest", "reason", "event_id", "updated"):
+        if not isinstance(value.get(name), str):
+            raise ResearchError("invalid research job journal entry")
+    if value["state"] not in TERMINAL or not value["event_id"]:
+        raise ResearchError("invalid research job journal entry")
+    if not isinstance(value.get("artifact_ids"), list) or not all(
+        isinstance(identifier, str) for identifier in value["artifact_ids"]
+    ):
+        raise ResearchError("invalid research job journal entry")
+    try:
+        if _iso(value["updated"]) != value["updated"]:
+            raise ResearchError("invalid research job journal entry")
+    except ResearchError as error:
+        raise ResearchError("invalid research job journal entry") from error
+    payload = _event_payload(
+        value["job_id"],
+        value["state"],
+        value["plan_id"],
+        value["gap_id"],
+        value["attempt_id"],
+        value["reason"],
+        value["artifact_ids"],
+        value["policy_digest"],
+        value["card_digest"],
+        value["access_digest"],
+    )
+    if value["artifact_ids"] != payload["artifact_ids"] or value["event_id"] != _hash_body(payload):
+        raise ResearchError("invalid research job journal entry")
+    return dict(value)
+
+
 def _job_from_data(value: Mapping[str, Any]) -> JobView:
     return JobView(
         str(value["job_id"]),
@@ -945,6 +997,45 @@ def derive_packet_facts(
     }
 
 
+def packet_content_id(packet: Mapping[str, Any]) -> str:
+    if packet.get("schema") != PACKET_SCHEMA:
+        raise ResearchError("packet schema is invalid")
+    _packet_body(packet)
+    confidence = packet.get("confidence")
+    if confidence != "unknown" and (
+        isinstance(confidence, bool) or not isinstance(confidence, (int, float))
+    ):
+        raise ResearchError("packet confidence is invalid")
+    answerability = packet.get("answerability")
+    expected_answerability = {
+        "verdict",
+        "claims",
+        "unknown_claims",
+        "below_floor_claims",
+        "unresolved_contradictions",
+        "reliance_floor",
+    }
+    if not isinstance(answerability, dict) or set(answerability) != expected_answerability:
+        raise ResearchError("packet answerability is invalid")
+    if answerability.get("verdict") not in {"supported", "insufficient", "contradicted"}:
+        raise ResearchError("packet answerability is invalid")
+    if any(
+        isinstance(answerability.get(name), bool)
+        or not isinstance(answerability.get(name), int)
+        or answerability[name] < 0
+        for name in (
+            "claims",
+            "unknown_claims",
+            "below_floor_claims",
+            "unresolved_contradictions",
+        )
+    ) or isinstance(answerability.get("reliance_floor"), bool) or not isinstance(
+        answerability.get("reliance_floor"), (int, float)
+    ):
+        raise ResearchError("packet answerability is invalid")
+    return _hash_body({key: value for key, value in packet.items() if key not in {"schema", "packet_id"}})
+
+
 def make_packet(
     packet: Mapping[str, Any], resolver: PacketFactResolver | None = None
 ) -> dict[str, Any]:
@@ -969,7 +1060,7 @@ def make_packet(
             )
     body["confidence"] = confidence
     body["answerability"] = answerability
-    packet_id = _hash_body(body)
+    packet_id = packet_content_id({"schema": PACKET_SCHEMA, **body})
     if packet.get("packet_id") not in (None, packet_id):
         raise ReplayConflict("packet_id does not match content")
     return {"schema": PACKET_SCHEMA, "packet_id": packet_id, **body}
