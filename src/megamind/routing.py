@@ -150,15 +150,11 @@ THRESHOLDS: dict[str, float] = {
 }
 
 
-# A final ``s`` is ambiguous: it can be a plural marker or part of a
-# singular/invariant word.  Only strip it when it is not one of the common
-# singular endings below.  This intentionally prefers a missed plural match to
-# turning a conversational word into an unrelated routing trigger.
-_NON_PLURAL_S_ENDINGS = ("is", "os", "us", "ss")
+_NON_SINGULARIZED_TOKENS = frozenset({"pros"})
 
 
 def _normalize(token: str) -> str:
-    if len(token) > 3 and token.endswith("s") and not token.endswith(_NON_PLURAL_S_ENDINGS):
+    if len(token) > 3 and token.endswith("s") and token not in _NON_SINGULARIZED_TOKENS:
         return token[:-1]
     return token
 

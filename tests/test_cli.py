@@ -220,6 +220,22 @@ def test_route_plural_trigger_regression_and_determinism(
             keywords=["pro"],
         )
     )
+    registry.wikis.extend(
+        [
+            WikiEntry(
+                name="LogoWiki",
+                path="LogoWiki",
+                privacy="pointer-only",
+                keywords=["logo"],
+            ),
+            WikiEntry(
+                name="NamingWiki",
+                path="NamingWiki",
+                privacy="pointer-only",
+                keywords=["name"],
+            ),
+        ]
+    )
     save_registry(vault, registry)
 
     code, pros, _ = run_json(capsys, "--root", str(vault), "route", "pros")
@@ -231,6 +247,16 @@ def test_route_plural_trigger_regression_and_determinism(
     assert code == 0
     assert pro["matched"] is True
     assert pro["candidates"][0]["path"] == "PictureWiki"
+
+    code, logos, _ = run_json(capsys, "--root", str(vault), "route", "logos")
+    assert code == 0
+    assert logos["matched"] is True
+    assert any(candidate["path"] == "LogoWiki" for candidate in logos["candidates"])
+
+    code, names, _ = run_json(capsys, "--root", str(vault), "route", "names")
+    assert code == 0
+    assert names["matched"] is True
+    assert any(candidate["path"] == "NamingWiki" for candidate in names["candidates"])
 
     prompt = "Once we are pros in Bochum, how should we proceed?"
     code, incident, _ = run_json(capsys, "--root", str(vault), "route", prompt)

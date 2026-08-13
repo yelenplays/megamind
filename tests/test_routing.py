@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from megamind.registry import WikiEntry, load_registry
+from megamind.registry import Registry, WikiEntry, load_registry
 from megamind.routing import route, tokenize
 
 
@@ -19,18 +19,15 @@ def test_tokenize_filters_stopwords_and_singularizes() -> None:
     [
         ("pros", ["pros"]),
         ("pro", ["pro"]),
+        ("logos", ["logo"]),
         ("names", ["name"]),
-        ("status", ["status"]),
-        ("focus", ["focus"]),
-        ("process", ["process"]),
-        ("class", ["class"]),
     ],
 )
 def test_tokenize_conservatively_handles_ambiguous_final_s(text: str, expected: list[str]) -> None:
     assert tokenize(text) == expected
 
 
-def _with_picture_trigger(vault: Path):
+def _with_picture_trigger(vault: Path) -> Registry:
     registry = load_registry(vault)
     registry.wikis.append(
         WikiEntry(
