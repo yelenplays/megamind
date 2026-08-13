@@ -440,9 +440,6 @@ class ResearchStore:
         pattern = "*.jsonl" if kind == "jobs" else "*.json"
         return [path.stem for path in sorted(directory.glob(pattern))]
 
-    def list(self, kind: str) -> list[dict[str, Any]]:
-        return [self.get(kind, identifier) for identifier in self._identifiers(kind)]
-
     def scan(self, kind: str) -> ScanResult:
         """List every record, reporting rather than raising on a bad one."""
         results: ScanResult = []

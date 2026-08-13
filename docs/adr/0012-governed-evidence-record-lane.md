@@ -51,6 +51,21 @@ any edit to an identity-bearing field of an existing record is refused.  This
 is what lets a deferred artifact reach `accepted` once its spans resolve
 without ever rewriting a frozen fact.
 
+The frozen facts themselves are never in that derived set, corrections
+included.  An artifact's identity is its canonical URL and normalized snapshot,
+which a later retraction does not change, so a recheck that could edit
+`corrections` in place would silently rewrite history and destroy the record of
+what was true at retrieval time.  A recheck therefore appends a content-bound
+`correction-notice/v1` superseding the previous notice, and the head of that
+per-artifact chain is the posture G9 judges and claim confidence weighs.
+Retracted support is removed the moment the notice is recorded, not when the
+acceptance block is next re-derived.  A chain with no single head names no
+posture, so it resolves to `unknown` - restrictive - and doctor reports it.
+
+Records that reference each other are written only once every member of the set
+is proven writable.  Committing part of such a set would leave a vault whose
+own doctor reports it broken, which is a state no supported command may reach.
+
 ## Consequences
 
 Absent, malformed, or explicitly `"research": "off"` policy denies fresh

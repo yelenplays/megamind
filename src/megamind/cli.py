@@ -66,15 +66,19 @@ from .evaluation import (
     write_document,
 )
 from .evidence import (
+    CORRECTION_SCHEMA,
     QUOTE_CEILING_CHARS,
     EvidenceError,
     EvidenceStore,
     acceptance_gates,
+    correction_head,
     decide_acceptance,
     reconcile_claims,
+    resolve_corrections,
     score_claim,
     validate_claim,
     validate_contradiction,
+    validate_correction_notice,
     validate_evidence_record,
     validate_quotation,
 )
@@ -1215,12 +1219,17 @@ def _research_policy(registry: Registry, wiki: str) -> ResearchPolicy | None:
     return entry.research_policy
 
 
+def _valid_records(root: Path, kind: str) -> list[dict[str, Any]]:
+    """Every readable record of one kind; unreadable ones are doctor's business."""
+    return [record for _, record, _ in EvidenceStore(root).scan(kind) if record is not None]
+
+
 def _stored_quotations(root: Path, evidence_id: str) -> list[dict[str, Any]]:
     """The already-validated hash-bound spans recorded against one artifact."""
     return [
         quotation
-        for _, quotation, _ in EvidenceStore(root).scan("quotations")
-        if quotation is not None and quotation["evidence_id"] == evidence_id
+        for quotation in _valid_records(root, "quotations")
+        if quotation["evidence_id"] == evidence_id
     ]
 
 
@@ -1236,15 +1245,11 @@ def _claim_confidences(
     supplied by the caller, so a host cannot buy confidence by asserting that
     its own evidence is current or unconflicted.
     """
-    store = EvidenceStore(root)
-    evidence = {
-        str(record["evidence_id"]): record
-        for _, record, _ in store.scan("evidence")
-        if record is not None
-    }
+    evidence = {str(record["evidence_id"]): record for record in _valid_records(root, "evidence")}
+    notices = _valid_records(root, "corrections")
     conflicted: set[str] = set()
-    for _, contradiction, _ in store.scan("contradictions"):
-        if contradiction is not None and contradiction["resolution"] == "unresolved":
+    for contradiction in _valid_records(root, "contradictions"):
+        if contradiction["resolution"] == "unresolved":
             conflicted.update(str(claim_id) for claim_id in contradiction["claim_ids"])
     rows: list[Doc] = []
     for claim in claims:
@@ -1262,6 +1267,7 @@ def _claim_confidences(
             evidence,
             freshness=freshness,
             contradicted=str(claim["claim_id"]) in conflicted,
+            notices=notices,
         )
         rows.append(
             {
@@ -1291,18 +1297,30 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
     policy = _research_policy(registry, wiki)
     if action == "status":
         notes: list[str] = []
+        problems: list[Doc] = []
         full = bool(getattr(args, "full", False))
+
+        def section(kind: str) -> list[Any]:
+            rows: list[Any] = []
+            for identifier, record, problem in store.scan(kind):
+                if record is None:
+                    problems.append({"kind": kind, "record": identifier, "problem": problem})
+                    continue
+                rows.append(record)
+            return _capped(rows, full, notes, kind)
+
+        sections = {kind: section(kind) for kind in ("plans", "jobs", "packets", "outcomes")}
         return _research_doc(
             "megamind/research-status/v1",
             {
-                "status": "ok",
-                "plans": _capped(store.list("plans"), full, notes, "plans"),
-                "jobs": _capped(store.list("jobs"), full, notes, "jobs"),
-                "packets": _capped(store.list("packets"), full, notes, "packets"),
-                "outcomes": _capped(store.list("outcomes"), full, notes, "outcomes"),
+                "status": "attention" if problems else "ok",
+                **sections,
+                "problems": problems,
                 "notes": notes,
             },
-            "Record the next host receipt with `megamind-axi research ... --input FILE`",
+            f"Run `{EXECUTABLE} doctor` to inspect the unreadable research records"
+            if problems
+            else "Record the next host receipt with `megamind-axi research ... --input FILE`",
         ), 0
     if not args.input:
         raise UsageError(f"research {action} requires --input FILE")
@@ -1376,7 +1394,8 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         # normalized snapshot, so acceptance is re-derived from whatever spans
         # this vault already holds. Unknown is deliberately not pass.
         quotations = _stored_quotations(root, str(record["evidence_id"]))
-        gates = acceptance_gates(record, policy, claim_type, quotations)
+        notices = _valid_records(root, "corrections")
+        gates = acceptance_gates(record, policy, claim_type, quotations, notices)
         decision, failure = decide_acceptance(gates)
         derived_tier = tier_for_facts(
             policy,
@@ -1406,9 +1425,51 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             {
                 "status": decision,
                 "evidence": record,
+                "corrections": resolve_corrections(record, notices),
                 "path": path.relative_to(root.resolve()).as_posix(),
             },
             "Accepted artifacts can be cited only through hash-bound quotations",
+        ), 0
+    if action == "record-correction":
+        notice = validate_correction_notice(raw)
+        evidence_store = EvidenceStore(root)
+        evidence_id = str(notice["evidence_id"])
+        known = {str(record["evidence_id"]) for record in _valid_records(root, "evidence")}
+        if evidence_id not in known:
+            raise UsageError(f"correction notice cites unknown evidence record: {evidence_id}")
+        chain = [
+            item
+            for item in _valid_records(root, "corrections")
+            if str(item["evidence_id"]) == evidence_id
+        ]
+        head = correction_head(evidence_id, chain)
+        expected = str(head["notice_id"]) if head is not None else ""
+        # A posture history only ever grows, so a new notice must name the one
+        # it replaces. Without that, two notices would both claim to be current
+        # and the record's posture would stop being decidable.
+        if chain and head is None:
+            raise UsageError(
+                f"correction chain for {evidence_id} has no single current notice; "
+                "run doctor before recording another"
+            )
+        if str(notice["supersedes"]) != expected:
+            raise UsageError(
+                "correction notice must supersede the current notice "
+                f"({expected or 'none, so supersedes must be empty'})"
+            )
+        path = evidence_store.put("corrections", notice)
+        return _research_doc(
+            CORRECTION_SCHEMA,
+            {
+                "status": "recorded",
+                "notice": notice,
+                "corrections": resolve_corrections(
+                    evidence_store.get("evidence", evidence_id), [*chain, notice]
+                ),
+                "path": path.relative_to(root.resolve()).as_posix(),
+            },
+            "Frozen facts are never edited; re-run `megamind-axi research record-artifact` "
+            "to re-derive acceptance under the superseding posture",
         ), 0
     if action == "record-quotations":
         values = (
@@ -1487,12 +1548,17 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             if isinstance(raw, dict)
             else None
         )
+        evidence_store = EvidenceStore(root)
+        claims = []
         if isinstance(raw, dict) and "claims" in raw:
             if not today:
                 raise UsageError(
                     "reconcile from claims requires --today ISO_DATE to date the contradiction"
                 )
-            claims = [validate_claim(item) for item in raw["claims"]]
+            known_quotations = {
+                str(item["quotation_id"]): item for item in _valid_records(root, "quotations")
+            }
+            claims = [validate_claim(item, quotations=known_quotations) for item in raw["claims"]]
             contradictions = reconcile_claims(claims, today=today, gap_id=args.gap_id)
         elif isinstance(values, list):
             contradictions = [validate_contradiction(item) for item in values]
@@ -1500,13 +1566,22 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
             raise UsageError(
                 "reconcile input must be a JSON list, {claims: []}, or {contradictions: []}"
             )
-        paths = [
-            EvidenceStore(root).put("contradictions", item).relative_to(root.resolve()).as_posix()
-            for item in contradictions
-        ]
+        # A derived contradiction cites the claims it was derived from, so both
+        # land together: committing the contradiction alone would leave a vault
+        # whose own doctor immediately reports it as citing unknown claims.
+        written = evidence_store.put_all(
+            [("claims", item) for item in claims]
+            + [("contradictions", item) for item in contradictions]
+        )
+        paths = [path.relative_to(root.resolve()).as_posix() for path in written[len(claims) :]]
         return _research_doc(
             "megamind/contradiction/v1",
-            {"status": "recorded", "contradictions": contradictions, "paths": paths},
+            {
+                "status": "recorded",
+                "claims": claims,
+                "contradictions": contradictions,
+                "paths": paths,
+            },
             "Contradictions remain visible; unresolved claims are never averaged",
         ), 0
     if action == "packet":
@@ -2297,6 +2372,7 @@ def build_parser() -> AxiParser:
             "record-discovery",
             "record-artifact",
             "record-quotations",
+            "record-correction",
             "record-claims",
             "reconcile",
             "packet",

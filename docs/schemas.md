@@ -869,6 +869,20 @@ to the identity-bearing fields.  Governed derived state - evidence
 resolution, job state, candidate status - may be advanced in place; any edit to
 an identity-bearing field of an existing record is refused.
 
+The frozen facts a host retrieved are never in that derived set.  A recheck
+that finds a correction or a retraction appends a `megamind/correction-notice/v1`
+record instead of editing the artifact: the notice is content-bound over the
+evidence id, status, check date, method, notice ids, and the notice it
+supersedes, so a posture history only ever grows and the record of what was
+true at retrieval time survives.  Each artifact's notices form one ordered
+chain with exactly one current head; a chain with no head or several heads
+resolves restrictively to `unknown` and doctor reports it.  The head is the
+posture G9 judges and the posture claim confidence weighs, so a retraction
+removes support the moment it is recorded, before the artifact's acceptance
+block is re-derived.  Records that reference each other are written as one set
+only after every member is proven writable, so a vault never lands in a state
+its own doctor reports as broken.
+
 The local job spine is represented by `megamind/research-plan/v1`,
 `megamind/research-job/v1`, `megamind/source-candidate/v1`,
 `megamind/research-packet/v1`, and `megamind/research-outcome/v1`.  These are
@@ -876,7 +890,8 @@ receipts, not dispatch instructions.  Evidence and metadata are stored under
 `.megamind/evidence/` through `fsops`; full fetched bytes remain host
 quarantine.  Doctor validates every content-hash identity and the references
 that span documents - quotation to evidence, claim to quotation and evidence,
-contradiction to claim, packet to claim - because no single validator can see
-more than its own record.  Review surfaces deferred evidence and unresolved
+contradiction to claim, correction notice to evidence and to the notice it
+supersedes, packet to claim - because no single validator can see more than its
+own record.  Review surfaces deferred evidence and unresolved
 contradictions, and reports an unreadable record as work to do instead of
 failing the whole projection.

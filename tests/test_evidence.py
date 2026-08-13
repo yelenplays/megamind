@@ -13,6 +13,7 @@ from megamind.cli import main
 from megamind.evidence import (
     CLAIM_SCHEMA,
     CONTRADICTION_SCHEMA,
+    CORRECTION_SCHEMA,
     EVIDENCE_SCHEMA,
     QUOTATION_SCHEMA,
     EvidenceError,
@@ -423,6 +424,34 @@ def research_claim(evidence_id: str, quotation_id: str, statement: str) -> dict[
     }
 
 
+def proposed_claim(statement: str) -> dict[str, Any]:
+    body = {"claim_key": "synthetic-fact", "statement": statement, "qualifiers": {}}
+    return {
+        "schema": CLAIM_SCHEMA,
+        "claim_id": content_hash(json.dumps(body, sort_keys=True, separators=(",", ":"))),
+        "type": "fact",
+        **body,
+        "lifecycle": "proposed",
+        "supported_by": [],
+        "contradicted_by": [],
+        "superseded_by": "",
+    }
+
+
+def correction_notice(
+    evidence_id: str, status: str, checked_at: str, supersedes: str = ""
+) -> dict[str, Any]:
+    return {
+        "schema": CORRECTION_SCHEMA,
+        "evidence_id": evidence_id,
+        "status": status,
+        "checked_at": checked_at,
+        "method": "host-registry",
+        "notice_ids": [],
+        "supersedes": supersedes,
+    }
+
+
 def governed_vault(tmp_path: Path) -> Path:
     root = build_vault(tmp_path)
     registry = load_registry(root)
@@ -507,7 +536,7 @@ def test_research_plan_then_cancel_round_trips(
     assert resumed["code"] == "research_invalid"
 
 
-def test_research_plan_refuses_to_rewrite_an_identity_field(
+def test_research_job_lifecycle_state_advances_in_place(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = governed_vault(tmp_path)
@@ -519,8 +548,7 @@ def test_research_plan_refuses_to_rewrite_an_identity_field(
         capsys, "--root", str(root), "research", "plan", "--input", plan_input
     )
     assert code == 0
-    forged = {**planned["job"], "gap_id": "gap-1", "plan_id": planned["job"]["plan_id"]}
-    forged["events"] = [{"event": "forged"}]
+    moved = {**planned["job"], "events": [{"event": "host-observed"}]}
     code, doc, _ = run_json(
         capsys,
         "--root",
@@ -528,10 +556,52 @@ def test_research_plan_refuses_to_rewrite_an_identity_field(
         "research",
         "cancel",
         "--input",
-        write_json(tmp_path / "in" / "forged.json", forged),
+        write_json(tmp_path / "in" / "moved.json", moved),
     )
-    assert code == 0  # only lifecycle state moved; identity is untouched
+    assert code == 0
     assert doc["status"] == "cancelled"
+
+
+def test_evidence_frozen_facts_cannot_be_rewritten(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    record = research_evidence()
+    artifact = ["--root", str(root), "research", "record-artifact", "--wiki", "StarterWiki"]
+    code, _, _ = run_json(
+        capsys, *artifact, "--input", write_json(tmp_path / "in" / "evidence.json", record)
+    )
+    assert code == 0
+
+    # Same identity (canonical_url + normalized snapshot), different frozen fact.
+    for field, value in (
+        ("publisher", {"name": "Impostor", "basis": "authority-registry"}),
+        ("retrieved_at", "2030-01-01T00:00:00Z"),
+        ("origin_id", "some-other-origin"),
+    ):
+        forged = {**record, field: value}
+        code, doc, _ = run_json(
+            capsys, *artifact, "--input", write_json(tmp_path / "in" / "forged.json", forged)
+        )
+        assert code == 1, field
+        assert doc["code"] == "evidence_invalid"
+        assert "different bytes" in doc["message"]
+
+    # A retraction is a frozen fact too: it may only arrive as a new notice.
+    retracted = {**record, "corrections": {**record["corrections"], "status": "retracted"}}
+    code, doc, _ = run_json(
+        capsys, *artifact, "--input", write_json(tmp_path / "in" / "retracted.json", retracted)
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+
+    stored = json.loads(
+        (root / MEGAMIND_DIR / "evidence" / "evidence" / f"{record['evidence_id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert stored["publisher"]["name"] == "Authority"
+    assert stored["corrections"]["status"] == "clean"
 
 
 def test_evidence_reaches_accepted_only_after_a_span_resolves(
@@ -626,8 +696,8 @@ def test_research_today_survives_placement_before_the_subcommand(
     root = governed_vault(tmp_path)
     claims = {
         "claims": [
-            research_claim("ev1", "q1", "the synthetic fact is A"),
-            research_claim("ev1", "q1", "the synthetic fact is B"),
+            proposed_claim("the synthetic fact is A"),
+            proposed_claim("the synthetic fact is B"),
         ]
     }
     payload = write_json(tmp_path / "in" / "claims.json", claims)
@@ -839,8 +909,8 @@ def test_review_surfaces_deferred_evidence_and_unresolved_contradictions(
             tmp_path / "in" / "claims.json",
             {
                 "claims": [
-                    research_claim("ev1", "q1", "the synthetic fact is A"),
-                    research_claim("ev1", "q1", "the synthetic fact is B"),
+                    proposed_claim("the synthetic fact is A"),
+                    proposed_claim("the synthetic fact is B"),
                 ]
             },
         ),
@@ -912,3 +982,270 @@ def test_card_research_policy_governs_acceptance(
     assert code == 0
     assert doc["status"] == "accepted"
     assert doc["evidence"]["acceptance"]["quality"] == "primary"
+
+
+def accepted_artifact(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], root: Path
+) -> dict[str, Any]:
+    """Drive the supported path to a stored, accepted artifact."""
+    record = research_evidence()
+    evidence_input = write_json(tmp_path / "in" / "evidence.json", record)
+    normalized_file = tmp_path / "in" / "normalized.txt"
+    normalized_file.parent.mkdir(parents=True, exist_ok=True)
+    normalized_file.write_text(RESEARCH_TEXT, encoding="utf-8")
+    artifact = ["--root", str(root), "research", "record-artifact", "--wiki", "StarterWiki"]
+    run_json(capsys, *artifact, "--input", evidence_input)
+    run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-quotations",
+        "--wiki",
+        "StarterWiki",
+        "--normalized-file",
+        str(normalized_file),
+        "--input",
+        write_json(
+            tmp_path / "in" / "quotations.json",
+            [research_quotation(str(record["evidence_id"]))],
+        ),
+    )
+    code, doc, _ = run_json(capsys, *artifact, "--input", evidence_input)
+    assert code == 0
+    assert doc["status"] == "accepted"
+    return record
+
+
+def test_retraction_arrives_as_a_superseding_notice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    record = accepted_artifact(tmp_path, capsys, root)
+    evidence_id = str(record["evidence_id"])
+
+    code, notice_doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-correction",
+        "--wiki",
+        "StarterWiki",
+        "--input",
+        write_json(
+            tmp_path / "in" / "notice.json",
+            correction_notice(evidence_id, "retracted", "2026-09-01"),
+        ),
+    )
+    assert code == 0
+    assert notice_doc["status"] == "recorded"
+    assert notice_doc["corrections"]["status"] == "retracted"
+
+    # The frozen artifact is untouched; only the posture in force moved.
+    stored = json.loads(
+        (root / MEGAMIND_DIR / "evidence" / "evidence" / f"{evidence_id}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert stored["corrections"]["status"] == "clean"
+
+    # Support is withdrawn immediately, before the artifact is re-recorded.
+    quotation = research_quotation(evidence_id)
+    claim = research_claim(evidence_id, str(quotation["quotation_id"]), "the synthetic fact holds")
+    code, claims_doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "--today",
+        "2026-09-02",
+        "research",
+        "record-claims",
+        "--wiki",
+        "StarterWiki",
+        "--input",
+        write_json(tmp_path / "in" / "claims.json", [claim]),
+    )
+    assert code == 0
+    assert claims_doc["confidence"][0]["score"] == "unknown"
+    assert claims_doc["confidence"][0]["meets_floor"] is False
+
+    code, review_doc, _ = run_json(capsys, "--root", str(root), "review")
+    assert code == 0
+    assert any(
+        "retracted correction notice" in row["failure"] for row in review_doc["pending_evidence"]
+    )
+
+    # Re-deriving acceptance under the superseding posture rejects the artifact.
+    code, rejected, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-artifact",
+        "--wiki",
+        "StarterWiki",
+        "--input",
+        write_json(tmp_path / "in" / "evidence.json", record),
+    )
+    assert code == 0
+    assert rejected["status"] == "rejected"
+    assert "G9" in rejected["evidence"]["acceptance"]["failure"]
+
+    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
+    assert code == 0, doctor
+
+
+def test_correction_chain_must_supersede_the_current_notice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    record = accepted_artifact(tmp_path, capsys, root)
+    evidence_id = str(record["evidence_id"])
+    first = correction_notice(evidence_id, "corrected", "2026-09-01")
+    code, first_doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-correction",
+        "--input",
+        write_json(tmp_path / "in" / "first.json", first),
+    )
+    assert code == 0
+
+    # A second notice that does not name the current head would fork the chain.
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-correction",
+        "--input",
+        write_json(
+            tmp_path / "in" / "fork.json",
+            correction_notice(evidence_id, "retracted", "2026-09-05"),
+        ),
+    )
+    assert code == 2
+    assert doc["code"] == "usage_error"
+    assert "supersede" in doc["message"]
+
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-correction",
+        "--input",
+        write_json(
+            tmp_path / "in" / "second.json",
+            correction_notice(
+                evidence_id, "retracted", "2026-09-05", str(first_doc["notice"]["notice_id"])
+            ),
+        ),
+    )
+    assert code == 0
+    assert doc["corrections"]["status"] == "retracted"
+
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "record-correction",
+        "--input",
+        write_json(
+            tmp_path / "in" / "dangling.json",
+            correction_notice("0" * 12, "retracted", "2026-09-05"),
+        ),
+    )
+    assert code == 2
+    assert "unknown evidence record" in doc["message"]
+
+
+def test_reconcile_from_claims_leaves_doctor_clean(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "--today",
+        "2026-08-13",
+        "research",
+        "reconcile",
+        "--input",
+        write_json(
+            tmp_path / "in" / "claims.json",
+            {
+                "claims": [
+                    proposed_claim("the synthetic fact is A"),
+                    proposed_claim("the synthetic fact is B"),
+                ]
+            },
+        ),
+    )
+    assert code == 0
+    assert len(doc["claims"]) == 2
+    assert len(doc["contradictions"]) == 1
+    stored_claims = sorted(
+        path.stem for path in (root / MEGAMIND_DIR / "evidence" / "claims").glob("*.json")
+    )
+    assert stored_claims == sorted(doc["contradictions"][0]["claim_ids"])
+
+    code, doctor, _ = run_json(capsys, "--root", str(root), "doctor")
+    assert code == 0, doctor
+
+
+def test_reconcile_commits_nothing_when_a_claim_is_unwritable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    good = proposed_claim("the synthetic fact is A")
+    bad = {**proposed_claim("the synthetic fact is B"), "lifecycle": "active"}
+    code, doc, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "--today",
+        "2026-08-13",
+        "research",
+        "reconcile",
+        "--input",
+        write_json(tmp_path / "in" / "claims.json", {"claims": [good, bad]}),
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert not (root / MEGAMIND_DIR / "evidence" / "claims").exists()
+    assert not (root / MEGAMIND_DIR / "evidence" / "contradictions").exists()
+
+
+def test_research_status_degrades_on_an_unreadable_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = governed_vault(tmp_path)
+    code, _, _ = run_json(
+        capsys,
+        "--root",
+        str(root),
+        "research",
+        "plan",
+        "--input",
+        write_json(
+            tmp_path / "in" / "plan.json",
+            {"gap_id": "gap-1", "wiki": "StarterWiki", "question": "q"},
+        ),
+    )
+    assert code == 0
+    bad = root / MEGAMIND_DIR / "research" / "jobs" / "bad.jsonl"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text(json.dumps({"schema": "nope"}), encoding="utf-8")
+
+    code, doc, _ = run_json(capsys, "--root", str(root), "research", "status")
+    assert code == 0
+    assert doc["status"] == "attention"
+    assert len(doc["plans"]) == 1
+    assert [problem["record"] for problem in doc["problems"]] == ["bad"]
+    assert any("doctor" in entry for entry in doc["help"])

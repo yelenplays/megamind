@@ -250,13 +250,14 @@ declared index) and rejects `raw/`, and `review` reports only compiled pages.
 ## megamind-axi research <action> [--input FILE]
 
 `research plan` validates and stores an inert `research-plan/v1` plus its job
-spine record. `record-discovery`, `record-artifact`, `record-claims`, and
-`reconcile` accept JSON host receipts and emit `source-candidate/v1`,
-`evidence-record/v1`, `claim/v1`, and `contradiction/v1` documents. `packet`
-stores a cited `research-packet/v1`; `status`, `cancel`, and `resume` inspect
-or advance only typed local state. Inputs are files to keep large source
-payloads out of command strings. No action performs network access, dispatch,
-transcript fetching, publication, or an external write.
+spine record. `record-discovery`, `record-artifact`, `record-correction`,
+`record-claims`, and `reconcile` accept JSON host receipts and emit
+`source-candidate/v1`, `evidence-record/v1`, `correction-notice/v1`, `claim/v1`,
+and `contradiction/v1` documents. `packet` stores a cited
+`research-packet/v1`; `status`, `cancel`, and `resume` inspect or advance only
+typed local state. Inputs are files to keep large source payloads out of
+command strings. No action performs network access, dispatch, transcript
+fetching, publication, or an external write.
 
 `record-artifact` derives G1-G12 and source-class gates from validated facts and
 the selected wiki's restrictive research policy. A missing policy, an unnamed
@@ -267,17 +268,27 @@ and must re-resolve against frozen normalized text before an active claim may
 rely on them; G10 stays `unknown` until at least one stored span for that
 artifact resolves, so the normal order is `record-artifact`,
 `record-quotations`, then `record-artifact` again to re-derive acceptance. Only
-the derived acceptance block may be rewritten that way: every identity-bearing
-field of a stored record stays immutable. Retractions remove support,
-unresolved contradictions remain visible, and packet confidence is never used
-as an acceptance verdict.
+the derived acceptance block may be rewritten that way: every frozen fact of a
+stored record stays immutable, and re-recording an artifact with any of them
+changed is an `evidence_invalid` refusal. Unresolved contradictions remain
+visible, and packet confidence is never used as an acceptance verdict.
+
+`record-correction` is how a recheck lands. It appends a
+`correction-notice/v1` that supersedes the artifact's current notice, and it
+refuses a notice naming an unknown artifact or one that would fork the chain.
+Retraction removes support at once: claim confidence weighs the posture in
+force, `review` lists an accepted artifact whose posture has moved, and
+re-running `record-artifact` re-derives acceptance to `rejected` on G9.
 
 `record-claims` returns each claim's confidence from the unchanged confidence
 constants, using stored evidence acceptance, derived origin corroboration, the
 wiki freshness policy against `--today`, and stored unresolved contradictions.
-`reconcile` from `{claims: []}` requires `--today`. `status` truncates its
-lists like every other list section and takes `--full`. Every action requires
-an initialized vault root.
+`reconcile` from `{claims: []}` requires `--today` and stores those claims
+together with the contradictions derived from them, so the vault it leaves
+behind is one `doctor` reports clean. `status` truncates its lists like every
+other list section, takes `--full`, and reports an unreadable record under
+`problems[]` instead of failing. Every action requires an initialized vault
+root.
 
 ## Error codes
 

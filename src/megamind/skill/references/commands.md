@@ -488,9 +488,13 @@ common and source-class gates from frozen facts and the wiki's restrictive
 research policy named by `--wiki`; absent or `off` policy, unknown gates,
 retractions, and unresolved spans never authorize support. G10 stays unknown
 until a stored span resolves, so re-run `record-artifact` after
-`record-quotations` to re-derive acceptance. `reconcile` from claims needs
-`--today`, `status` takes `--full`, and every action needs an initialized
-vault. Full source bytes stay in host quarantine.
+`record-quotations` to re-derive acceptance. A frozen fact is never edited:
+`record-correction` appends a `correction-notice/v1` superseding the artifact's
+current notice, and its head is the posture that removes retracted support.
+`reconcile` from claims needs `--today` and stores those claims with the
+contradictions it derives, `status` takes `--full` and reports unreadable
+records under `problems[]`, and every action needs an initialized vault. Full
+source bytes stay in host quarantine.
 
 ## Errors
 

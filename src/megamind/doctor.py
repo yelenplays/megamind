@@ -17,7 +17,7 @@ from typing import Any
 from .access import policy_findings
 from .capture import list_proposals
 from .card import CardError, load_wiki_card
-from .evidence import EvidenceStore
+from .evidence import STORE_KINDS, EvidenceStore, correction_head
 from .fsops import MEGAMIND_DIR, PathEscapeError, resolve_contained
 from .gardening import validate_gap_journal
 from .links import extract_links, page_name_table, resolve_link
@@ -395,13 +395,54 @@ def _check_references(
                         f"contradiction cites unknown claim {claim_id}",
                     )
                 )
+    _check_correction_chains(records, findings)
+
+
+def _check_correction_chains(
+    records: dict[str, dict[str, dict[str, Any]]], findings: list[Finding]
+) -> None:
+    """A correction history must stay a single ordered chain per artifact.
+
+    Only one notice can be the current posture. A dangling or forked chain
+    would make an artifact's correction status undecidable, which is exactly
+    the state that must never be reached silently.
+    """
+    notices = records["corrections"]
+    for identifier, notice in sorted(notices.items()):
+        if notice["evidence_id"] not in records["evidence"]:
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("corrections", identifier),
+                    f"correction notice cites unknown evidence record {notice['evidence_id']}",
+                )
+            )
+        supersedes = str(notice["supersedes"])
+        if supersedes and supersedes not in notices:
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("corrections", identifier),
+                    f"correction notice supersedes unknown notice {supersedes}",
+                )
+            )
+    for evidence_id in sorted({str(notice["evidence_id"]) for notice in notices.values()}):
+        chain = [notice for notice in notices.values() if str(notice["evidence_id"]) == evidence_id]
+        if correction_head(evidence_id, chain) is None:
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("evidence", evidence_id),
+                    "correction chain has no single current notice",
+                )
+            )
 
 
 def _check_research_records(root: Path, findings: list[Finding]) -> None:
     """Validate immutable evidence and research records without reading prose."""
     evidence_store = EvidenceStore(root)
     records: dict[str, dict[str, dict[str, Any]]] = {}
-    for kind in ("evidence", "quotations", "claims", "contradictions"):
+    for kind in STORE_KINDS:
         valid: dict[str, dict[str, Any]] = {}
         for identifier, record, problem in evidence_store.scan(kind):
             if record is None:

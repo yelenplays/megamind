@@ -16,7 +16,13 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .confidence import CLEAN_CORRECTION, QUALITY_BASE, Source, claim_confidence
+from .confidence import (
+    CLEAN_CORRECTION,
+    CORRECTION_STATUSES,
+    QUALITY_BASE,
+    Source,
+    claim_confidence,
+)
 from .fsops import (
     MEGAMIND_DIR,
     atomic_write,
@@ -36,22 +42,39 @@ EVIDENCE_SCHEMA = "megamind/evidence-record/v1"
 QUOTATION_SCHEMA = "megamind/quotation/v1"
 CLAIM_SCHEMA = "megamind/claim/v1"
 CONTRADICTION_SCHEMA = "megamind/contradiction/v1"
+CORRECTION_SCHEMA = "megamind/correction-notice/v1"
 
 GATE_VERDICTS = ("pass", "fail", "unknown")
 DECISIONS = ("accepted", "rejected", "deferred")
 SOURCE_CLASS_SET = set(SOURCE_CLASSES)
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 QUOTE_CEILING_CHARS = 1000
+UNKNOWN_CORRECTION = "unknown"
 
 # The identity of every stored document covers only part of its body: the rest
 # is governed state Megamind itself derives (acceptance verdicts, resolution
 # outcomes, lifecycle).  Immutability therefore applies to the identity-bearing
 # fields, and a rewrite that touches anything else is refused.
+#
+# The frozen facts a host retrieved are not in that set at all.  A recheck that
+# finds a correction or a retraction never edits them: it appends a new
+# content-bound notice that supersedes the previous posture, so the record of
+# what was true at retrieval time survives alongside what is true now.
 MUTABLE_FIELDS: dict[str, frozenset[str]] = {
     "evidence": frozenset({"acceptance"}),
     "quotations": frozenset({"resolves", "resolved_at"}),
     "claims": frozenset({"lifecycle", "supported_by", "contradicted_by", "superseded_by"}),
     "contradictions": frozenset({"resolution", "resolution_detail", "updated"}),
+    "corrections": frozenset(),
+}
+
+STORE_KINDS: tuple[str, ...] = tuple(MUTABLE_FIELDS)
+ID_KEYS: dict[str, str] = {
+    "evidence": "evidence_id",
+    "quotations": "quotation_id",
+    "claims": "claim_id",
+    "contradictions": "contradiction_id",
+    "corrections": "notice_id",
 }
 
 # One stored record per entry: its identifier, the validated record when it
@@ -392,6 +415,90 @@ def validate_evidence_record(raw: object) -> dict[str, Any]:
     return _validate_evidence(raw)
 
 
+def validate_correction_notice(raw: object) -> dict[str, Any]:
+    """Validate one append-only correction or retraction notice.
+
+    A notice is a content-bound event about an already-frozen artifact, not an
+    edit of it: its identity covers every fact it asserts, including the notice
+    it supersedes, so a posture history can only ever grow.
+    """
+    data = _map("correction notice", raw)
+    _unknown(
+        "correction notice",
+        data,
+        {
+            "schema",
+            "notice_id",
+            "evidence_id",
+            "status",
+            "checked_at",
+            "method",
+            "notice_ids",
+            "supersedes",
+        },
+    )
+    if data.get("schema") != CORRECTION_SCHEMA:
+        raise EvidenceError(f"correction notice schema must be {CORRECTION_SCHEMA}")
+    status = _str("correction notice status", data.get("status"), nonempty=True, limit=30)
+    if status not in CORRECTION_STATUSES:
+        raise EvidenceError("correction notice status is invalid")
+    body = {
+        "evidence_id": _str(
+            "correction notice evidence_id", data.get("evidence_id"), nonempty=True, limit=64
+        ),
+        "status": status,
+        "checked_at": _date("correction notice checked_at", data.get("checked_at")),
+        "method": _str("correction notice method", data.get("method"), nonempty=True, limit=100),
+        "notice_ids": _strings("correction notice notice_ids", data.get("notice_ids", [])),
+        "supersedes": _str("correction notice supersedes", data.get("supersedes", ""), limit=64),
+    }
+    expected = content_hash(_stable(body))
+    if data.get("notice_id", expected) != expected:
+        raise EvidenceError("notice_id does not match the correction notice body")
+    return {"schema": CORRECTION_SCHEMA, "notice_id": expected, **body}
+
+
+def correction_head(
+    evidence_id: str, notices: Sequence[Mapping[str, Any]]
+) -> Mapping[str, Any] | None:
+    """The single current notice of one artifact's supersession chain.
+
+    A chain with no head or several heads names no posture at all, so it
+    resolves to ``None`` and every caller treats it restrictively rather than
+    picking a winner.
+    """
+    chain = [item for item in notices if str(item["evidence_id"]) == evidence_id]
+    if not chain:
+        return None
+    superseded = {str(item["supersedes"]) for item in chain if item["supersedes"]}
+    heads = [item for item in chain if str(item["notice_id"]) not in superseded]
+    return heads[0] if len(heads) == 1 else None
+
+
+def resolve_corrections(
+    record: Mapping[str, Any], notices: Sequence[Mapping[str, Any]] = ()
+) -> dict[str, Any]:
+    """The correction posture in force now: the chain head, else the frozen one.
+
+    The record's own block stays exactly as the host retrieved it. This is the
+    single owner of "what is the current posture", so no caller has to decide
+    whether a stored artifact or a later notice wins.
+    """
+    evidence_id = str(record["evidence_id"])
+    chain = [item for item in notices if str(item["evidence_id"]) == evidence_id]
+    if not chain:
+        return dict(record["corrections"])
+    head = correction_head(evidence_id, chain)
+    if head is None:
+        return {**dict(record["corrections"]), "status": UNKNOWN_CORRECTION}
+    return {
+        "checked_at": head["checked_at"],
+        "method": head["method"],
+        "status": head["status"],
+        "notice_ids": list(head["notice_ids"]),
+    }
+
+
 def _quotation_verdict(quotations: Sequence[Mapping[str, Any]]) -> str:
     """G10 is only a pass once a hash-bound span actually re-resolved."""
     if not quotations:
@@ -418,18 +525,21 @@ def acceptance_gates(
     policy: ResearchPolicy | None,
     claim_type: str = "fact",
     quotations: Sequence[Mapping[str, Any]] = (),
+    notices: Sequence[Mapping[str, Any]] = (),
 ) -> list[dict[str, str]]:
     """Derive common and class gates from facts; never trust incoming verdicts.
 
     ``quotations`` are the already-validated hash-bound spans recorded against
     this evidence record.  They are the only thing that can turn G10 from
-    ``unknown`` into a verdict, so acceptance stays claim-bound.
+    ``unknown`` into a verdict, so acceptance stays claim-bound.  ``notices``
+    are that record's correction chain, so G9 judges the posture in force now
+    rather than the one frozen at retrieval time.
     """
     if claim_type not in CLAIM_TYPES:
         raise EvidenceError("claim_type is invalid")
     source_class = str(record["source_class"])
     snapshot = record["snapshot"]
-    corrections = record["corrections"]
+    corrections = resolve_corrections(record, notices)
     publisher = record["publisher"]
     tier = tier_for_facts(
         policy,
@@ -864,8 +974,14 @@ def score_claim(
     *,
     freshness: str = "fresh",
     contradicted: bool = False,
+    notices: Sequence[Mapping[str, Any]] = (),
 ) -> Any:
-    """Use the existing confidence constants after evidence acceptance only."""
+    """Use the existing confidence constants after evidence acceptance only.
+
+    Support is weighed against the correction posture in force now, so a
+    retraction recorded after acceptance removes the source immediately rather
+    than waiting for the artifact's acceptance block to be re-derived.
+    """
     sources: list[Source] = []
     for support in claim.get("supported_by", []):
         record = evidence.get(support["evidence_id"])
@@ -879,7 +995,7 @@ def score_claim(
                 record["canonical_url"],
                 acceptance.get("decision") == "accepted" and quality in QUALITY_BASE,
                 record["origin_id"],
-                record["corrections"]["status"],
+                str(resolve_corrections(record, notices)["status"]),
             )
         )
     return claim_confidence(
@@ -894,6 +1010,17 @@ def _stable(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _validate(kind: str, data: object) -> dict[str, Any]:
+    validators = {
+        "evidence": validate_evidence_record,
+        "quotations": validate_quotation,
+        "claims": validate_claim,
+        "contradictions": validate_contradiction,
+        "corrections": validate_correction_notice,
+    }
+    return validators[kind](data)
+
+
 class EvidenceStore:
     """Content-addressed immutable evidence documents under a vault root."""
 
@@ -901,41 +1028,26 @@ class EvidenceStore:
         self.root = root
 
     def _path(self, kind: str, identifier: str) -> Path:
-        if kind not in {"evidence", "quotations", "claims", "contradictions"}:
+        if kind not in MUTABLE_FIELDS:
             raise EvidenceError("unknown evidence store kind")
         return Path(MEGAMIND_DIR) / "evidence" / kind / f"{identifier}.json"
 
-    def put(
+    def _prepare(
         self,
         kind: str,
         data: Mapping[str, Any],
         normalized_text: str | None = None,
-        *,
         quote_ceiling_chars: int = QUOTE_CEILING_CHARS,
-    ) -> Path:
-        validators = {
-            "evidence": validate_evidence_record,
-            "quotations": validate_quotation,
-            "claims": validate_claim,
-            "contradictions": validate_contradiction,
-        }
+    ) -> tuple[Path, dict[str, Any], str]:
+        """Validate one record and prove it may be written, without writing."""
         if kind == "quotations":
             canonical = validate_quotation(
                 data, normalized_text, quote_ceiling_chars=quote_ceiling_chars
             )
         else:
-            canonical = validators[kind](data)
-        identifier = str(
-            canonical.get(
-                {
-                    "evidence": "evidence_id",
-                    "quotations": "quotation_id",
-                    "claims": "claim_id",
-                    "contradictions": "contradiction_id",
-                }[kind]
-            )
-        )
-        path = resolve_contained(self.root, self._path(kind, identifier))
+            canonical = _validate(kind, data)
+        rel = self._path(kind, str(canonical[ID_KEYS[kind]]))
+        path = resolve_contained(self.root, rel)
         text = json.dumps(canonical, sort_keys=True, indent=2) + "\n"
         if path.is_file():
             mutable = MUTABLE_FIELDS[kind]
@@ -947,8 +1059,34 @@ class EvidenceStore:
                 raise EvidenceError(
                     "content-addressed evidence record already exists with different bytes"
                 )
-        atomic_write(self.root, self._path(kind, identifier), text)
-        return path
+        return rel, canonical, text
+
+    def put(
+        self,
+        kind: str,
+        data: Mapping[str, Any],
+        normalized_text: str | None = None,
+        *,
+        quote_ceiling_chars: int = QUOTE_CEILING_CHARS,
+    ) -> Path:
+        rel, _, text = self._prepare(kind, data, normalized_text, quote_ceiling_chars)
+        atomic_write(self.root, rel, text)
+        return resolve_contained(self.root, rel)
+
+    def put_all(self, items: Sequence[tuple[str, Mapping[str, Any]]]) -> list[Path]:
+        """Write a related set only once every record in it is provably writable.
+
+        Records that reference each other must land together or not at all,
+        otherwise a refusal halfway through leaves a vault whose own doctor
+        reports it broken. Validation and the immutability check therefore run
+        over the whole set before the first byte is written.
+        """
+        prepared = [self._prepare(kind, data) for kind, data in items]
+        paths: list[Path] = []
+        for rel, _, text in prepared:
+            atomic_write(self.root, rel, text)
+            paths.append(resolve_contained(self.root, rel))
+        return paths
 
     def get(self, kind: str, identifier: str) -> dict[str, Any]:
         path = resolve_contained(self.root, self._path(kind, identifier))
@@ -958,19 +1096,7 @@ class EvidenceStore:
             data = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as error:
             raise EvidenceError("evidence record is not valid JSON") from error
-        validators = {
-            "evidence": validate_evidence_record,
-            "quotations": validate_quotation,
-            "claims": validate_claim,
-            "contradictions": validate_contradiction,
-        }
-        return validators[kind](data)
-
-    def list(self, kind: str) -> list[dict[str, Any]]:
-        directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / kind)
-        if not directory.is_dir():
-            return []
-        return [self.get(kind, path.stem) for path in sorted(directory.glob("*.json"))]
+        return _validate(kind, data)
 
     def scan(self, kind: str) -> ScanResult:
         """List every record, reporting rather than raising on a bad one.
@@ -978,7 +1104,7 @@ class EvidenceStore:
         A projection over the store must stay usable when one file is corrupt:
         an unreadable record is the exact thing the reader needs to be told
         about, so it is returned as a typed problem instead of aborting the
-        whole read. ``list`` stays strict for callers that need all-or-nothing.
+        whole read.
         """
         directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / kind)
         if not directory.is_dir():

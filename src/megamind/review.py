@@ -14,7 +14,8 @@ from pathlib import Path
 
 from .capture import list_proposals
 from .card import compiled_page_dir, is_canonical_page
-from .evidence import EvidenceStore
+from .confidence import CLEAN_CORRECTION
+from .evidence import EvidenceStore, resolve_corrections
 from .evolve import PROPOSAL_MARKER
 from .fsops import resolve_contained
 from .links import extract_links, link_target_path, page_name_table, resolve_link
@@ -190,6 +191,7 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
     # loaded by this projection. A malformed record is reported as work to do
     # rather than aborting review and the home document that points at doctor.
     evidence_store = EvidenceStore(root)
+    notices = [notice for _, notice, _ in evidence_store.scan("corrections") if notice is not None]
     for identifier, record, problem in evidence_store.scan("evidence"):
         if record is None:
             report.pending_evidence.append(
@@ -197,12 +199,21 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
             )
             continue
         acceptance = record.get("acceptance", {})
-        if acceptance.get("decision") in {"deferred", "rejected"}:
+        decision = str(acceptance.get("decision", ""))
+        failure = str(acceptance.get("failure", ""))
+        status = str(resolve_corrections(record, notices)["status"])
+        pending = decision in {"deferred", "rejected"}
+        if status != CLEAN_CORRECTION and decision == "accepted":
+            # Support is already withdrawn by the correction posture; the stored
+            # acceptance block is what still has to catch up.
+            pending = True
+            failure = f"superseded by a {status} correction notice; re-record the artifact"
+        if pending:
             report.pending_evidence.append(
                 {
                     "evidence_id": record.get("evidence_id", ""),
-                    "decision": acceptance.get("decision", ""),
-                    "failure": acceptance.get("failure", ""),
+                    "decision": decision,
+                    "failure": failure,
                 }
             )
     for identifier, contradiction, problem in evidence_store.scan("contradictions"):
