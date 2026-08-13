@@ -19,8 +19,8 @@ commands:
 
 ```sh
 pytest          # deterministic test suite
-ruff check src tests && ruff format --check src tests
-mypy            # strict, configured in pyproject.toml
+ruff check src tests evals && ruff format --check src tests evals
+mypy            # strict, configured in pyproject.toml (src/megamind and evals)
 ```
 
 ## Ground rules

@@ -7,6 +7,7 @@ content-addressed inputs for a host-side benchmark.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
@@ -498,10 +499,8 @@ def load_corpus(root: Path, *, holdout_root: Path | None = None) -> Doc:
                 raise CorpusError(f"case {case_id} names a missing canary: {relative}")
         _check_no_real_data(case, f"case {case_id}")
     for relative in files:
-        try:
+        with contextlib.suppress(UnicodeDecodeError):
             _check_no_real_data((root / relative).read_text(encoding="utf-8"), relative)
-        except UnicodeDecodeError:
-            pass
     for field in ("tier", "domain"):
         observed: dict[str, dict[str, Any]] = {}
         for case in case_map.values():

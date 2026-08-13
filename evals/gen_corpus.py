@@ -156,9 +156,7 @@ FILES: dict[str, str] = {
         "reviewed each release.\n"
     ),
     "ProductWiki/topics/release.md": (
-        "# Release\n"
-        "\n"
-        "Synthetic releases use a staged rollout and a published release note.\n"
+        "# Release\n\nSynthetic releases use a staged rollout and a published release note.\n"
     ),
     "ProductWiki/topics/onboarding.md": (
         "# Onboarding\n"
@@ -197,10 +195,7 @@ FILES: dict[str, str] = {
     ),
     # Unindexed private page: the ladder must never reach it.
     "OpsWiki/private/approval-notes.md": (
-        "# Approval notes\n"
-        "\n"
-        "Synthetic private approval notes.\n"
-        "CANARY-COMPANY-OPS-7\n"
+        "# Approval notes\n\nSynthetic private approval notes.\nCANARY-COMPANY-OPS-7\n"
     ),
     # --- PersonalWiki: personal-local, cloud access none -----------------------
     "PersonalWiki/CARD.md": (
@@ -227,15 +222,10 @@ FILES: dict[str, str] = {
         "- [Routine](topics/routine.md) - synthetic weekly routine\n"
     ),
     "PersonalWiki/topics/routine.md": (
-        "# Routine\n"
-        "\n"
-        "A synthetic weekly routine with no private detail in it.\n"
+        "# Routine\n\nA synthetic weekly routine with no private detail in it.\n"
     ),
     "PersonalWiki/private/journal.md": (
-        "# Journal\n"
-        "\n"
-        "Private synthetic journal notes.\n"
-        "CANARY-PRIVATE-PERSONAL-9\n"
+        "# Journal\n\nPrivate synthetic journal notes.\nCANARY-PRIVATE-PERSONAL-9\n"
     ),
     # --- DigestWiki: digest-only, mixed language ------------------------------
     "DigestWiki/CARD.md": (
@@ -267,15 +257,10 @@ FILES: dict[str, str] = {
         "- [Study notes](topics/study-notes.md) - synthetic study notes\n"
     ),
     "DigestWiki/topics/study-notes.md": (
-        "# Study notes\n"
-        "\n"
-        "Synthetic study notes that a digest-only wiki never routes directly.\n"
+        "# Study notes\n\nSynthetic study notes that a digest-only wiki never routes directly.\n"
     ),
     "DigestWiki/private/private-study.md": (
-        "# Private study\n"
-        "\n"
-        "Synthetic private study notes.\n"
-        "CANARY-PRIVATE-DIGEST-8\n"
+        "# Private study\n\nSynthetic private study notes.\nCANARY-PRIVATE-DIGEST-8\n"
     ),
     # --- ArchiveWiki: pointer-only, access none on both axes ------------------
     "ArchiveWiki/CARD.md": (
@@ -291,10 +276,7 @@ FILES: dict[str, str] = {
         "Points at a synthetic historic archive. Content is never routed.\n"
     ),
     "ArchiveWiki/topics/history.md": (
-        "# History\n"
-        "\n"
-        "Synthetic archive history.\n"
-        "CANARY-PRIVATE-ARCHIVE-6\n"
+        "# History\n\nSynthetic archive history.\nCANARY-PRIVATE-ARCHIVE-6\n"
     ),
     # --- ProvisionalWiki: offered, never an authorized load -------------------
     "ProvisionalWiki/CARD.md": (

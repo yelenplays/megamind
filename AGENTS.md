@@ -12,8 +12,9 @@ contract), `docs/roadmap.md` (scope), `CONTEXT.md`
 
 ## Working here
 
-- Checks that must stay green: `pytest`, `ruff check src tests`,
-  `ruff format --check src tests`, `mypy` (strict; config in `pyproject.toml`).
+- Checks that must stay green: `pytest`, `ruff check src tests evals`,
+  `ruff format --check src tests evals`, `mypy` (strict; config in
+  `pyproject.toml`, covering `src/megamind` and `evals`).
   CI (`.github/workflows/ci.yml`) runs these on Python 3.10-3.14, plus the
   frozen offline release benchmark (`bench run --repeat` then `bench check`)
   and an installed-wheel smoke test executed outside the source tree.
