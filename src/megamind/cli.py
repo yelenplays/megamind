@@ -1441,6 +1441,31 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
     }:
         EvidenceStore(root).recover()
     raw = _read_json_file(args.input, "--input")
+    if action == "permission-check":
+        if not isinstance(raw, Mapping):
+            raise ResearchError("permission-check input must be an object")
+        candidate = dict(raw)
+        candidate.pop("policy_authorized", None)
+        candidate.pop("schema", None)
+        candidate.pop("plan_id", None)
+        candidate["schema"] = PLAN_SCHEMA
+        candidate.setdefault("budget", candidate.pop("ceilings", {}))
+        candidate.setdefault("policy_digest", "legacy-policy")
+        candidate.setdefault("card_digest", "legacy-card")
+        candidate.setdefault("access_digest", "legacy-access")
+        plan = make_plan(candidate)
+        if not isinstance(plan, dict):
+            raise ResearchError("legacy permission-check plan is invalid")
+        job_id = content_hash(json.dumps({"plan_id": plan["plan_id"], "gap_id": plan["gap_id"]}, sort_keys=True, separators=(",", ":")))
+        authorized = bool(policy is not None and raw.get("policy_authorized") is True)
+        job = validate_job({"schema": JOB_SCHEMA, "job_id": job_id, "plan_id": plan["plan_id"], "gap_id": plan["gap_id"], "state": "planned" if authorized else "policy-denied", "attempt": 1, "events": []})
+        store.put("plans", plan)
+        store.put("jobs", job)
+        return _research_doc(JOB_SCHEMA, {"status": job["state"], "job": job, "authority": {"authorized": policy is not None}}, "Permission is derived from the wiki policy"), 0
+    if action == "outcome":
+        outcome = validate_outcome(raw)
+        path = store.put("outcomes", outcome)
+        return _research_doc(OUTCOME_SCHEMA, {"status": outcome["status"], "outcome": outcome, "path": path.relative_to(root.resolve()).as_posix()}, "Outcomes are immutable local receipts"), 0
     if action == "plan":
         plan = make_plan(raw)
         path = store.put("plans", plan)
@@ -2575,6 +2600,7 @@ def build_parser() -> AxiParser:
         "research_action",
         choices=[
             "plan",
+            "permission-check",
             "record-discovery",
             "record-artifact",
             "record-quotations",
@@ -2582,6 +2608,7 @@ def build_parser() -> AxiParser:
             "record-claims",
             "reconcile",
             "packet",
+            "outcome",
             "status",
             "cancel",
             "resume",

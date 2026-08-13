@@ -621,6 +621,40 @@ class ResearchStore:
             if value.get("event_id") != content_hash(json.dumps(payload, sort_keys=True, separators=(",", ":"))):
                 raise ResearchError("invalid research job journal entry")
             events.append(value)
+        latest: dict[str, dict[str, Any]] = {}
+        transitions = {
+            "gap-open": {"permission-check", "cancelled"},
+            "permission-check": {"planned", "cancelled", "policy-denied", "approval-required"},
+            "planned": {"discovering", "cancelled"},
+            "discovering": {"retrieving", "cancelled", "budget-exhausted"},
+            "retrieving": {"accepting", "cancelled", "budget-exhausted"},
+            "accepting": {"extracting", "packet-ready", "cancelled"},
+            "extracting": {"reconciling", "cancelled"},
+            "reconciling": {"packet-ready", "cancelled", "unresolved-contradiction"},
+        }
+        for event in events:
+            job_id = str(event["job_id"])
+            prior = latest.get(job_id)
+            if prior is None:
+                if event["state"] != "gap-open":
+                    raise ResearchError("invalid research job journal transition")
+            else:
+                resumed = (
+                    prior["state"] == "cancelled"
+                    and event["state"] == "gap-open"
+                    and event["attempt_id"] != prior["attempt_id"]
+                )
+                if resumed:
+                    if event["artifact_ids"] or event["contradiction_ids"]:
+                        raise ResearchError("invalid research job journal transition")
+                elif (
+                    event["attempt_id"] != prior["attempt_id"]
+                    or any(event[key] != prior[key] for key in ("plan_id", "gap_id", "policy_digest", "card_digest", "access_digest"))
+                    or event["state"] not in transitions.get(str(prior["state"]), set())
+                    or (prior["state"] == "accepting" and (event["artifact_ids"] != prior["artifact_ids"] or event["contradiction_ids"] != prior["contradiction_ids"]))
+                ):
+                    raise ResearchError("invalid research job journal transition")
+            latest[job_id] = event
         return events
 
     def jobs(self) -> list[LegacyJob]:
@@ -687,19 +721,26 @@ class ResearchStore:
         if current is not None:
             if expected_state and current.state != expected_state:
                 raise ResearchError(f"expected {expected_state}, found {current.state}")
-            if current.plan_id != plan_id or current.gap_id != gap_id or current.attempt_id != attempt_id:
+            resumed = (
+                current.state == "cancelled"
+                and state == "gap-open"
+                and attempt_id != current.attempt_id
+            )
+            if current.plan_id != plan_id or current.gap_id != gap_id or (
+                current.attempt_id != attempt_id and not resumed
+            ):
                 raise ReplayConflict("attempt identity does not match current job")
             policy_digest = policy_digest or current.policy_digest
             card_digest = card_digest or current.card_digest
             access_digest = access_digest or current.access_digest
-            effective_artifacts = sorted(set(artifact_ids if artifact_ids is not None else current.artifact_ids))
-            effective_contradictions = sorted(set(contradiction_ids if contradiction_ids is not None else current.contradiction_ids))
+            effective_artifacts = sorted(set(artifact_ids or [])) if resumed else sorted(set(artifact_ids if artifact_ids is not None else current.artifact_ids))
+            effective_contradictions = sorted(set(contradiction_ids or [])) if resumed else sorted(set(contradiction_ids if contradiction_ids is not None else current.contradiction_ids))
             if current.state == "accepting" and (
                 effective_artifacts != sorted(current.artifact_ids)
                 or effective_contradictions != sorted(current.contradiction_ids)
             ):
                 raise ReplayConflict("accepted artifact set is immutable")
-            if state != current.state and state not in edges.get(current.state, set()):
+            if not resumed and state != current.state and state not in edges.get(current.state, set()):
                 raise ResearchError(f"cannot transition {current.state} to {state}")
         else:
             effective_artifacts = sorted(set(artifact_ids or []))
@@ -730,3 +771,12 @@ class ResearchStore:
             policy_digest, card_digest, access_digest,
         ):
             raise ResearchDrift("policy, card, access, or plan drift requires replan")
+
+    def save_packet(self, packet: Mapping[str, Any], resolver: Any | None = None) -> Path:
+        normalized = make_packet(packet, resolver)
+        rel = Path(MEGAMIND_DIR) / "research" / "packets" / f"{normalized['packet_id']}.json"
+        path = resolve_contained(self.root, rel)
+        text = json.dumps(normalized, indent=2, sort_keys=True) + "\n"
+        if path.is_file() and path.read_text(encoding="utf-8") != text:
+            raise ResearchError("research artifact is immutable")
+        return atomic_write(self.root, rel, text)

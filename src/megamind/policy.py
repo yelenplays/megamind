@@ -142,6 +142,10 @@ class ResearchPolicy:
     research: str = "off"
     apply: str = "approval"
     max_sources_per_cycle: int = 20
+    enabled: bool | None = None
+    claim_types: tuple[str, ...] = ()
+    research_mode: str = ""
+    digest: str = ""
 
     @property
     def schema(self) -> str:
@@ -149,6 +153,8 @@ class ResearchPolicy:
 
     @property
     def permitted(self) -> bool:
+        if self.enabled is not None:
+            return self.enabled and self.research_mode != "off"
         return bool(self.tiers) and self.research != "off"
 
     def to_data(self) -> dict[str, object]:
