@@ -482,6 +482,42 @@ def correction_head(
     return heads[0] if len(heads) == 1 else None
 
 
+def _validate_correction_chain(
+    evidence_id: str, notices: Mapping[str, Mapping[str, Any]]
+) -> None:
+    chain = [notice for notice in notices.values() if str(notice["evidence_id"]) == evidence_id]
+    roots = [notice for notice in chain if not notice["supersedes"]]
+    if len(roots) != 1:
+        raise EvidenceError("correction chain must have exactly one initial notice")
+    children: dict[str, int] = {}
+    for notice in chain:
+        notice_id = str(notice["notice_id"])
+        supersedes = str(notice["supersedes"])
+        if supersedes == notice_id:
+            raise EvidenceError("correction notice cannot supersede itself")
+        if supersedes:
+            prior = notices.get(supersedes)
+            if prior is None or str(prior["evidence_id"]) != evidence_id:
+                raise EvidenceError("correction notice does not extend its evidence chain")
+            children[supersedes] = children.get(supersedes, 0) + 1
+    if any(count > 1 for count in children.values()):
+        raise EvidenceError("correction chain cannot fork")
+    head = correction_head(evidence_id, chain)
+    if head is None:
+        raise EvidenceError("correction chain has no single current notice")
+    visited: set[str] = set()
+    current: Mapping[str, Any] | None = head
+    while current is not None:
+        current_id = str(current["notice_id"])
+        if current_id in visited:
+            raise EvidenceError("correction chain cannot contain a cycle")
+        visited.add(current_id)
+        predecessor = str(current["supersedes"])
+        current = notices.get(predecessor) if predecessor else None
+    if len(visited) != len(chain):
+        raise EvidenceError("correction chain is disconnected")
+
+
 def resolve_corrections(
     record: Mapping[str, Any], notices: Sequence[Mapping[str, Any]] = ()
 ) -> dict[str, Any]:
@@ -1201,13 +1237,7 @@ class EvidenceStore:
             evidence_id = str(notice["evidence_id"])
             if evidence_id not in records["evidence"]:
                 raise EvidenceError(f"correction notice references an unknown evidence record: {evidence_id}")
-            supersedes = str(notice["supersedes"])
-            if supersedes:
-                prior = records["corrections"].get(supersedes)
-                if prior is None:
-                    raise EvidenceError(f"correction notice supersedes an unknown notice: {supersedes}")
-                if str(prior["evidence_id"]) != evidence_id:
-                    raise EvidenceError("correction notice supersedes a notice for another evidence record")
+            _validate_correction_chain(evidence_id, records["corrections"])
             return notice
         return _validate(kind, data)
 

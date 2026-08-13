@@ -39,15 +39,22 @@ the fields.
         "allowlist_status": "approved"
       },
       "research_policy": {
-        "enabled": true,
-        "tiers": {"primary": "release-notes"},
-        "claim_types": ["general"],
-        "sole_support": false,
+        "schema": "megamind/research-policy/v1",
+        "tiers": [
+          {
+            "tier": 1,
+            "name": "synthetic-release-notes",
+            "quality": "primary",
+            "matchers": [{"kind": "publisher", "publisher": "Synthetic Product"}],
+            "claim_types": ["fact", "decision"],
+            "sole_support": false
+          }
+        ],
+        "accepted_authorities": ["Synthetic Product"],
         "quote_ceiling_chars": 200,
-        "research_mode": "approval",
-        "apply_mode": "approval",
-        "max_sources_per_cycle": 3,
-        "digest": "synthetic-policy-digest"
+        "research": "approval",
+        "apply": "approval",
+        "max_sources_per_cycle": 3
       },
       "freshness": {"half_life_days": 90, "last_confirmed": "2026-08-01"},
       "examples": ["What is the current pricing model?"],
@@ -102,17 +109,15 @@ v2 card fields, all optional:
 - `source_policy`: a free-text `summary`, an `allowlist` path pointer, and
   the allowlist `allowlist_status` (`approved`, `proposed`, `none`).
 - `research_policy`: the only field that can authorize a research cycle (see
-  "Deterministic research state" below). `enabled` (boolean), `tiers` (string
-  to string), `claim_types` (strings), `sole_support` (boolean),
-  `quote_ceiling_chars` and `max_sources_per_cycle` (non-negative integers),
-  `research_mode` (`off`, `approval`, or `standing`), `apply_mode` (`approval`
-  or `standing`), and `digest` (the frozen policy text this entry stands for).
-  An omitted or empty policy denies research. Authorization requires all of
-  `enabled: true`, a `research_mode` other than `off`, a non-empty `digest`,
-  and a positive `max_sources_per_cycle`; anything else, including a
-  provisional wiki or a card whose local model access is `none`, is denied.
-  `apply_mode` never widens the write path: apply stays one explicit approval
-  per cycle.
+  "Deterministic research state" below). It is a strict
+  `megamind/research-policy/v1` object with a `tiers` list; each tier has a
+  positive number, name, quality, typed matchers, supported claim types, and
+  optional `sole_support`. `accepted_authorities` bounds publisher names that
+  claim `authority-registry` basis. `quote_ceiling_chars` and
+  `max_sources_per_cycle` are positive integers; `research` is `off`,
+  `approval`, or `standing`, and `apply` is `approval` or `standing`. An
+  omitted or empty policy denies research. `apply` never widens the write path:
+  apply stays one explicit approval per cycle.
 - `freshness`: declared expectations only (`half_life_days`,
   `last_confirmed`). Staleness is computed at read time (catalog passes
   `--today`), never stored.

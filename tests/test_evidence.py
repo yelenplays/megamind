@@ -1233,6 +1233,25 @@ def test_evidence_store_rejects_dangling_references_and_unproven_quotations(
         store.put_all([("claims", first), ("claims", second), ("contradictions", contradiction)])
 
 
+def test_evidence_store_requires_a_single_append_only_correction_chain(tmp_path: Path) -> None:
+    root = governed_vault(tmp_path)
+    store = EvidenceStore(root)
+    record = research_evidence()
+    evidence_id = str(record["evidence_id"])
+    store.put("evidence", record)
+    first = correction_notice(evidence_id, "expression_of_concern", "2026-08-13")
+    store.put("corrections", first)
+    first = validate_correction_notice(first)
+
+    with pytest.raises(EvidenceError, match="exactly one initial"):
+        store.put("corrections", correction_notice(evidence_id, "retracted", "2026-08-14"))
+
+    second = correction_notice(
+        evidence_id, "retracted", "2026-08-14", str(first["notice_id"])
+    )
+    store.put("corrections", second)
+
+
 def test_record_quotations_commits_nothing_when_one_span_is_unwritable(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
