@@ -38,6 +38,17 @@ the fields.
         "allowlist": "ProductWiki/SOURCES.md",
         "allowlist_status": "approved"
       },
+      "research_policy": {
+        "enabled": true,
+        "tiers": {"primary": "release-notes"},
+        "claim_types": ["general"],
+        "sole_support": false,
+        "quote_ceiling_chars": 200,
+        "research_mode": "approval",
+        "apply_mode": "approval",
+        "max_sources_per_cycle": 3,
+        "digest": "synthetic-policy-digest"
+      },
       "freshness": {"half_life_days": 90, "last_confirmed": "2026-08-01"},
       "examples": ["What is the current pricing model?"],
       "triggers": ["pricing", "release"],
@@ -90,6 +101,18 @@ v2 card fields, all optional:
   and zero content. Pointer-only privacy forces pointer mode.
 - `source_policy`: a free-text `summary`, an `allowlist` path pointer, and
   the allowlist `allowlist_status` (`approved`, `proposed`, `none`).
+- `research_policy`: the only field that can authorize a research cycle (see
+  "Deterministic research state" below). `enabled` (boolean), `tiers` (string
+  to string), `claim_types` (strings), `sole_support` (boolean),
+  `quote_ceiling_chars` and `max_sources_per_cycle` (non-negative integers),
+  `research_mode` (`off`, `approval`, or `standing`), `apply_mode` (`approval`
+  or `standing`), and `digest` (the frozen policy text this entry stands for).
+  An omitted or empty policy denies research. Authorization requires all of
+  `enabled: true`, a `research_mode` other than `off`, a non-empty `digest`,
+  and a positive `max_sources_per_cycle`; anything else, including a
+  provisional wiki or a card whose local model access is `none`, is denied.
+  `apply_mode` never widens the write path: apply stays one explicit approval
+  per cycle.
 - `freshness`: declared expectations only (`half_life_days`,
   `last_confirmed`). Staleness is computed at read time (catalog passes
   `--today`), never stored.

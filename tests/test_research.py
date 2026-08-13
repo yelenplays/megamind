@@ -161,7 +161,7 @@ EVIDENCE_INPUT: dict[str, Any] = {
 }
 
 
-def _lane_to_packet_ready(
+def _lane_to_extracting(
     capsys: pytest.CaptureFixture[str], root: Path
 ) -> tuple[dict[str, Any], str]:
     code, doc = _run(
@@ -238,8 +238,13 @@ def _lane_to_packet_ready(
     )
     assert code == 0, doc
     assert doc["status"] == "extracting"
-    claim_id = doc["claims"][0]["claim_id"]
+    return job, str(doc["claims"][0]["claim_id"])
 
+
+def _lane_to_packet_ready(
+    capsys: pytest.CaptureFixture[str], root: Path
+) -> tuple[dict[str, Any], str]:
+    job, claim_id = _lane_to_extracting(capsys, root)
     code, doc = _run(
         capsys, root, "research", "reconcile", "--job-id", job["job_id"], "--today", "2026-03-01"
     )
@@ -289,6 +294,99 @@ def test_research_lane_reaches_a_proposal_through_the_transition_table(
     assert replayed_code == 0
     assert replayed["job"] == doc["job"]
     assert replayed["proposal_id"] == doc["proposal_id"]
+
+
+def _artifacts(root: Path, directory: str) -> set[str]:
+    path = root / ".megamind" / "research" / directory
+    return {item.name for item in path.glob("*.json")} if path.is_dir() else set()
+
+
+def test_packet_refuses_before_reconcile_without_freezing_anything(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _research_vault(tmp_path)
+    job, claim_id = _lane_to_extracting(capsys, root)
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "packet",
+        "--input",
+        _write(
+            root,
+            "packet.json",
+            {
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "claims": [claim_id],
+                "interpretation": "Synthesis that skipped reconciliation.",
+            },
+        ),
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 1
+    assert doc["code"] == "research_transition_invalid"
+    assert _artifacts(root, "packets") == set()
+    assert list((root / ".megamind" / "proposals").glob("*.md")) == []
+
+
+def test_record_claims_replay_is_a_no_op(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _research_vault(tmp_path)
+    job, _claim_id = _lane_to_extracting(capsys, root)
+    journal = root / ".megamind" / "research" / "jobs.jsonl"
+    before = journal.read_text(encoding="utf-8")
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "record-claims",
+        "--input",
+        str(root / "claims.json"),
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0, doc
+    assert doc["status"] == "extracting"
+    assert journal.read_text(encoding="utf-8") == before
+    assert job["job_id"] == doc["job"]["job_id"]
+
+
+def test_record_claims_refuses_a_forbidden_state_without_freezing_claims(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _research_vault(tmp_path)
+    job, _claim_id = _lane_to_packet_ready(capsys, root)
+    before = _artifacts(root, "claims")
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "record-claims",
+        "--input",
+        _write(
+            root,
+            "late-claims.json",
+            {
+                "job_id": job["job_id"],
+                "attempt_id": job["attempt_id"],
+                "claims": [
+                    {
+                        "claim_key": "late-claim",
+                        "statement": "A claim recorded after reconciliation.",
+                        "supported_by": [],
+                    }
+                ],
+            },
+        ),
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 1
+    assert doc["code"] == "research_transition_invalid"
+    assert _artifacts(root, "claims") == before
 
 
 def test_packet_refuses_an_unfrozen_claim_reference(

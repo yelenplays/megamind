@@ -116,6 +116,7 @@ from .registry import (
 from .research import (
     OUTCOME_SCHEMA,
     PACKET_SCHEMA,
+    InvalidResearchTransition,
     JobView,
     MappingResolver,
     ReplayConflict,
@@ -1228,12 +1229,24 @@ def _bound_plan(
 
 
 def _authorized_job(
-    root: Path, store: ResearchStore, job_id: str, attempt_id: str
+    root: Path,
+    store: ResearchStore,
+    job_id: str,
+    attempt_id: str,
+    *,
+    states: tuple[str, ...] = (),
 ) -> tuple[JobView, ResearchPlan, ResearchAuthority]:
-    """Resolve a job whose card still authorizes the attempt the receipt names."""
+    """Resolve a job whose card still authorizes the attempt the receipt names.
+
+    ``states`` names the job states the caller may act from.  Callers that
+    freeze an artifact pass it so a step the transition table would refuse
+    cannot leave a durable packet, proposal, or claim behind first.
+    """
     job = store.get(job_id)
     if attempt_id and job.attempt_id != attempt_id:
         raise ReplayConflict("receipt attempt identity does not match the current job")
+    if states and job.state not in states:
+        raise InvalidResearchTransition(f"expected {' or '.join(states)}, found {job.state}")
     plan_record = store.load_plan(job.plan_id)
     authority = research_authority(resolve_wiki_entry(root, plan_record.wiki))
     store.assert_no_drift(
@@ -1423,8 +1436,14 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
         packet = make_packet(data, resolver)
         packet_id = str(packet["packet_id"])
         job, _plan_record, _authority = _authorized_job(
-            root, store, str(packet["job_id"]), str(packet["attempt_id"])
+            root,
+            store,
+            str(packet["job_id"]),
+            str(packet["attempt_id"]),
+            states=("packet-ready", "change-proposed"),
         )
+        if job.state == "change-proposed" and packet_id not in job.artifact_ids:
+            raise ReplayConflict("this attempt already proposed a different packet")
         store.save_immutable(
             PACKET_SCHEMA,
             packet_id,
@@ -1510,7 +1529,11 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
     if action == "record-claims":
         receipt = make_claims_receipt(_json_file(args.input, "--input"))
         job, _plan_record, _authority = _authorized_job(
-            root, store, receipt["job_id"], receipt["attempt_id"]
+            root,
+            store,
+            receipt["job_id"],
+            receipt["attempt_id"],
+            states=("retrieving", "accepting", "extracting"),
         )
         records = frozen_evidence(root)
         claims = [make_resolved_claim(item, records) for item in receipt["claims"]]
@@ -1522,14 +1545,16 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
         contradictions = [
             make_contradiction(item, contradiction_resolver) for item in receipt["contradictions"]
         ]
-        for claim in claims:
-            store_claim(root, claim)
-        for contradiction in contradictions:
-            store_contradiction(root, contradiction)
         artifact_ids = sorted(
             {claim.claim_id for claim in claims}
             | {contradiction.contradiction_id for contradiction in contradictions}
         )
+        if job.state == "extracting" and list(job.artifact_ids) != artifact_ids:
+            raise ReplayConflict("this attempt already extracted a different claim set")
+        for claim in claims:
+            store_claim(root, claim)
+        for contradiction in contradictions:
+            store_contradiction(root, contradiction)
         current = job
         if current.state == "retrieving":
             current = store.transition(
