@@ -1151,17 +1151,38 @@ class EvidenceStore:
                     atomic_write(self.root, target, previous, durable=True)
             remove_contained(self.root, journal.relative_to(self.root.resolve()), durable=True)
 
+    def recover(self) -> None:
+        self._recover_transactions()
+
+    def _admission_evidence(
+        self, items: Sequence[tuple[str, Mapping[str, Any]]] = ()
+    ) -> dict[str, dict[str, Any]]:
+        records = {
+            str(record["evidence_id"]): record
+            for _, record, _ in self.scan_readonly("evidence")
+            if record is not None
+        }
+        for kind, data in items:
+            if kind == "evidence":
+                record = validate_evidence_record(data)
+                records[str(record["evidence_id"])] = record
+        return records
+
     def _prepare(
         self,
         kind: str,
         data: Mapping[str, Any],
         normalized_text: str | None = None,
         quote_ceiling_chars: int = QUOTE_CEILING_CHARS,
+        evidence: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> tuple[Path, dict[str, Any], str]:
         """Validate one record and prove it may be written, without writing."""
         if kind == "quotations":
             canonical = validate_quotation(
-                data, normalized_text, quote_ceiling_chars=quote_ceiling_chars
+                data,
+                normalized_text,
+                quote_ceiling_chars=quote_ceiling_chars,
+                evidence=evidence,
             )
         else:
             canonical = _validate(kind, data)
@@ -1189,7 +1210,13 @@ class EvidenceStore:
         quote_ceiling_chars: int = QUOTE_CEILING_CHARS,
     ) -> Path:
         self._recover_transactions()
-        rel, _, text = self._prepare(kind, data, normalized_text, quote_ceiling_chars)
+        rel, _, text = self._prepare(
+            kind,
+            data,
+            normalized_text,
+            quote_ceiling_chars,
+            self._admission_evidence(((kind, data),)),
+        )
         atomic_write(self.root, rel, text)
         return resolve_contained(self.root, rel)
 
@@ -1208,8 +1235,10 @@ class EvidenceStore:
         over the whole set before the first byte is written.
         """
         self._recover_transactions()
+        evidence = self._admission_evidence(items)
         prepared = [
-            self._prepare(kind, data, normalized_text, quote_ceiling_chars) for kind, data in items
+            self._prepare(kind, data, normalized_text, quote_ceiling_chars, evidence)
+            for kind, data in items
         ]
         if len({rel for rel, _, _ in prepared}) != len(prepared):
             raise EvidenceError("evidence transaction contains duplicate record targets")

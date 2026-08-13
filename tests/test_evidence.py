@@ -1158,6 +1158,41 @@ def test_quotations_and_claims_refuse_unknown_evidence_at_admission(
     assert code == 0, doctor
 
 
+def test_evidence_store_enforces_quotation_bindings_at_persistence(
+    tmp_path: Path,
+) -> None:
+    root = governed_vault(tmp_path)
+    store = EvidenceStore(root)
+    record = research_evidence()
+    evidence_id = str(record["evidence_id"])
+
+    with pytest.raises(EvidenceError, match="unknown evidence"):
+        store.put("quotations", research_quotation("missing-evidence"), RESEARCH_TEXT)
+
+    store.put("evidence", record)
+
+    foreign_text = "A different frozen fact."
+    foreign_quotation = research_quotation(
+        evidence_id,
+        foreign_text,
+        {"exact": "frozen fact", "prefix": "different ", "suffix": "."},
+    )
+    with pytest.raises(EvidenceError, match="not the normalized snapshot"):
+        store.put("quotations", foreign_quotation, foreign_text)
+
+    coordinated_record = research_evidence("https://authority.test/coordinated")
+    coordinated_id = str(coordinated_record["evidence_id"])
+    coordinated_quotation = research_quotation(coordinated_id)
+    paths = store.put_all(
+        [("evidence", coordinated_record), ("quotations", coordinated_quotation)],
+        RESEARCH_TEXT,
+    )
+    assert [path.name for path in paths] == [
+        f"{coordinated_id}.json",
+        f"{coordinated_quotation['quotation_id']}.json",
+    ]
+
+
 def test_record_quotations_commits_nothing_when_one_span_is_unwritable(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

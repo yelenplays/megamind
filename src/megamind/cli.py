@@ -1432,6 +1432,14 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         ), 0
     if not args.input:
         raise UsageError(f"research {action} requires --input FILE")
+    if action in {
+        "record-artifact",
+        "record-correction",
+        "record-quotations",
+        "record-claims",
+        "reconcile",
+    }:
+        EvidenceStore(root).recover()
     raw = _read_json_file(args.input, "--input")
     if action == "plan":
         plan = make_plan(raw)
