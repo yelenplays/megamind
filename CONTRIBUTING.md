@@ -38,7 +38,7 @@ mypy            # strict, configured in pyproject.toml
   only. Optional integrations belong behind extras (see the roadmap).
 - **Tests first**: behavior changes come with tests; bug fixes come with a
   test that fails before the fix. The synthetic examples vault and the frozen
-  evaluation fixture are pinned by tests; regenerate them deliberately, never
+  evaluation fixtures are pinned by tests; regenerate them deliberately, never
   let them drift.
 - **Synthetic content only**: examples, tests, fixtures, and docs must never
   contain real personal data, private paths, or company information.
