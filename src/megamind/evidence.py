@@ -525,11 +525,7 @@ def _publisher_verdict(publisher: Mapping[str, Any], policy: ResearchPolicy | No
     if publisher["basis"] == "unresolved":
         return "fail"
     authorities = policy.accepted_authorities if policy is not None else ()
-    if (
-        authorities
-        and publisher["basis"] == "authority-registry"
-        and publisher["name"] not in authorities
-    ):
+    if publisher["basis"] == "authority-registry" and publisher["name"] not in authorities:
         return "fail"
     return "pass"
 

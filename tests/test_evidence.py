@@ -19,6 +19,7 @@ from megamind.evidence import (
     QUOTATION_SCHEMA,
     EvidenceError,
     EvidenceStore,
+    acceptance_gates,
     reconcile_claims,
     validate_claim,
     validate_correction_notice,
@@ -194,6 +195,29 @@ def test_research_policy_rejects_unknown_fields_and_absence_is_denial() -> None:
         )
     policy = ResearchPolicy.from_data({"schema": "megamind/research-policy/v1", "tiers": []})
     assert policy.permitted is False
+
+
+@pytest.mark.parametrize("authorities", [None, []])
+def test_empty_authority_allowlist_rejects_registry_publishers(
+    authorities: list[str] | None,
+) -> None:
+    policy_data = {
+        "schema": RESEARCH_POLICY_SCHEMA,
+        "research": "approval",
+        "tiers": [
+            {
+                "tier": 1,
+                "name": "authority",
+                "quality": "primary",
+                "matchers": [{"kind": "publisher", "publisher": "Authority"}],
+            }
+        ],
+    }
+    if authorities is not None:
+        policy_data["accepted_authorities"] = authorities
+    policy = ResearchPolicy.from_data(policy_data)
+    gates = acceptance_gates(_evidence(), policy)
+    assert next(gate for gate in gates if gate["gate"] == "G6")["verdict"] == "fail"
 
 
 @pytest.mark.parametrize(
