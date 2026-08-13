@@ -565,7 +565,9 @@ def _publisher_verdict(publisher: Mapping[str, Any], policy: ResearchPolicy | No
     """A declared registry authority must appear in the wiki's accepted list."""
     if publisher["basis"] == "unresolved":
         return "fail"
-    authorities = policy.accepted_authorities if policy is not None else ()
+    if policy is None:
+        return "unknown"
+    authorities = policy.accepted_authorities
     if publisher["basis"] == "authority-registry" and publisher["name"] not in authorities:
         return "fail"
     return "pass"
