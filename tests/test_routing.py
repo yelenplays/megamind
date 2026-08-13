@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from megamind.registry import load_registry
+import pytest
+
+from megamind.registry import WikiEntry, load_registry
 from megamind.routing import route, tokenize
 
 
@@ -10,6 +12,62 @@ def test_tokenize_filters_stopwords_and_singularizes() -> None:
     assert tokenize("What is the pricing for features?") == ["pricing", "feature"]
     assert tokenize("") == []
     assert tokenize("the is a of") == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("pros", ["pros"]),
+        ("pro", ["pro"]),
+        ("names", ["name"]),
+        ("status", ["status"]),
+        ("focus", ["focus"]),
+        ("process", ["process"]),
+        ("class", ["class"]),
+    ],
+)
+def test_tokenize_conservatively_handles_ambiguous_final_s(text: str, expected: list[str]) -> None:
+    assert tokenize(text) == expected
+
+
+def _with_picture_trigger(vault: Path):
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="PictureWiki",
+            path="PictureWiki",
+            privacy="pointer-only",
+            keywords=["pro"],
+        )
+    )
+    return registry
+
+
+def test_pros_does_not_match_a_pro_trigger(vault: Path) -> None:
+    result = route(vault, _with_picture_trigger(vault), "pros")
+    assert not result.matched
+    assert result.candidates == []
+
+
+def test_explicit_pro_still_matches_exactly(vault: Path) -> None:
+    result = route(vault, _with_picture_trigger(vault), "pro")
+    assert result.matched
+    assert [(candidate.wiki, candidate.path) for candidate in result.candidates] == [
+        ("PictureWiki", "PictureWiki")
+    ]
+
+
+def test_incident_prompt_does_not_match_a_pro_trigger(vault: Path) -> None:
+    prompt = "Once we are pros in Bochum, how should we proceed?"
+    result = route(vault, _with_picture_trigger(vault), prompt)
+    assert not result.matched
+    assert result.candidates == []
+
+
+def test_explicit_branding_wiki_naming_prompt_still_routes(vault: Path) -> None:
+    result = route(vault, _with_picture_trigger(vault), "BrandingWiki brand name")
+    assert result.matched
+    assert result.candidates[0].wiki == "BrandingWiki"
 
 
 def test_route_finds_exact_page(vault: Path) -> None:

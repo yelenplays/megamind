@@ -150,14 +150,21 @@ THRESHOLDS: dict[str, float] = {
 }
 
 
+# A final ``s`` is ambiguous: it can be a plural marker or part of a
+# singular/invariant word.  Only strip it when it is not one of the common
+# singular endings below.  This intentionally prefers a missed plural match to
+# turning a conversational word into an unrelated routing trigger.
+_NON_PLURAL_S_ENDINGS = ("is", "os", "us", "ss")
+
+
 def _normalize(token: str) -> str:
-    if len(token) > 3 and token.endswith("s"):
+    if len(token) > 3 and token.endswith("s") and not token.endswith(_NON_PLURAL_S_ENDINGS):
         return token[:-1]
     return token
 
 
 def tokenize(text: str) -> list[str]:
-    """Lowercased, stopword-filtered, naively singularized tokens, order preserved."""
+    """Lowercase and filter words, safely stripping an unambiguous final ``s``."""
     seen: set[str] = set()
     result: list[str] = []
     for raw in _WORD.findall(text.lower()):

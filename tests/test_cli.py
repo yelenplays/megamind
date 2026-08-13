@@ -15,6 +15,7 @@ import pytest
 from conftest import build_vault
 from megamind import toon
 from megamind.cli import DIFF_LINE_LIMIT, main
+from megamind.registry import WikiEntry, load_registry, save_registry
 from megamind.scaffold import init_wiki_root
 
 
@@ -204,6 +205,57 @@ def test_route_no_match_is_structured_success(
     assert doc["matched"] is False
     assert doc["candidates"] == []
     assert doc["help"]
+
+
+def test_route_plural_trigger_regression_and_determinism(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = build_vault(tmp_path)
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="PictureWiki",
+            path="PictureWiki",
+            privacy="pointer-only",
+            keywords=["pro"],
+        )
+    )
+    save_registry(vault, registry)
+
+    code, pros, _ = run_json(capsys, "--root", str(vault), "route", "pros")
+    assert code == 0
+    assert pros["matched"] is False
+    assert pros["candidates"] == []
+
+    code, pro, _ = run_json(capsys, "--root", str(vault), "route", "pro")
+    assert code == 0
+    assert pro["matched"] is True
+    assert pro["candidates"][0]["path"] == "PictureWiki"
+
+    prompt = "Once we are pros in Bochum, how should we proceed?"
+    code, incident, _ = run_json(capsys, "--root", str(vault), "route", prompt)
+    assert code == 0
+    assert incident["matched"] is False
+    assert incident["candidates"] == []
+
+    code, naming, _ = run_json(
+        capsys,
+        "--root",
+        str(vault),
+        "route",
+        "BrandingWiki brand name",
+        "--fields",
+        "path,wiki",
+    )
+    assert code == 0
+    assert naming["matched"] is True
+    assert naming["candidates"][0]["wiki"] == "BrandingWiki"
+
+    code, first, _ = run_json(capsys, "--root", str(vault), "route", "brand color palette")
+    assert code == 0
+    code, second, _ = run_json(capsys, "--root", str(vault), "route", "brand color palette")
+    assert code == 0
+    assert first == second
 
 
 # --- capture -----------------------------------------------------------------
