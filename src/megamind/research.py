@@ -600,6 +600,9 @@ class ResearchStore:
                 raise InvalidResearchTransition("expected state does not create a job") from None
             current = None
         if current is not None:
+            effective_artifacts = sorted(
+                set(artifact_ids if artifact_ids is not None else current.artifact_ids)
+            )
             current_contradictions = list(current.contradiction_ids)
             effective_contradictions = sorted(
                 set(contradiction_ids if contradiction_ids is not None else current_contradictions)
@@ -611,7 +614,7 @@ class ResearchStore:
                 gap_id,
                 attempt_id,
                 reason,
-                artifact_ids or [],
+                effective_artifacts,
                 effective_contradictions,
                 policy_digest or current.policy_digest,
                 card_digest or current.card_digest,
@@ -636,7 +639,7 @@ class ResearchStore:
                     gap_id,
                     attempt_id,
                     reason,
-                    artifact_ids or [],
+                    effective_artifacts,
                     effective_contradictions,
                     policy_digest or current.policy_digest,
                     card_digest or current.card_digest,
@@ -659,7 +662,7 @@ class ResearchStore:
             ):
                 raise InvalidResearchTransition(f"cannot transition {current.state} to {to_state}")
             if current.state == "accepting" and (
-                sorted(set(artifact_ids or [])) != sorted(current.artifact_ids)
+                effective_artifacts != sorted(current.artifact_ids)
                 or effective_contradictions != sorted(current.contradiction_ids)
             ):
                 raise ReplayConflict("accepted artifact set is immutable")
@@ -669,6 +672,7 @@ class ResearchStore:
             card_digest = card_digest or current.card_digest
             access_digest = access_digest or current.access_digest
         else:
+            effective_artifacts = sorted(set(artifact_ids or []))
             effective_contradictions = sorted(set(contradiction_ids or []))
         if to_state in TERMINAL_STATES and not attempt_id:
             raise ResearchError("terminal state requires attempt_id")
@@ -679,7 +683,7 @@ class ResearchStore:
             gap_id,
             attempt_id,
             reason,
-            artifact_ids or [],
+            effective_artifacts,
             effective_contradictions,
             policy_digest,
             card_digest,
