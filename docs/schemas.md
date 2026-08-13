@@ -780,7 +780,7 @@ v1 registries keep that restrictive default.
 The evidence lane uses strict, unknown-field-refusing records:
 `megamind/evidence-record/v1`, `megamind/quotation/v1`,
 `megamind/claim/v1`, and `megamind/contradiction/v1`.  Evidence records bind a
-canonical identity and derived `origin_id` to retrieval/publication facts,
+canonical identity and derived `origin_id` plus `origin_proof` to retrieval/publication facts,
 rights, snapshot hashes, correction status, source class, and typed G1-G12
 acceptance gates.  `unknown` is never a pass.  Retractions remove support,
 blocked retrieval is deferred, and injection scanning is advisory only.
@@ -792,8 +792,13 @@ must reference a resolvable quotation.  `exact` must be non-empty, the span
 must be non-empty, and it must lie inside the frozen text, so an empty or
 out-of-range selector can never stand in for a citation.  The per-wiki
 `quote_ceiling_chars` bounds every selector; without a policy the restrictive
-structural limit applies.  Claim confidence is calculated by the existing
-constants after acceptance and counts only derived origin ids; freshness comes
+structural limit applies. `origin_id` is exactly `url-origin/v1:` plus the
+SHA-256 digest of the normalized final URL origin. `origin_proof` is the
+SHA-256 of the canonical URL, final URL, derived id, and
+`megamind/origin-proof/v1` schema marker in canonical JSON. A missing,
+malformed, or mismatched proof is rejected at admission and inert in direct
+scoring paths. Claim confidence is calculated by the existing constants after
+acceptance and counts only locally proven derived origin ids; freshness comes
 from the wiki `freshness_policy` and frozen dates, never from a clock.
 Contradiction records retain every claim and use typed precedence outcomes -
 there is no averaging and unresolved contradictions remain below reliance.

@@ -19,7 +19,8 @@ validators for `evidence-record/v1`, `quotation/v1`, `claim/v1`, and
 unknown is never pass.  Acceptance is derived from frozen typed facts and
 common/source-class gates, never from fetched prose or a model label.
 
-Evidence records bind canonical identity, a derived `origin_id`, dates,
+Evidence records bind canonical identity, a URL-derived `origin_id` and a local
+`origin_proof` bound to both frozen URLs, dates,
 rights, snapshot hashes, corrections, and a typed acceptance block.  A
 retracted source is removed from support.  A blocked source is deferred and
 visible.  Injection scans are advisory; capability isolation is the control.

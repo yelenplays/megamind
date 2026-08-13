@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .confidence import (
     CLEAN_CORRECTION,
@@ -151,6 +152,58 @@ def _canonical_url(value: object) -> str:
     return value
 
 
+def _url_origin(url: str) -> str:
+    parts = urlsplit(url)
+    host = parts.hostname
+    if not host:
+        raise EvidenceError("origin URL must have a host")
+    try:
+        port = parts.port
+    except ValueError as error:
+        raise EvidenceError("origin URL has an invalid port") from error
+    host = host.casefold()
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = (parts.scheme.casefold() == "http" and port == 80) or (
+        parts.scheme.casefold() == "https" and port == 443
+    )
+    return f"{parts.scheme.casefold()}://{host}{'' if port is None or default_port else f':{port}'}"
+
+
+def derived_origin_id(final_url: str) -> str:
+    """Return the sole origin identity eligible for corroboration."""
+    return "url-origin/v1:" + hashlib.sha256(_url_origin(final_url).encode("utf-8")).hexdigest()
+
+
+def origin_proof(canonical_url: str, final_url: str) -> str:
+    """Bind a derived origin identity to the frozen URL facts."""
+    payload = json.dumps(
+        {
+            "canonical_url": canonical_url,
+            "final_url": final_url,
+            "origin_id": derived_origin_id(final_url),
+            "schema": "megamind/origin-proof/v1",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def verified_origin_id(record: Mapping[str, Any]) -> str:
+    """Return a corroborating origin only when its local provenance binds."""
+    try:
+        canonical = _canonical_url(record.get("canonical_url"))
+        final = _canonical_url(record.get("final_url", canonical))
+        expected_id = derived_origin_id(final)
+        expected_proof = origin_proof(canonical, final)
+        if record.get("origin_id") == expected_id and record.get("origin_proof") == expected_proof:
+            return expected_id
+    except EvidenceError:
+        pass
+    return ""
+
+
 def _gates(value: object) -> list[dict[str, str]]:
     if not isinstance(value, list):
         raise EvidenceError("acceptance gates must be a list")
@@ -181,6 +234,7 @@ def _validate_evidence(raw: object) -> dict[str, Any]:
         "evidence_id",
         "source_class",
         "origin_id",
+        "origin_proof",
         "canonical_url",
         "final_url",
         "redirect_chain",
@@ -211,6 +265,11 @@ def _validate_evidence(raw: object) -> dict[str, Any]:
     canonical = _canonical_url(data.get("canonical_url"))
     final_url = _canonical_url(data.get("final_url", canonical))
     origin_id = _str("origin_id", data.get("origin_id"), nonempty=True, limit=300)
+    if origin_id != derived_origin_id(final_url):
+        raise EvidenceError("origin_id does not match the derived final URL origin")
+    proof = _hash("origin_proof", data.get("origin_proof"))
+    if proof != origin_proof(canonical, final_url):
+        raise EvidenceError("origin_proof does not bind the frozen URL facts")
     normalized = _hash(
         "snapshot.normalized_sha256",
         _map("snapshot", data.get("snapshot", {})).get("normalized_sha256"),
@@ -364,6 +423,7 @@ def _validate_evidence(raw: object) -> dict[str, Any]:
         "evidence_id": expected_id,
         "source_class": source_class,
         "origin_id": origin_id,
+        "origin_proof": proof,
         "canonical_url": canonical,
         "final_url": final_url,
         "redirect_chain": [
@@ -655,8 +715,8 @@ def acceptance_gates(
         },
         {
             "gate": "G12",
-            "verdict": "pass" if record["origin_id"] else "unknown",
-            "detail": "derived origin identity",
+            "verdict": "pass" if verified_origin_id(record) else "unknown",
+            "detail": "locally proven derived origin identity",
         },
     ]
     if source_class == "video":
@@ -1103,7 +1163,7 @@ def score_claim(
                 quality,
                 record["canonical_url"],
                 acceptance.get("decision") == "accepted" and quality in QUALITY_BASE,
-                record["origin_id"],
+                verified_origin_id(record),
                 str(resolve_corrections(record, notices)["status"]),
             )
         )

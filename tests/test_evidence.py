@@ -50,9 +50,10 @@ def _evidence() -> dict[str, object]:
         "schema": EVIDENCE_SCHEMA,
         "evidence_id": content_hash(canonical + normalized),
         "source_class": "official-guidance",
-        "origin_id": "authority-1",
         "canonical_url": canonical,
         "final_url": canonical,
+        "origin_id": evidence_module.derived_origin_id(canonical),
+        "origin_proof": evidence_module.origin_proof(canonical, canonical),
         "redirect_chain": [],
         "identifiers": {},
         "retrieved_at": "2026-08-13T00:00:00Z",
@@ -99,6 +100,32 @@ def test_evidence_unknown_fields_and_retraction_are_restrictive() -> None:
     record = _evidence()
     record["corrections"] = {**record["corrections"], "status": "retracted"}  # type: ignore[index]
     assert validate_evidence_record(record)["corrections"]["status"] == "retracted"
+
+
+def test_origin_corroboration_requires_a_url_bound_local_proof() -> None:
+    record = _evidence()
+    same_origin = _evidence()
+    same_origin["canonical_url"] = "https://example.test/another-fact"
+    same_origin["final_url"] = "https://example.test/another-fact"
+    same_origin["origin_id"] = evidence_module.derived_origin_id(str(same_origin["final_url"]))
+    same_origin["origin_proof"] = evidence_module.origin_proof(
+        str(same_origin["canonical_url"]), str(same_origin["final_url"])
+    )
+    assert record["origin_id"] == same_origin["origin_id"]
+
+    forged = {**record, "origin_id": "url-origin/v1:" + "0" * 64}
+    with pytest.raises(EvidenceError, match="derived final URL origin"):
+        validate_evidence_record(forged)
+    assert next(gate for gate in acceptance_gates(forged, None) if gate["gate"] == "G12")[
+        "verdict"
+    ] == "unknown"
+
+    forged = {**record, "origin_proof": "0" * 64}
+    with pytest.raises(EvidenceError, match="frozen URL facts"):
+        validate_evidence_record(forged)
+    assert next(gate for gate in acceptance_gates(forged, None) if gate["gate"] == "G12")[
+        "verdict"
+    ] == "unknown"
 
 
 def test_video_timecode_coverage_requires_a_boolean() -> None:
@@ -429,9 +456,10 @@ def research_evidence(
         "schema": EVIDENCE_SCHEMA,
         "evidence_id": content_hash(canonical + normalized),
         "source_class": "official-guidance",
-        "origin_id": "authority-registry-1",
         "canonical_url": canonical,
         "final_url": canonical,
+        "origin_id": evidence_module.derived_origin_id(canonical),
+        "origin_proof": evidence_module.origin_proof(canonical, canonical),
         "redirect_chain": [],
         "identifiers": {},
         "retrieved_at": "2026-08-13T00:00:00Z",
@@ -708,7 +736,6 @@ def test_evidence_frozen_facts_cannot_be_rewritten(
     for field, value in (
         ("publisher", {"name": "Impostor", "basis": "authority-registry"}),
         ("retrieved_at", "2030-01-01T00:00:00Z"),
-        ("origin_id", "some-other-origin"),
     ):
         forged = {**record, field: value}
         code, doc, _ = run_json(
@@ -717,6 +744,14 @@ def test_evidence_frozen_facts_cannot_be_rewritten(
         assert code == 1, field
         assert doc["code"] == "evidence_invalid"
         assert "different bytes" in doc["message"]
+
+    forged = {**record, "origin_id": "some-other-origin"}
+    code, doc, _ = run_json(
+        capsys, *artifact, "--input", write_json(tmp_path / "in" / "forged-origin.json", forged)
+    )
+    assert code == 1
+    assert doc["code"] == "evidence_invalid"
+    assert "derived final URL origin" in doc["message"]
 
     # A retraction is a frozen fact too: it may only arrive as a new notice.
     retracted = {**record, "corrections": {**record["corrections"], "status": "retracted"}}
