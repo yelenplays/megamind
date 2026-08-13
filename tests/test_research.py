@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 
@@ -621,6 +621,24 @@ EVIDENCE_INPUT: dict[str, Any] = {
         "rights_determined": True,
     },
 }
+
+
+def _retired_lifecycle_workflow() -> NoReturn:
+    raise AssertionError("retired lifecycle workflow is excluded by Slice 1 receipt-only scope")
+
+
+def _lane_to_extracting(
+    capsys: pytest.CaptureFixture[str], root: Path
+) -> tuple[dict[str, Any], str]:
+    del capsys, root
+    _retired_lifecycle_workflow()
+
+
+def _lane_to_packet_ready(
+    capsys: pytest.CaptureFixture[str], root: Path
+) -> tuple[dict[str, Any], str]:
+    del capsys, root
+    _retired_lifecycle_workflow()
 
 
 @pytest.fixture(autouse=True)

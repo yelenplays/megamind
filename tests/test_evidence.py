@@ -28,7 +28,7 @@ from megamind.evidence import (
     validate_evidence_record,
     validate_quotation,
 )
-from megamind.fsops import BACKUP_DIR, MEGAMIND_DIR, content_hash
+from megamind.fsops import MEGAMIND_DIR, content_hash
 from megamind.policy import (
     RESEARCH_POLICY_SCHEMA,
     PolicyError,
@@ -116,16 +116,18 @@ def test_origin_corroboration_requires_a_url_bound_local_proof() -> None:
     forged = {**record, "origin_id": "url-origin/v1:" + "0" * 64}
     with pytest.raises(EvidenceError, match="derived final URL origin"):
         validate_evidence_record(forged)
-    assert next(gate for gate in acceptance_gates(forged, None) if gate["gate"] == "G12")[
-        "verdict"
-    ] == "unknown"
+    assert (
+        next(gate for gate in acceptance_gates(forged, None) if gate["gate"] == "G12")["verdict"]
+        == "unknown"
+    )
 
     forged = {**record, "origin_proof": "0" * 64}
     with pytest.raises(EvidenceError, match="frozen URL facts"):
         validate_evidence_record(forged)
-    assert next(gate for gate in acceptance_gates(forged, None) if gate["gate"] == "G12")[
-        "verdict"
-    ] == "unknown"
+    assert (
+        next(gate for gate in acceptance_gates(forged, None) if gate["gate"] == "G12")["verdict"]
+        == "unknown"
+    )
 
 
 def test_video_timecode_coverage_requires_a_boolean() -> None:
@@ -1860,7 +1862,9 @@ def test_evidence_recovery_refuses_a_hostile_staged_journal(tmp_path: Path) -> N
             "staged_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
     ]
-    transaction_id = content_hash(json.dumps({"items": items}, sort_keys=True, separators=(",", ":")))
+    transaction_id = content_hash(
+        json.dumps({"items": items}, sort_keys=True, separators=(",", ":"))
+    )
     journal = root / MEGAMIND_DIR / "evidence" / "transactions" / f"{transaction_id}.json"
     journal.parent.mkdir(parents=True)
     journal.write_text(

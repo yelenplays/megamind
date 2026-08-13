@@ -1717,15 +1717,16 @@ def make_contradiction(data: Mapping[str, Any], resolver: Any) -> _LegacyContrad
         "authority_precedence",
     }:
         raise EvidenceAcceptanceError("invalid contradiction resolution")
+    claim_ids = tuple(item for item in ids if isinstance(item, str))
+    basis = str(data.get("basis", ""))
+    gap_id = str(data.get("gap_id", ""))
     body = {
-        "claim_ids": ids,
-        "basis": str(data.get("basis", "")),
+        "claim_ids": claim_ids,
+        "basis": basis,
         "resolution": resolution,
-        "gap_id": str(data.get("gap_id", "")),
+        "gap_id": gap_id,
     }
-    return _LegacyContradiction(
-        content_hash(_stable(body)), tuple(ids), body["basis"], resolution, body["gap_id"]
-    )
+    return _LegacyContradiction(content_hash(_stable(body)), claim_ids, basis, resolution, gap_id)
 
 
 def store_contradiction(root: Path, contradiction: _LegacyContradiction) -> Path:

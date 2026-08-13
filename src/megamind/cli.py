@@ -124,6 +124,7 @@ from .registry import (
 from .research import (
     CANDIDATE_SCHEMA,
     JOB_SCHEMA,
+    OUTCOME_SCHEMA,
     PACKET_SCHEMA,
     PLAN_SCHEMA,
     ResearchError,
@@ -131,6 +132,7 @@ from .research import (
     make_plan,
     validate_candidate,
     validate_job,
+    validate_outcome,
     validate_packet,
 )
 from .review import ReviewReport, review
@@ -1914,10 +1916,10 @@ def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc,
         ), 0
     if action == "packet":
         if isinstance(raw, Mapping) and "claims" in raw:
-            job_id = raw.get("job_id")
-            if not isinstance(job_id, str) or not job_id:
+            legacy_job_id = raw.get("job_id")
+            if not isinstance(legacy_job_id, str) or not legacy_job_id:
                 raise ResearchError("legacy packet job_id is required")
-            return _excluded_research_workflow(action, job_id)
+            return _excluded_research_workflow(action, legacy_job_id)
         packet = validate_packet(
             raw,
             claims=_known_records(root, "claims"),
