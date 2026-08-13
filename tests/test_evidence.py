@@ -1700,7 +1700,7 @@ def test_reconcile_commits_nothing_when_a_claim_is_unwritable(
     assert not (root / MEGAMIND_DIR / "evidence" / "contradictions").exists()
 
 
-def test_put_all_rolls_back_after_a_write_failure(
+def test_put_all_retries_a_partial_transaction_after_a_write_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = governed_vault(tmp_path)
@@ -1713,7 +1713,7 @@ def test_put_all_rolls_back_after_a_write_failure(
     ) -> Path:
         nonlocal calls
         calls += 1
-        if calls == 2:
+        if calls == 3:
             raise OSError("synthetic disk failure")
         return original_write(root, target, content, durable=durable)
 
@@ -1725,7 +1725,20 @@ def test_put_all_rolls_back_after_a_write_failure(
                 ("claims", proposed_claim("the synthetic fact is B")),
             ]
         )
-    assert not list((root / MEGAMIND_DIR / "evidence" / "claims").glob("*.json"))
+    claims = list((root / MEGAMIND_DIR / "evidence" / "claims").glob("*.json"))
+    assert len(claims) == 1
+    assert list((root / MEGAMIND_DIR / "evidence" / "transactions").glob("*.json"))
+
+    monkeypatch.setattr(evidence_module, "atomic_write", original_write)
+    persisted = store.put_all(
+        [
+            ("claims", proposed_claim("the synthetic fact is A")),
+            ("claims", proposed_claim("the synthetic fact is B")),
+        ]
+    )
+    assert len(persisted) == 2
+    assert len(list((root / MEGAMIND_DIR / "evidence" / "claims").glob("*.json"))) == 2
+    assert not list((root / MEGAMIND_DIR / "evidence" / "transactions").glob("*.json"))
 
 
 def test_unverifiable_interrupted_transaction_remains_inert(

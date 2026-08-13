@@ -1214,6 +1214,59 @@ class EvidenceStore:
     def _transaction_path(self, identifier: str) -> Path:
         return Path(MEGAMIND_DIR) / "evidence" / "transactions" / f"{identifier}.json"
 
+    def _pending_transaction_matches(
+        self, prepared: Sequence[tuple[Path, dict[str, Any], str]]
+    ) -> str | None:
+        directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / "transactions")
+        if not directory.is_dir():
+            return None
+        journals = sorted(directory.glob("*.json"))
+        if not journals:
+            return None
+        expected = {
+            rel.as_posix(): hashlib.sha256(text.encode("utf-8")).hexdigest()
+            for rel, _, text in prepared
+        }
+        for journal in journals:
+            try:
+                payload = json.loads(journal.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise EvidenceError("evidence transaction journal is unreadable") from error
+            if (
+                not isinstance(payload, dict)
+                or set(payload) != {"schema", "transaction_id", "items"}
+                or payload["schema"] != TRANSACTION_SCHEMA
+                or payload["transaction_id"] != journal.stem
+                or not isinstance(payload["items"], list)
+                or content_hash(_stable({"items": payload["items"]})) != journal.stem
+            ):
+                raise EvidenceError("evidence transaction recovery authority is unavailable")
+            journal_items = payload["items"]
+            if len(journal_items) != len(expected):
+                raise EvidenceError("evidence transaction recovery authority is unavailable")
+            for item in journal_items:
+                if (
+                    not isinstance(item, dict)
+                    or set(item) != {"path", "previous", "staged_sha256"}
+                    or not isinstance(item["path"], str)
+                    or not isinstance(item["staged_sha256"], str)
+                    or item["staged_sha256"] != expected.get(item["path"])
+                    or (item["previous"] is not None and not isinstance(item["previous"], str))
+                ):
+                    raise EvidenceError("evidence transaction recovery authority is unavailable")
+                target = resolve_contained(self.root, Path(item["path"]))
+                current = target.read_text(encoding="utf-8") if target.is_file() else None
+                if current is None and item["previous"] is None:
+                    continue
+                if current is not None and hashlib.sha256(current.encode("utf-8")).hexdigest() == item[
+                    "staged_sha256"
+                ]:
+                    continue
+                if current == item["previous"]:
+                    continue
+                raise EvidenceError("evidence transaction recovery authority is unavailable")
+        return journal.stem
+
     def _recover_transactions(self) -> None:
         directory = resolve_contained(self.root, Path(MEGAMIND_DIR) / "evidence" / "transactions")
         if not directory.is_dir():
@@ -1369,7 +1422,6 @@ class EvidenceStore:
         """
         for kind, _ in items:
             self._require_kind(kind)
-        self._recover_transactions()
         records = self._admission_records(items)
         prepared = [
             self._prepare(kind, data, normalized_text, quote_ceiling_chars, records)
@@ -1390,23 +1442,25 @@ class EvidenceStore:
             )
             if previous is not None:
                 backup_existing(self.root, rel, durable=True)
-        transaction_id = content_hash(_stable({"items": items_for_journal}))
+        pending_transaction_id = self._pending_transaction_matches(prepared)
+        transaction_id = pending_transaction_id or content_hash(_stable({"items": items_for_journal}))
         journal_rel = self._transaction_path(transaction_id)
-        atomic_write(
-            self.root,
-            journal_rel,
-            json.dumps(
-                {
-                    "schema": TRANSACTION_SCHEMA,
-                    "transaction_id": transaction_id,
-                    "items": items_for_journal,
-                },
-                sort_keys=True,
-                indent=2,
+        if pending_transaction_id is None:
+            atomic_write(
+                self.root,
+                journal_rel,
+                json.dumps(
+                    {
+                        "schema": TRANSACTION_SCHEMA,
+                        "transaction_id": transaction_id,
+                        "items": items_for_journal,
+                    },
+                    sort_keys=True,
+                    indent=2,
+                )
+                + "\n",
+                durable=True,
             )
-            + "\n",
-            durable=True,
-        )
         for rel, _, text in prepared:
             atomic_write(self.root, rel, text, durable=True)
         backup_existing(self.root, journal_rel, durable=True)
