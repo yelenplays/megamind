@@ -292,6 +292,7 @@ class JobView:
     event_id: str
     reason: str = ""
     artifact_ids: tuple[str, ...] = ()
+    contradiction_ids: tuple[str, ...] = ()
     updated: str = ""
 
     def to_data(self) -> dict[str, Any]:
@@ -308,6 +309,7 @@ class JobView:
             "event_id": self.event_id,
             "reason": self.reason,
             "artifact_ids": list(self.artifact_ids),
+            "contradiction_ids": list(self.contradiction_ids),
             "updated": self.updated,
         }
 
@@ -582,6 +584,7 @@ class ResearchStore:
         expected_state: str | None = None,
         reason: str = "",
         artifact_ids: list[str] | None = None,
+        contradiction_ids: list[str] | None = None,
         policy_digest: str = "",
         card_digest: str = "",
         access_digest: str = "",
@@ -597,6 +600,10 @@ class ResearchStore:
                 raise InvalidResearchTransition("expected state does not create a job") from None
             current = None
         if current is not None:
+            current_contradictions = list(current.contradiction_ids)
+            effective_contradictions = sorted(
+                set(contradiction_ids if contradiction_ids is not None else current_contradictions)
+            )
             replay_payload = _event_payload(
                 job_id,
                 to_state,
@@ -605,6 +612,7 @@ class ResearchStore:
                 attempt_id,
                 reason,
                 artifact_ids or [],
+                effective_contradictions,
                 policy_digest or current.policy_digest,
                 card_digest or current.card_digest,
                 access_digest or current.access_digest,
@@ -618,6 +626,8 @@ class ResearchStore:
                 and to_state == "gap-open"
                 and attempt_id != current.attempt_id
             )
+            if resuming_cancelled:
+                effective_contradictions = []
             if current.state in TERMINAL_STATES and not resuming_cancelled:
                 candidate = _event_payload(
                     job_id,
@@ -627,6 +637,7 @@ class ResearchStore:
                     attempt_id,
                     reason,
                     artifact_ids or [],
+                    effective_contradictions,
                     policy_digest or current.policy_digest,
                     card_digest or current.card_digest,
                     access_digest or current.access_digest,
@@ -652,6 +663,8 @@ class ResearchStore:
             policy_digest = policy_digest or current.policy_digest
             card_digest = card_digest or current.card_digest
             access_digest = access_digest or current.access_digest
+        else:
+            effective_contradictions = sorted(set(contradiction_ids or []))
         if to_state in TERMINAL_STATES and not attempt_id:
             raise ResearchError("terminal state requires attempt_id")
         payload = _event_payload(
@@ -662,6 +675,7 @@ class ResearchStore:
             attempt_id,
             reason,
             artifact_ids or [],
+            effective_contradictions,
             policy_digest,
             card_digest,
             access_digest,
@@ -803,6 +817,7 @@ def _event_payload(
     attempt_id: str,
     reason: str,
     artifact_ids: list[str],
+    contradiction_ids: list[str],
     policy_digest: str,
     card_digest: str,
     access_digest: str,
@@ -818,6 +833,7 @@ def _event_payload(
         "access_digest": access_digest,
         "reason": reason,
         "artifact_ids": sorted(set(artifact_ids)),
+        "contradiction_ids": sorted(set(contradiction_ids)),
     }
 
 
@@ -835,6 +851,7 @@ def _validated_event(value: Mapping[str, Any]) -> dict[str, Any]:
         "event_id",
         "reason",
         "artifact_ids",
+        "contradiction_ids",
         "updated",
     }
     if set(value) != fields or value.get("schema") != JOB_SCHEMA:
@@ -851,6 +868,10 @@ def _validated_event(value: Mapping[str, Any]) -> dict[str, Any]:
         isinstance(identifier, str) for identifier in value["artifact_ids"]
     ):
         raise ResearchError("invalid research job journal entry")
+    if not isinstance(value.get("contradiction_ids"), list) or not all(
+        isinstance(identifier, str) for identifier in value["contradiction_ids"]
+    ):
+        raise ResearchError("invalid research job journal entry")
     try:
         if _iso(value["updated"]) != value["updated"]:
             raise ResearchError("invalid research job journal entry")
@@ -864,11 +885,16 @@ def _validated_event(value: Mapping[str, Any]) -> dict[str, Any]:
         value["attempt_id"],
         value["reason"],
         value["artifact_ids"],
+        value["contradiction_ids"],
         value["policy_digest"],
         value["card_digest"],
         value["access_digest"],
     )
-    if value["artifact_ids"] != payload["artifact_ids"] or value["event_id"] != _hash_body(payload):
+    if (
+        value["artifact_ids"] != payload["artifact_ids"]
+        or value["contradiction_ids"] != payload["contradiction_ids"]
+        or value["event_id"] != _hash_body(payload)
+    ):
         raise ResearchError("invalid research job journal entry")
     return dict(value)
 
@@ -898,6 +924,10 @@ def _validate_event_history(events: list[Mapping[str, Any]]) -> None:
             for name in ("plan_id", "gap_id", "policy_digest", "card_digest", "access_digest")
         ):
             raise ResearchError("invalid research job journal transition")
+        if event["contradiction_ids"] != current["contradiction_ids"] and not (
+            current["state"] == "retrieving" and event["state"] == "accepting"
+        ):
+            raise ResearchError("invalid research job journal transition")
         if event["state"] not in TRANSITIONS.get(str(current["state"]), frozenset()):
             raise ResearchError("invalid research job journal transition")
         latest[job_id] = event
@@ -916,6 +946,7 @@ def _job_from_data(value: Mapping[str, Any]) -> JobView:
         str(value["event_id"]),
         str(value.get("reason", "")),
         tuple(str(x) for x in value.get("artifact_ids", [])),
+        tuple(str(x) for x in value.get("contradiction_ids", [])),
         str(value.get("updated", "")),
     )
 

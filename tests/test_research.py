@@ -128,6 +128,7 @@ def test_research_journal_refuses_a_self_hashed_invalid_transition(tmp_path: Pat
             "access_digest",
             "reason",
             "artifact_ids",
+            "contradiction_ids",
         )
     }
     payload["state"] = "planned"
@@ -143,6 +144,41 @@ def test_research_journal_refuses_a_self_hashed_invalid_transition(tmp_path: Pat
 
     with pytest.raises(ResearchError, match="invalid research job journal transition"):
         store.jobs()
+
+
+def test_reconciliation_refuses_a_missing_journaled_contradiction(tmp_path: Path) -> None:
+    plan = _plan()
+    store = ResearchStore(tmp_path)
+    job = store.start(plan, today="2026-01-01")
+    for state in ("permission-check", "planned", "discovering", "retrieving"):
+        job = store.transition(
+            job.job_id,
+            state,
+            plan_id=plan.plan_id,
+            gap_id=plan.gap_id,
+            attempt_id=job.attempt_id,
+            today="2026-01-01",
+        )
+    job = store.transition(
+        job.job_id,
+        "accepting",
+        plan_id=plan.plan_id,
+        gap_id=plan.gap_id,
+        attempt_id=job.attempt_id,
+        contradiction_ids=["missing-contradiction"],
+        today="2026-01-01",
+    )
+    job = store.transition(
+        job.job_id,
+        "extracting",
+        plan_id=plan.plan_id,
+        gap_id=plan.gap_id,
+        attempt_id=job.attempt_id,
+        today="2026-01-01",
+    )
+
+    with pytest.raises(EvidenceAcceptanceError, match="artifact is missing"):
+        unresolved_contradictions(tmp_path, job.contradiction_ids)
 
 
 def test_research_plan_requires_a_wiki_binding() -> None:

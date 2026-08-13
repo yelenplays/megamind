@@ -506,7 +506,7 @@ def unresolved_contradictions(root: Path, identifiers: Iterable[str]) -> list[st
     for identifier in sorted(set(identifiers)):
         path = resolve_contained(root, CONTRADICTIONS_DIR / f"{identifier}.json")
         if not path.is_file():
-            continue
+            raise EvidenceAcceptanceError("frozen contradiction artifact is missing")
         raw = _read_document(path, CONTRADICTION_SCHEMA)
         contradiction = make_contradiction(
             {

@@ -1552,6 +1552,7 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
             {claim.claim_id for claim in claims}
             | {contradiction.contradiction_id for contradiction in contradictions}
         )
+        contradiction_ids = sorted(contradiction.contradiction_id for contradiction in contradictions)
         if job.state == "extracting" and list(job.artifact_ids) != artifact_ids:
             raise ReplayConflict("this attempt already extracted a different claim set")
         for claim in claims:
@@ -1569,6 +1570,7 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
                 expected_state="retrieving",
                 reason="claim receipt admitted",
                 artifact_ids=artifact_ids,
+                contradiction_ids=contradiction_ids,
                 today=today,
             )
         result = store.transition(
@@ -1580,6 +1582,7 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
             expected_state="accepting",
             reason="claims extracted",
             artifact_ids=artifact_ids,
+            contradiction_ids=contradiction_ids,
             today=today,
         )
         notes: list[str] = []
@@ -1598,6 +1601,7 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
     if action == "reconcile":
         job, _plan_record, _authority = _authorized_job(root, store, args.job_id, "")
         artifact_ids = list(job.artifact_ids)
+        contradiction_ids = list(job.contradiction_ids)
         if job.state == "extracting":
             store.transition(
                 job.job_id,
@@ -1608,9 +1612,10 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
                 expected_state="extracting",
                 reason="deterministic reconciliation",
                 artifact_ids=artifact_ids,
+                contradiction_ids=contradiction_ids,
                 today=today,
             )
-        unresolved = unresolved_contradictions(root, artifact_ids)
+        unresolved = unresolved_contradictions(root, contradiction_ids)
         result = store.transition(
             job.job_id,
             "unresolved-contradiction" if unresolved else "packet-ready",
@@ -1622,6 +1627,7 @@ def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tupl
             if unresolved
             else "claims reconciled",
             artifact_ids=artifact_ids,
+            contradiction_ids=contradiction_ids,
             today=today,
         )
         return {
