@@ -235,11 +235,17 @@ The selection module owns these invariants behind `select_offer` and
 derives and atomically consumes an exact-request, one-time picker list from the
 current complete catalog. It delegates access derivation to
 `megamind.access` through the current catalog and delegates the existing
-follow-up ladder and budgets to preflight helpers. Its deterministic
-`selection_id` binds original request/catalog/model/preflight identity, selected
-wiki, current card/root facts, exact access and paths, budget, evidence, and
-provenance. Root facts are hashed as card facts plus root-relative resolved
-paths, never absolute machine paths or page bytes.
+follow-up ladder and budgets to preflight helpers.
+
+`select-offer` derives its deterministic `selection_id` from the original
+request/catalog/model/preflight identity, the selected offer, current card/root
+facts, exact access and paths, budget, evidence, and provenance. Root facts are
+hashed as card facts plus root-relative resolved paths, never absolute machine
+paths or page bytes. `select-existing` instead issues its opaque one-time
+`selection_id` before a choice, binding the request and complete catalog hashes,
+model class, owner/session identity hashes, current date, home identity, and
+the emitted eligible subset. Authorization then validates the chosen wiki
+against those bound current facts before it exposes a reader surface.
 
 ## Governed autonomous gardening
 
