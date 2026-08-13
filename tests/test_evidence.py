@@ -1564,7 +1564,7 @@ def test_put_all_rolls_back_after_a_write_failure(
     assert not list((root / MEGAMIND_DIR / "evidence" / "claims").glob("*.json"))
 
 
-def test_put_all_recovers_a_durable_interrupted_transaction(
+def test_doctor_leaves_a_durable_interrupted_transaction_for_a_mutation_to_recover(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = governed_vault(tmp_path)
@@ -1596,9 +1596,13 @@ def test_put_all_recovers_a_durable_interrupted_transaction(
     )
     code, doc, _ = run_json(capsys, "--root", str(root), "doctor")
     assert code == 0
+    assert interrupted_path.is_file()
+    assert journal.is_file()
+    assert doc["errors"] == 0
+
+    EvidenceStore(root).put("claims", proposed_claim("the repaired synthetic fact"))
     assert not interrupted_path.exists()
     assert not journal.exists()
-    assert doc["errors"] == 0
 
 
 def test_active_claim_requires_currently_accepted_evidence(

@@ -1281,5 +1281,4 @@ class EvidenceStore:
         about, so it is returned as a typed problem instead of aborting the
         whole read.
         """
-        self._recover_transactions()
         return self.scan_readonly(kind)
