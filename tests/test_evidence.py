@@ -28,7 +28,7 @@ from megamind.evidence import (
     validate_evidence_record,
     validate_quotation,
 )
-from megamind.fsops import MEGAMIND_DIR, content_hash
+from megamind.fsops import BACKUP_DIR, MEGAMIND_DIR, content_hash
 from megamind.policy import (
     RESEARCH_POLICY_SCHEMA,
     PolicyError,
@@ -1767,6 +1767,21 @@ def test_doctor_leaves_a_durable_interrupted_transaction_for_a_mutation_to_recov
     EvidenceStore(root).put("claims", proposed_claim("the repaired synthetic fact"))
     assert not interrupted_path.exists()
     assert not journal.exists()
+    backups = root / MEGAMIND_DIR / BACKUP_DIR
+    assert list(backups.glob(f"{journal.name}.*.bak"))
+
+
+def test_evidence_store_audits_canonical_correction_notice_id(tmp_path: Path) -> None:
+    root = governed_vault(tmp_path)
+    store = EvidenceStore(root)
+    evidence = research_evidence()
+    store.put("evidence", evidence)
+    notice = correction_notice(str(evidence["evidence_id"]), "corrected", "2026-08-13")
+
+    path = store.put("corrections", notice)
+
+    canonical = validate_correction_notice(notice)
+    assert path.name == f"{canonical['notice_id']}.json"
 
 
 def test_active_claim_requires_currently_accepted_evidence(

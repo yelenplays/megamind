@@ -1263,7 +1263,9 @@ class EvidenceStore:
                 else:
                     atomic_write(self.root, target, previous, durable=True)
                 restored_paths.append(target.as_posix())
-            remove_contained(self.root, journal.relative_to(self.root.resolve()), durable=True)
+            journal_rel = journal.relative_to(self.root.resolve())
+            backup_existing(self.root, journal_rel, durable=True)
+            remove_contained(self.root, journal_rel, durable=True)
             append_audit(
                 self.root,
                 "evidence-transaction-recovery",
@@ -1371,7 +1373,7 @@ class EvidenceStore:
     ) -> Path:
         self._require_kind(kind)
         self._recover_transactions()
-        rel, _, text = self._prepare(
+        rel, canonical, text = self._prepare(
             kind,
             data,
             normalized_text,
@@ -1381,7 +1383,11 @@ class EvidenceStore:
         if resolve_contained(self.root, rel).is_file():
             backup_existing(self.root, rel, durable=True)
         atomic_write(self.root, rel, text)
-        append_audit(self.root, "evidence-record", {"kind": kind, "record_id": str(data[ID_KEYS[kind]])})
+        append_audit(
+            self.root,
+            "evidence-record",
+            {"kind": kind, "record_id": str(canonical[ID_KEYS[kind]])},
+        )
         return resolve_contained(self.root, rel)
 
     def put_all(
