@@ -1,0 +1,1 @@
+Synthetic trial report: healthy adults receiving creatine monohydrate showed a measured strength outcome over the study period. The report notes that population limits and safety caveats remain relevant.

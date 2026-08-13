@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "wikis": [
+    {
+      "name": "HealthWiki",
+      "privacy": "public-reference",
+      "provisional": false
+    },
+    {
+      "name": "FinanceWiki",
+      "privacy": "public-reference",
+      "provisional": false
+    },
+    {
+      "name": "ProvisionalWiki",
+      "privacy": "public-reference",
+      "provisional": true
+    }
+  ]
+}
