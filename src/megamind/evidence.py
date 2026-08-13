@@ -1564,7 +1564,7 @@ def accept_evidence(data: Mapping[str, Any]) -> _LegacyEvidence:
         "normalized_sha256": data["normalized_sha256"], "decision": "accepted" if accepted else "rejected" if correction == "retracted" else "deferred",
     }
     return _LegacyEvidence(
-        content_hash(_stable(body)), str(body["origin"]), str(body["origin_id"]), str(body["decision"]), quality, correction
+        content_hash(_stable(body)), str(body["origin"]), "", str(body["decision"]), quality, correction
     )
 
 

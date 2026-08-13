@@ -1429,6 +1429,16 @@ def test_an_unresolved_contradiction_lowers_the_claim_score() -> None:
     ) < claim_confidence_from_records(records, lifecycle="active")
 
 
+def test_legacy_host_origin_ids_cannot_increase_confidence() -> None:
+    asserted = [_accepted_record("source-a"), _accepted_record("source-b")]
+    untrusted = [_accepted_record(), _accepted_record()]
+
+    assert [record.origin_id for record in asserted] == ["", ""]
+    assert claim_confidence_from_records(
+        asserted, lifecycle="active"
+    ) == claim_confidence_from_records(untrusted, lifecycle="active")
+
+
 def test_claim_confidence_never_assumes_freshness() -> None:
     records = [_accepted_record()]
     unobserved = claim_confidence_from_records(records, lifecycle="active")
