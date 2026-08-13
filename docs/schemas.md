@@ -812,7 +812,8 @@ One JSON object per line: `ts` (UTC ISO), `action` (`init`, `migrate`,
 `capture`, `evolve-apply`, `evolve-apply-proposal-status`, `evolve-rollback`,
 `router-refresh`, `adopt-apply`, `adopt-rollback`, `gap-transition`,
 `research-ingest-proposal`, `provisional-wiki-create`, `provisional-wiki-undo`,
-`provisional-wiki-rollback`), and action-specific fields such as `path`,
+`provisional-wiki-rollback`, `existing_selection_listed`,
+`existing_selection_consumed`), and action-specific fields such as `path`,
 `proposal_id`, `plan_id`, `gap_id`, `correlation_id`, `preserved`,
 `preserved_total`, and `backup`. Backups of every mutated file live in
 `.megamind/audit/backups/<name>.<content-hash>.bak`. Adoption additionally
@@ -820,3 +821,7 @@ writes `.megamind/audit/adoption-<plan_id>.json`, the content-hashed rollback
 record that `adopt --rollback` verifies before removing generated files;
 `provision-wiki` writes the equivalent transaction record described under
 "Governed gardening records" above.
+
+Existing-selection audit records contain only `selection_id`, `request_hash`,
+`catalog_hash`, `event_id`, and `backup`; they never include request text,
+wiki content, owner, or session identity.

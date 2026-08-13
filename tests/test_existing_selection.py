@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -212,6 +213,59 @@ def test_existing_selection_binds_model_session_date_and_catalog(vault: Path, ca
     )
     assert code == 1 and rendered == toon.encode(document)
 
+
+def test_existing_selection_refuses_model_date_and_home_changes(
+    vault: Path, capsys: Any, tmp_path: Path
+) -> None:
+    code, listed, _ = run_json(capsys, *_list_args(vault))
+    assert code == 0
+    common = (
+        "--root",
+        str(vault),
+        "select-existing",
+        "BrandingWiki",
+        "--request",
+        "knowledge base",
+        "--owner-id",
+        "captain",
+        "--session-id",
+        "session-1",
+        "--selection-id",
+        listed["selection_id"],
+    )
+    for context in (
+        (*common, "--model-class", "cloud", "--today", "2026-08-10"),
+        (*common, "--model-class", "local", "--today", "2026-08-11"),
+    ):
+        code, document, _ = run_json(capsys, *context)
+        assert code == 1 and document["code"] == "selection_invalid"
+        code, rendered, _ = run_toon(capsys, *context)
+        assert code == 1 and rendered == toon.encode(document)
+
+    other_vault = tmp_path / "other-vault"
+    shutil.copytree(vault, other_vault)
+    home_context = (
+        "--root",
+        str(other_vault),
+        "select-existing",
+        "BrandingWiki",
+        "--request",
+        "knowledge base",
+        "--model-class",
+        "local",
+        "--owner-id",
+        "captain",
+        "--session-id",
+        "session-1",
+        "--today",
+        "2026-08-10",
+        "--selection-id",
+        listed["selection_id"],
+    )
+    code, document, _ = run_json(capsys, *home_context)
+    assert code == 1 and document["code"] == "selection_invalid"
+    code, rendered, _ = run_toon(capsys, *home_context)
+    assert code == 1 and rendered == toon.encode(document)
 
 def test_existing_selection_recovers_pending_audit_events(
     vault: Path, capsys: Any, monkeypatch: Any

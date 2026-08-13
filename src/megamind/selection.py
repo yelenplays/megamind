@@ -524,15 +524,7 @@ def _claim_existing_state(state_root: Path, state: Doc, wiki: str) -> None:
             durable=True,
         )
     except FileExistsError as error:
-        try:
-            raw = resolve_contained(state_root, _existing_claim_path(selection_id)).read_text(
-                encoding="utf-8"
-            )
-            existing = json.loads(raw)
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as read_error:
-            raise _existing_state_error("claim is malformed") from read_error
-        if existing != claim:
-            raise _existing_state_error("already consumed") from error
+        raise _existing_state_error("already consumed") from error
     except OSError as error:
         raise _existing_state_error("could not be claimed") from error
 
