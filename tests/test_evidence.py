@@ -693,7 +693,7 @@ def test_research_cancel_requires_a_stored_job_and_plan(
         ),
     )
     assert code == 1
-    assert doc["code"] == "research_invalid"
+    assert doc["code"] == "research_not_found"
     assert not (root / MEGAMIND_DIR / "research" / "jobs" / f"{job_id}.jsonl").exists()
 
 

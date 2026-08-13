@@ -58,6 +58,18 @@ class ResearchError(ValueError):
     code = "research_invalid"
 
 
+class ResearchNotFound(ResearchError):
+    code = "research_not_found"
+
+
+class ResearchTransitionInvalid(ResearchError):
+    code = "research_transition_invalid"
+
+
+class ResearchImmutable(ResearchError):
+    code = "research_immutable"
+
+
 class ReplayConflict(ResearchError):
     code = "research_replay_conflict"
 
@@ -660,7 +672,7 @@ class ResearchStore:
             except json.JSONDecodeError as error:
                 raise ResearchError("stored research record is not valid JSON") from error
             if identity_bytes(existing, spec.mutable) != identity_bytes(canonical, spec.mutable):
-                raise ResearchError("content-addressed research record has different bytes")
+                raise ResearchImmutable("content-addressed research record has different bytes")
             backup_existing(self.root, rel)
         atomic_write(self.root, rel, text)
         append_audit(self.root, "research-record", {"kind": kind, "record_id": identifier})
@@ -670,7 +682,7 @@ class ResearchStore:
         spec = self._spec(kind)
         path = resolve_contained(self.root, self._path(kind, identifier))
         if not path.is_file():
-            raise ResearchError("research record not found")
+            raise ResearchNotFound("research record not found")
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as error:
@@ -769,7 +781,7 @@ class ResearchStore:
             prior = latest.get(job_id)
             if prior is None:
                 if event["state"] != "gap-open":
-                    raise ResearchError("invalid research job journal transition")
+                    raise ResearchTransitionInvalid("invalid research job journal transition")
             else:
                 resumed = (
                     prior["state"] == "cancelled"
@@ -778,7 +790,7 @@ class ResearchStore:
                 )
                 if resumed:
                     if event["artifact_ids"] or event["contradiction_ids"]:
-                        raise ResearchError("invalid research job journal transition")
+                        raise ResearchTransitionInvalid("invalid research job journal transition")
                 elif (
                     event["attempt_id"] != prior["attempt_id"]
                     or any(
@@ -801,7 +813,7 @@ class ResearchStore:
                         )
                     )
                 ):
-                    raise ResearchError("invalid research job journal transition")
+                    raise ResearchTransitionInvalid("invalid research job journal transition")
             latest[job_id] = event
         return events
 
@@ -878,7 +890,7 @@ class ResearchStore:
         current = self._legacy_job(job_id)
         if current is not None:
             if expected_state and current.state != expected_state:
-                raise ResearchError(f"expected {expected_state}, found {current.state}")
+                raise ResearchTransitionInvalid(f"expected {expected_state}, found {current.state}")
             resumed = (
                 current.state == "cancelled"
                 and state == "gap-open"
@@ -919,7 +931,7 @@ class ResearchStore:
                 and state != current.state
                 and state not in LEGACY_TRANSITIONS.get(current.state, frozenset())
             ):
-                raise ResearchError(f"cannot transition {current.state} to {state}")
+                raise ResearchTransitionInvalid(f"cannot transition {current.state} to {state}")
         else:
             effective_artifacts = sorted(set(artifact_ids or []))
             effective_contradictions = sorted(set(contradiction_ids or []))
@@ -986,7 +998,7 @@ class ResearchStore:
         text = json.dumps(normalized, indent=2, sort_keys=True) + "\n"
         if path.is_file():
             if path.read_text(encoding="utf-8") != text:
-                raise ResearchError("research artifact is immutable")
+                raise ResearchImmutable("research artifact is immutable")
             return path
         result = atomic_write(self.root, rel, text)
         append_audit(self.root, "research-packet", {"packet_id": str(normalized["packet_id"])})
