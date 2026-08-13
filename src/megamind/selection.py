@@ -1,23 +1,31 @@
-"""Governed explicit selection of one offer from a preflight result.
+"""Governed explicit selection of a preflight offer or eligible existing wiki.
 
 Selection is a narrow authorization bridge, not another routing pass. It
 validates a complete original ``preflight-result/v2`` packet, recomputes that
 packet against the current catalog and original request/model identity, and
-then re-runs access, governance, and path-containment checks for exactly one
-wiki that was in ``offers[]``. It never raises confidence or trust and never
-reads page content.
+then re-runs access, governance, and path-containment checks. The separate
+existing-wiki path atomically consumes an exact-request list derived from the
+current catalog. Neither path raises confidence or trust or reads page content.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any
 
 from .catalog import Catalog, RootRef
-from .fsops import PathEscapeError, atomic_write, content_hash, resolve_contained
+from .fsops import (
+    PathEscapeError,
+    append_audit,
+    atomic_write,
+    backup_existing,
+    content_hash,
+    create_file,
+    resolve_contained,
+)
 from .preflight import (
     MODEL_CLASSES,
     PreflightResult,
@@ -73,6 +81,7 @@ class ExistingSelectionList:
     today: str
     selection_id: str
     wikis: list[Doc]
+    total_wikis: int
 
 
 @dataclass(frozen=True)
@@ -315,6 +324,10 @@ def _existing_state_path(state_root: Path, selection_id: str) -> Path:
     return Path(".megamind") / "audit" / "existing-selection" / f"{selection_id}.json"
 
 
+def _existing_claim_path(selection_id: str) -> Path:
+    return Path(".megamind") / "audit" / "existing-selection" / "claims" / f"{selection_id}.json"
+
+
 def _existing_binding(
     request: str,
     model_class: str,
@@ -367,22 +380,98 @@ def _read_existing_state(state_root: Path, selection_id: str) -> Doc:
     return payload
 
 
-def _write_existing_state(state_root: Path, payload: Doc) -> None:
+def _state_document(payload: Doc) -> str:
     state_hash = content_hash(json.dumps(payload, sort_keys=True))
     document = {
         "schema": "megamind/existing-selection-state/v1",
         "payload": payload,
         "state_hash": state_hash,
     }
+    return json.dumps(document, sort_keys=True) + "\n"
+
+
+def _state_audit_time(payload: Doc) -> datetime:
+    binding = payload.get("binding")
+    if not isinstance(binding, dict) or not isinstance(binding.get("today"), str):
+        raise _existing_state_error("malformed")
     try:
+        return datetime.combine(date.fromisoformat(binding["today"]), time(), timezone.utc)
+    except ValueError as error:
+        raise _existing_state_error("malformed") from error
+
+
+def _write_existing_state(state_root: Path, payload: Doc, action: str) -> None:
+    target = _existing_state_path(state_root, str(payload["selection_id"]))
+    try:
+        backup = backup_existing(state_root, target, durable=True)
         atomic_write(
             state_root,
-            _existing_state_path(state_root, str(payload["selection_id"])),
-            json.dumps(document, sort_keys=True) + "\n",
+            target,
+            _state_document(payload),
             durable=True,
+        )
+        append_audit(
+            state_root,
+            action,
+            {
+                "selection_id": str(payload["selection_id"]),
+                "request_hash": str(payload["binding"]["request_hash"]),
+                "catalog_hash": str(payload["binding"]["catalog_hash"]),
+                "backup": backup.name if backup else None,
+            },
+            now=_state_audit_time(payload),
         )
     except OSError as error:
         raise _existing_state_error("could not be recorded") from error
+
+
+def _create_existing_state(state_root: Path, payload: Doc) -> bool:
+    try:
+        create_file(
+            state_root,
+            _existing_state_path(state_root, str(payload["selection_id"])),
+            _state_document(payload),
+            durable=True,
+        )
+    except FileExistsError:
+        return False
+    except OSError as error:
+        raise _existing_state_error("could not be recorded") from error
+    try:
+        append_audit(
+            state_root,
+            "existing_selection_listed",
+            {
+                "selection_id": str(payload["selection_id"]),
+                "request_hash": str(payload["binding"]["request_hash"]),
+                "catalog_hash": str(payload["binding"]["catalog_hash"]),
+                "backup": None,
+            },
+            now=_state_audit_time(payload),
+        )
+    except OSError as error:
+        raise _existing_state_error("could not be audited") from error
+    return True
+
+
+def _claim_existing_state(state_root: Path, state: Doc, wiki: str) -> None:
+    selection_id = str(state["selection_id"])
+    claim = {
+        "selection_id": selection_id,
+        "state_hash": content_hash(json.dumps(state, sort_keys=True)),
+        "choice_hash": content_hash(wiki),
+    }
+    try:
+        create_file(
+            state_root,
+            _existing_claim_path(selection_id),
+            json.dumps(claim, sort_keys=True) + "\n",
+            durable=True,
+        )
+    except FileExistsError as error:
+        raise _existing_state_error("already consumed") from error
+    except OSError as error:
+        raise _existing_state_error("could not be claimed") from error
 
 
 def _existing_candidates(refs: list[RootRef], catalog: Catalog, model_class: str) -> list[Doc]:
@@ -450,6 +539,7 @@ def list_existing(
     today: date,
     catalog: Catalog,
     state_root: Path,
+    full: bool = False,
 ) -> ExistingSelectionList:
     """Issue a one-time, exact-request list of eligible existing wikis."""
     if not request:
@@ -458,7 +548,8 @@ def list_existing(
         raise SelectionError("existing selection model class is invalid")
     if not owner_id or not session_id:
         raise SelectionError("existing selection requires owner and session identities")
-    eligible = _existing_candidates(refs, catalog, model_class)
+    candidates = _existing_candidates(refs, catalog, model_class)
+    eligible = candidates if full else candidates[:20]
     binding = _existing_binding(
         request, model_class, owner_id, session_id, today, catalog, eligible, state_root
     )
@@ -480,6 +571,7 @@ def list_existing(
                     today.isoformat(),
                     nonce,
                     eligible,
+                    len(candidates),
                 )
             continue
         payload: Doc = {
@@ -489,17 +581,18 @@ def list_existing(
             "issuance": issuance,
             "binding": binding,
         }
-        _write_existing_state(state_root, payload)
-        return ExistingSelectionList(
-            content_hash(request),
-            catalog.catalog_hash,
-            model_class,
-            owner_id,
-            session_id,
-            today.isoformat(),
-            nonce,
-            eligible,
-        )
+        if _create_existing_state(state_root, payload):
+            return ExistingSelectionList(
+                content_hash(request),
+                catalog.catalog_hash,
+                model_class,
+                owner_id,
+                session_id,
+                today.isoformat(),
+                nonce,
+                eligible,
+                len(candidates),
+            )
     raise _existing_state_error("nonce space is exhausted")
 
 
@@ -523,7 +616,18 @@ def select_existing(
     state = _read_existing_state(state_root, selection_id)
     if state.get("status") != "listed":
         raise _existing_state_error("already consumed")
-    eligible = _existing_candidates(refs, catalog, model_class)
+    candidates = _existing_candidates(refs, catalog, model_class)
+    stored_binding = state.get("binding")
+    if not isinstance(stored_binding, dict):
+        raise _existing_state_error("malformed")
+    listed_eligible = stored_binding.get("eligible")
+    if not isinstance(listed_eligible, list) or not all(
+        isinstance(entry, dict) for entry in listed_eligible
+    ):
+        raise _existing_state_error("malformed")
+    if listed_eligible != candidates and listed_eligible != candidates[:20]:
+        raise _existing_state_error("stale, drifted, or malformed")
+    eligible = listed_eligible
     binding = _existing_binding(
         request, model_class, owner_id, session_id, today, catalog, eligible, state_root
     )
@@ -579,9 +683,10 @@ def select_existing(
         "selection_id": selection_id,
         "today": today.isoformat(),
     }
+    _claim_existing_state(state_root, state, wiki)
     consumed = dict(state)
     consumed["status"] = "consumed"
-    _write_existing_state(state_root, consumed)
+    _write_existing_state(state_root, consumed, "existing_selection_consumed")
     return ExistingSelectionResult(
         content_hash(request),
         catalog.catalog_hash,

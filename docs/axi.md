@@ -434,3 +434,6 @@ consult it, never routing confidence or answerability. Hidden, withheld,
 filtered, broken, stale, absent-artifact, duplicate, escaping, and forged
 choices refuse without naming the withheld wiki. Existing `select-offer`
 remains unchanged and cannot be used for this path.
+
+The list emits at most 20 names by default. When it is truncated, `notes[]`
+states the displayed and total counts; `--full` emits every eligible name.

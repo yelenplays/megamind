@@ -91,7 +91,7 @@ state, and path/symlink escape return `selection_invalid`, exit 1. A
 `redacted` wiki is redacted in the catalog projection only; it stays selectable
 on exactly the terms preflight already routes it on.
 
-## megamind-axi select-existing [WIKI] --request REQUEST --model-class local|cloud --owner-id ID --session-id ID --today D [--selection-id ID] [--estate DIR]
+## megamind-axi select-existing [WIKI] --request REQUEST --model-class local|cloud --owner-id ID --session-id ID --today D [--selection-id ID] [--estate DIR] [--full]
 
 Without `WIKI`, emits `megamind/existing-selection-list/v1` and derives the
 eligible list from the complete current catalog. It never accepts a caller
@@ -101,6 +101,8 @@ non-pointer, and have present declared artifacts contained by their card/root.
 The result carries exact access and card budget, plus an opaque one-time
 `selection_id` bound to the exact request hash, catalog hash, model class,
 owner/session, home, and date.
+It returns at most 20 names unless `--full`; truncation notes state the shown
+and total counts, and only returned names are authorized by that identity.
 
 With `WIKI` and `--selection-id`, recomputes and consumes that exact list
 identity, then emits `megamind/existing-selection-result/v1` with the bounded

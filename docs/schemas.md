@@ -246,14 +246,16 @@ root-facts identity. Hidden/withheld, none-access, broken/unavailable, stale,
 missing-artifact, duplicate, and escaping rows are absent without a reason
 that could enumerate them.
 
-The list's `selection_id` is an opaque one-time identity. Its durable,
-content-addressed state binds `request_hash`, the complete `catalog_hash`,
+The list emits at most 20 names by default; a truncation note states the shown
+and total counts, and `--full` emits every eligible name. Its `selection_id`
+binds only the names it emitted, so an omitted name cannot be selected. Its
+durable, content-addressed state binds `request_hash`, the complete `catalog_hash`,
 `model_class`, owner/session identity hashes, the home identity, the current
 UTC date, and the complete eligible set. Repeating an unconsumed exact list is
 idempotent; after consumption a fresh identity is issued. Selection passes the
 same exact request/model/owner/session/date, one listed wiki, and the
 `selection_id`. Megamind recomputes the catalog and eligible set, verifies the
-state and home binding, then consumes the identity before returning
+state and home binding, then atomically claims and consumes the identity before returning
 `megamind/existing-selection-result/v1`. Drift, date rollover, model/session
 change, replay, cross-home reuse, forged names, or caller-manufactured
 eligibility are `selection_invalid` refusals.

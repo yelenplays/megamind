@@ -481,6 +481,7 @@ def cmd_select_existing(
     root: Path,
     root_label: str,
     today: date | None,
+    full: bool,
 ) -> tuple[Doc, int]:
     if today is None:
         raise UsageError("select-existing requires --today for the current UTC selection date")
@@ -498,7 +499,14 @@ def cmd_select_existing(
             today,
             catalog,
             root,
+            full=full,
         )
+        notes: list[str] = []
+        if list_result.total_wikis > len(list_result.wikis):
+            notes.append(
+                f"wikis truncated to {len(list_result.wikis)} of {list_result.total_wikis}; "
+                "re-run with --full"
+            )
         doc: Doc = {
             "schema_version": "megamind/existing-selection-list/v1",
             "status": "ready",
@@ -510,7 +518,7 @@ def cmd_select_existing(
             "today": list_result.today,
             "selection_id": list_result.selection_id,
             "wikis": list_result.wikis,
-            "notes": [],
+            "notes": notes,
             "help": _help(
                 "Choose only one wiki from wikis[]; no other name is authorized",
                 f"Run `{EXECUTABLE} select-existing <wiki> --selection-id "
@@ -2292,6 +2300,7 @@ def build_parser() -> AxiParser:
         action="store_true",
         help="explicitly request the eligible list (the default without a wiki)",
     )
+    p_existing.add_argument("--full", action="store_true", help="never truncate the wiki list")
 
     p_adopt = sub.add_parser(
         "adopt",
@@ -2882,6 +2891,7 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
             root,
             root_label,
             today=_parse_today(getattr(args, "today", None)),
+            full=args.full,
         )
     if command == "select-offer":
         return cmd_select_offer(

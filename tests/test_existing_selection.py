@@ -88,6 +88,15 @@ def test_existing_selection_refuses_forged_names_and_replay(vault: Path, capsys:
     )
     assert forged[0] == 1
     assert forged[1]["code"] == "selection_invalid"
+    toon_forged = run_toon(
+        capsys,
+        *_list_args(vault),
+        "ManufacturedWiki",
+        "--selection-id",
+        listed["selection_id"],
+    )
+    assert toon_forged[0] == 1
+    assert toon_forged[1] == toon.encode(forged[1])
 
     code, selected, _ = run_json(
         capsys,
@@ -106,6 +115,15 @@ def test_existing_selection_refuses_forged_names_and_replay(vault: Path, capsys:
     )
     assert replay[0] == 1
     assert replay[1]["code"] == "selection_invalid"
+    toon_replay = run_toon(
+        capsys,
+        *_list_args(vault),
+        "BrandingWiki",
+        "--selection-id",
+        listed["selection_id"],
+    )
+    assert toon_replay[0] == 1
+    assert toon_replay[1] == toon.encode(replay[1])
     assert selected["selected"]["allows"]
 
 
