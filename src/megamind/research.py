@@ -925,6 +925,8 @@ def _validate_event_history(events: list[Mapping[str, Any]]) -> None:
             and event["attempt_id"] != current["attempt_id"]
         )
         if resumed:
+            if event["artifact_ids"] or event["contradiction_ids"]:
+                raise ResearchError("invalid research job journal transition")
             latest[job_id] = event
             continue
         if current["state"] in TERMINAL_STATES:

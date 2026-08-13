@@ -312,6 +312,44 @@ def test_resumed_attempt_clears_prior_accepted_artifact_sets(tmp_path: Path) -> 
     assert resumed.contradiction_ids == ()
 
 
+def test_journal_refuses_a_resumed_attempt_with_prior_artifacts(tmp_path: Path) -> None:
+    plan = _plan()
+    store = ResearchStore(tmp_path)
+    job = store.start(plan, today="2026-01-01")
+    cancelled = store.transition(
+        job.job_id,
+        "cancelled",
+        plan_id=plan.plan_id,
+        gap_id=plan.gap_id,
+        attempt_id=job.attempt_id,
+        today="2026-01-01",
+    )
+    forged = {
+        "job_id": cancelled.job_id,
+        "attempt_id": "fresh-attempt",
+        "state": "gap-open",
+        "plan_id": plan.plan_id,
+        "gap_id": plan.gap_id,
+        "policy_digest": cancelled.policy_digest,
+        "card_digest": cancelled.card_digest,
+        "access_digest": cancelled.access_digest,
+        "reason": "",
+        "artifact_ids": ["claim-a"],
+        "contradiction_ids": ["contradiction-a"],
+    }
+    event = {
+        "schema": "megamind/research-job/v1",
+        **forged,
+        "event_id": content_hash(json.dumps(forged, sort_keys=True, separators=(",", ":"))),
+        "updated": "2026-01-01",
+    }
+    journal = tmp_path / ".megamind" / "research" / "jobs.jsonl"
+    journal.write_text(journal.read_text(encoding="utf-8") + json.dumps(event) + "\n", encoding="utf-8")
+
+    with pytest.raises(ResearchError, match="invalid research job journal transition"):
+        store.jobs()
+
+
 def test_research_plan_requires_a_wiki_binding() -> None:
     with pytest.raises(Exception, match="wiki must be a non-empty string"):
         make_plan(
