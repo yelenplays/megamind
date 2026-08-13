@@ -12,10 +12,14 @@ from megamind.evidence import (
     EvidenceAcceptanceError,
     accept_evidence,
     claim_confidence_from_records,
+    make_contradiction,
     make_resolved_claim,
+    store_contradiction,
+    unresolved_contradictions,
 )
 from megamind.registry import ResearchPolicy, load_registry, save_registry
 from megamind.research import (
+    MappingResolver,
     ReplayConflict,
     ResearchDrift,
     ResearchError,
@@ -741,6 +745,29 @@ def test_packet_refuses_a_forged_frozen_claim_confidence(
     assert code == 1
     assert doc["code"] == "evidence_acceptance_invalid"
     assert _artifacts(root, "packets") == set()
+
+
+def test_unresolved_contradictions_refuses_a_forged_resolution(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _research_vault(tmp_path)
+    _job, claim_id = _lane_to_extracting(capsys, root)
+    contradiction = make_contradiction(
+        {
+            "claim_ids": [claim_id, claim_id],
+            "basis": "Synthetic conflict.",
+            "resolution": "unresolved",
+        },
+        MappingResolver({"claim": {claim_id}}),
+    )
+    store_contradiction(root, contradiction)
+    path = root / ".megamind" / "research" / "contradictions" / f"{contradiction.contradiction_id}.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["resolution"] = "scope_disjoint"
+    path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    with pytest.raises(EvidenceAcceptanceError, match="frozen contradiction"):
+        unresolved_contradictions(root, [contradiction.contradiction_id])
 
 
 def test_packet_refuses_before_reconcile_without_freezing_anything(

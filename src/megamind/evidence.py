@@ -507,7 +507,18 @@ def unresolved_contradictions(root: Path, identifiers: Iterable[str]) -> list[st
         path = resolve_contained(root, CONTRADICTIONS_DIR / f"{identifier}.json")
         if not path.is_file():
             continue
-        if _read_document(path, CONTRADICTION_SCHEMA).get("resolution") == "unresolved":
+        raw = _read_document(path, CONTRADICTION_SCHEMA)
+        contradiction = make_contradiction(
+            {
+                key: value
+                for key, value in raw.items()
+                if key not in {"schema", "contradiction_id"}
+            },
+            MappingResolver({"claim": frozen_ids(root, "claim")}),
+        )
+        if raw.get("contradiction_id") != identifier or contradiction.contradiction_id != identifier:
+            raise EvidenceAcceptanceError("frozen contradiction does not match its content")
+        if contradiction.resolution == "unresolved":
             unresolved.append(identifier)
     return unresolved
 
