@@ -111,6 +111,13 @@ fleet catalog is a generated projection of those cards.
   returned selected load path only on `status: authorized`. Never substitute a
   rephrased request, handcraft a path, or use selection to override filtered,
   provisional, pointer, broken, stale, or model-incompatible knowledge.
+- For the picker's `Different existing wiki` choice, use the separate
+  `megamind-axi select-existing --request "<request>" --model-class local|cloud
+  --owner-id <owner> --session-id <session> --today <date>` list operation.
+  Choose only a name it returns, then pass its one-time `--selection-id` to
+  authorize that exact current eligible wiki. The result preserves card access
+  and budget but has `basis: selected-eligible-existing` and
+  `threshold_matched: false`; it never raises confidence or answerability.
 - `megamind-axi adopt <dir>` brings an existing wiki directory under Megamind
   without touching its pages: dry run first, apply with the `plan_id` only
   after human approval, and `--rollback` removes exactly what apply created.

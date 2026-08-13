@@ -29,7 +29,7 @@ and renders it as TOON or JSON only at the output boundary (see
 | `megamind.adopt` | Non-destructive adoption of existing wiki directories, with rollback |
 | `megamind.catalog` | The generated read-only fleet catalog and its drift-checked projection |
 | `megamind.preflight` | Catalog-level, model-access-aware routing for substantive requests |
-| `megamind.selection` | Evidence-bound explicit choice of one current loadable preflight offer, with no confidence or access widening |
+| `megamind.selection` | Evidence-bound explicit choice of one current loadable preflight offer or eligible existing wiki, with no confidence or access widening |
 | `megamind.gardening` | Durable gaps, one-hop host plans, research bridge, safe event log, provisional local-wiki qualification |
 | `megamind.evaluation` | Frozen release benchmark over the public CLI, and the host-executed three-arm plan/validate/score/record contract. No model, worker, or network code |
 | `megamind.rollout` | Provider-neutral per-host/per-wiki promotion proofs, privacy-order chains, local write-ahead activation, health, and rollback receipts. No host or provider adapter |
@@ -222,8 +222,8 @@ catalog snapshot, model class, and result. Preflight never mutates a wiki,
 never writes a host record, never calls a model, and never touches the
 network; whether and when a host runs preflight is the host's own policy.
 
-Explicit offer selection is a separate narrow module and AXI command, not a
-threshold exception. `select-offer` accepts one exact original request/model
+Explicit selection is a narrow module and pair of AXI commands, not a threshold
+exception. `select-offer` accepts one exact original request/model
 identity, its complete recorded preflight packet, and one wiki name. It
 recomputes preflight against the current catalog, validates the complete packet
 and proof identity, then re-runs effective access, visibility, provisional
@@ -233,14 +233,22 @@ containment. Only an identity occurring exactly once in the validated original
 confidence, evidence, freshness, and reasons. User authority picks among
 eligible offers; it does not create routing evidence or trust.
 
-The selection module owns this whole invariant behind one `select_offer`
-interface, so hosts never assemble paths. It delegates access derivation to
+The selection module owns these invariants behind `select_offer` and
+`select_existing` interfaces, so hosts never assemble paths. `select-existing`
+derives and atomically consumes an exact-request, one-time picker list from the
+current complete catalog. It delegates access derivation to
 `megamind.access` through the current catalog and delegates the existing
-follow-up ladder and budgets to preflight helpers. Its deterministic
-`selection_id` binds original request/catalog/model/preflight identity, selected
-wiki, current card/root facts, exact access and paths, budget, evidence, and
-provenance. Root facts are hashed as card facts plus root-relative resolved
-paths, never absolute machine paths or page bytes.
+follow-up ladder and budgets to preflight helpers.
+
+`select-offer` derives its deterministic `selection_id` from the original
+request/catalog/model/preflight identity, the selected offer, current card/root
+facts, exact access and paths, budget, evidence, and provenance. Root facts are
+hashed as card facts plus root-relative resolved paths, never absolute machine
+paths or page bytes. `select-existing` instead issues its opaque one-time
+`selection_id` before a choice, binding the request and complete catalog hashes,
+model class, owner/session identity hashes, current date, home identity, and
+the emitted eligible subset. Authorization then validates the chosen wiki
+against those bound current facts before it exposes a reader surface.
 
 ## Governed autonomous gardening
 

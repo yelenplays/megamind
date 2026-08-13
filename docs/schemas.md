@@ -232,6 +232,45 @@ non-offer insertion, filtered/hidden/broken/absent/provisional/pointer state,
 access `none`, missing load artifacts, and traversal or escaping symlinks are
 `selection_invalid`. The operation is read-only and deterministic.
 
+## Existing-wiki selection (`select-existing`)
+
+The list invocation emits `megamind/existing-selection-list/v1`. It requires
+an exact request representation, model class, owner id, session id, and
+current UTC date (`--today`). Megamind recomputes the complete current catalog
+and emits only unique, healthy, nameable (`full` or `redacted`) rows with
+`full` or `digest-only` effective access, no provisional or pointer governance,
+no stale marker, and present contained declared load artifacts. The list is
+never formed from a caller's display array. Each row carries its exact
+`access`, and its exact card `context_budget` when declared, plus a privacy-safe
+root-facts identity. Hidden/withheld, none-access, broken/unavailable, stale,
+missing-artifact, duplicate, and escaping rows are absent without a reason
+that could enumerate them.
+
+The list emits at most 20 names by default; a truncation note states the shown
+and total counts, and `--full` emits every eligible name. Its `selection_id`
+binds only the names it emitted, so an omitted name cannot be selected. Its
+durable, content-addressed state binds `request_hash`, the complete `catalog_hash`,
+`model_class`, owner/session identity hashes, the home identity, the current
+UTC date, and the emitted eligible subset. The complete catalog hash continues
+to bind the full current catalog. Each state transition also carries a durable
+privacy-safe audit event that is recovered into the audit log on retry.
+Repeating an unconsumed exact list is
+idempotent; after consumption a fresh identity is issued. Selection passes the
+same exact request/model/owner/session/date, one listed wiki, and the
+`selection_id`. Megamind recomputes the catalog and eligible set, verifies the
+state and home binding, then atomically claims and consumes the identity before returning
+`megamind/existing-selection-result/v1`. Drift, date rollover, model/session
+change, replay, cross-home reuse, forged names, or caller-manufactured
+eligibility are `selection_invalid` refusals.
+
+The authorization carries `basis: selected-eligible-existing`, preserves the
+current effective access and card budget, returns only the existing bounded
+reader `allows` and `follow_up`, and sets `threshold_matched: false` in both
+provenance and the selected entry. Explicit selection authorizes consultation
+only; it does not raise confidence or answerability. This path is distinct
+from `select-offer`, which continues to require membership in the original
+preflight `offers[]`.
+
 ## Governed gardening records (Phase 3)
 
 `.megamind/gaps.jsonl` is an append-only snapshot journal. The latest record
@@ -773,7 +812,8 @@ One JSON object per line: `ts` (UTC ISO), `action` (`init`, `migrate`,
 `capture`, `evolve-apply`, `evolve-apply-proposal-status`, `evolve-rollback`,
 `router-refresh`, `adopt-apply`, `adopt-rollback`, `gap-transition`,
 `research-ingest-proposal`, `provisional-wiki-create`, `provisional-wiki-undo`,
-`provisional-wiki-rollback`), and action-specific fields such as `path`,
+`provisional-wiki-rollback`, `existing_selection_listed`,
+`existing_selection_claimed`, `existing_selection_consumed`), and action-specific fields such as `path`,
 `proposal_id`, `plan_id`, `gap_id`, `correlation_id`, `preserved`,
 `preserved_total`, and `backup`. Backups of every mutated file live in
 `.megamind/audit/backups/<name>.<content-hash>.bak`. Adoption additionally
@@ -781,3 +821,7 @@ writes `.megamind/audit/adoption-<plan_id>.json`, the content-hashed rollback
 record that `adopt --rollback` verifies before removing generated files;
 `provision-wiki` writes the equivalent transaction record described under
 "Governed gardening records" above.
+
+Existing-selection audit records contain only `selection_id`, `request_hash`,
+`catalog_hash`, `event_id`, and `backup`; they never include request text,
+wiki content, owner, or session identity.

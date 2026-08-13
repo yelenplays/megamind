@@ -25,6 +25,8 @@ with a stable `schema_version`:
 | `megamind/catalog/v1` | `catalog` |
 | `megamind/preflight-result/v2` | `preflight` |
 | `megamind/preflight-selection-result/v1` | `select-offer` |
+| `megamind/existing-selection-list/v1` | `select-existing` list |
+| `megamind/existing-selection-result/v1` | `select-existing` authorization |
 | `megamind/confidence-report/v1` | `assess claim`, `assess answer` |
 | `megamind/adopt-plan/v1` | `adopt` (dry run) |
 | `megamind/adopt-result/v1` | `adopt --apply`, `adopt --rollback` |
@@ -415,3 +417,23 @@ one is withheld. Changed requests, catalogs, model classes, malformed or
 truncated evidence, unknown/duplicate identities, filtered or hidden rows,
 broken or absent roots, pointers, provisional wikis, absent digests, and
 escaping paths fail as `selection_invalid`, exit 1.
+
+`select-existing` is the separate authorization path for the picker choice
+"Different existing wiki". Its list operation derives names from the complete
+current catalog, never from caller-supplied rows. A candidate must be unique
+and healthy, nameable (`full` or `redacted`), loadable for the model class,
+non-provisional, non-pointer, fresh under the supplied current date, and have
+present declared artifacts whose resolved paths stay inside its card/root.
+The returned opaque one-time `selection_id` binds the request hash, complete
+catalog hash, model class, owner/session identities, home identity, and date.
+Authorization recomputes that exact set and consumes the identity before
+returning the bounded `allows`/`follow_up` surface. It preserves effective
+access and card budget, carries `basis: selected-eligible-existing`, and sets
+`threshold_matched: false`: choosing an eligible wiki grants authority to
+consult it, never routing confidence or answerability. Hidden, withheld,
+filtered, broken, stale, absent-artifact, duplicate, escaping, and forged
+choices refuse without naming the withheld wiki. Existing `select-offer`
+remains unchanged and cannot be used for this path.
+
+The list emits at most 20 names by default. When it is truncated, `notes[]`
+states the displayed and total counts; `--full` emits every eligible name.

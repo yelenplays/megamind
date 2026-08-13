@@ -67,6 +67,15 @@ current card access, trust, artifact existence, and containment are rechecked.
 Only `select-offer` may create this authorization; never use a rephrased request
 or a host-constructed path as a substitute.
 
+`select-existing` is separate for "Different existing wiki". Its list comes
+only from Megamind's complete current catalog and emits an opaque one-time
+identity bound to the request, catalog, model class, owner/session, home, and
+current date. It excludes hidden, none-access, provisional, pointer, broken,
+unavailable, stale, duplicate, absent-artifact, and escaping rows. Selection
+recomputes and consumes that identity, returns the bounded reader surface with
+card access and budget unchanged, and sets `threshold_matched: false` with
+basis `selected-eligible-existing`. It never raises confidence or answerability.
+
 ## Host rollout proofs
 
 A host/wiki binding is one host's local authorization to consume one wiki's

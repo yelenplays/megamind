@@ -1,23 +1,34 @@
-"""Governed explicit selection of one offer from a preflight result.
+"""Governed explicit selection of a preflight offer or eligible existing wiki.
 
 Selection is a narrow authorization bridge, not another routing pass. It
 validates a complete original ``preflight-result/v2`` packet, recomputes that
 packet against the current catalog and original request/model identity, and
-then re-runs access, governance, and path-containment checks for exactly one
-wiki that was in ``offers[]``. It never raises confidence or trust and never
-reads page content.
+then re-runs access, governance, and path-containment checks. The separate
+existing-wiki path atomically consumes an exact-request list derived from the
+current catalog. Neither path raises confidence or trust or reads page content.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Any
 
 from .catalog import Catalog, RootRef
-from .fsops import PathEscapeError, content_hash, resolve_contained
+from .fsops import (
+    AuditValue,
+    PathEscapeError,
+    append_audit,
+    atomic_write,
+    backup_existing,
+    content_hash,
+    create_private_file,
+    resolve_contained,
+)
 from .preflight import (
+    MODEL_CLASSES,
     PreflightResult,
     _access_level,
     _context_budget,
@@ -45,6 +56,33 @@ class SelectionError(ValueError):
     """Original evidence or the selected current offer is not loadable."""
 
     code = "selection_invalid"
+
+
+@dataclass(frozen=True)
+class ExistingSelectionResult:
+    request_hash: str
+    catalog_hash: str
+    model_class: str
+    owner_id: str
+    session_id: str
+    today: str
+    selection_id: str
+    root_facts_hash: str
+    selected: Doc
+    selection: Doc
+
+
+@dataclass(frozen=True)
+class ExistingSelectionList:
+    request_hash: str
+    catalog_hash: str
+    model_class: str
+    owner_id: str
+    session_id: str
+    today: str
+    selection_id: str
+    wikis: list[Doc]
+    total_wikis: int
 
 
 @dataclass(frozen=True)
@@ -281,6 +319,484 @@ def _validate_root_and_paths(ref: RootRef, row: Doc, allows: list[str]) -> str:
         "allows": resolved_allows,
     }
     return content_hash(json.dumps(facts, sort_keys=True))
+
+
+def _existing_state_path(state_root: Path, selection_id: str) -> Path:
+    return Path(".megamind") / "audit" / "existing-selection" / f"{selection_id}.json"
+
+
+def _existing_claim_path(selection_id: str) -> Path:
+    return Path(".megamind") / "audit" / "existing-selection" / "claims" / f"{selection_id}.json"
+
+
+def _existing_binding(
+    request: str,
+    model_class: str,
+    owner_id: str,
+    session_id: str,
+    today: date,
+    catalog: Catalog,
+    eligible: list[Doc],
+    state_root: Path,
+) -> Doc:
+    """Return the privacy-safe binding for one host-side picker decision."""
+    return {
+        "request_hash": content_hash(request),
+        "catalog_hash": catalog.catalog_hash,
+        "model_class": model_class,
+        "owner_id_hash": content_hash(owner_id),
+        "session_id_hash": content_hash(session_id),
+        "today": today.isoformat(),
+        "home_id": content_hash(str(state_root.resolve())),
+        "eligible": eligible,
+    }
+
+
+def _existing_state_error(message: str) -> SelectionError:
+    return SelectionError(f"existing selection authorization is {message}")
+
+
+def _read_existing_state(state_root: Path, selection_id: str) -> Doc:
+    path = _existing_state_path(state_root, selection_id)
+    try:
+        raw = resolve_contained(state_root, path).read_text(encoding="utf-8")
+    except (OSError, PathEscapeError) as error:
+        raise _existing_state_error("unknown or not issued") from error
+    try:
+        document = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise _existing_state_error("malformed") from error
+    if not isinstance(document, dict):
+        raise _existing_state_error("malformed")
+    payload = document.get("payload")
+    state_hash = document.get("state_hash")
+    if not isinstance(payload, dict) or not isinstance(state_hash, str):
+        raise _existing_state_error("malformed")
+    if content_hash(json.dumps(payload, sort_keys=True)) != state_hash:
+        raise _existing_state_error("tampered")
+    if payload.get("selection_id") != selection_id:
+        raise _existing_state_error("identity is malformed")
+    if payload.get("status") not in {"listed", "consumed"}:
+        raise _existing_state_error("status is malformed")
+    audit_event = payload.get("audit_event")
+    if not isinstance(audit_event, dict):
+        raise _existing_state_error("audit record is malformed")
+    if audit_event.get("action") not in {
+        "existing_selection_listed",
+        "existing_selection_consumed",
+    } or not isinstance(audit_event.get("event_id"), str):
+        raise _existing_state_error("audit record is malformed")
+    if audit_event.get("backup") is not None and not isinstance(audit_event.get("backup"), str):
+        raise _existing_state_error("audit record is malformed")
+    return payload
+
+
+def _state_document(payload: Doc) -> str:
+    state_hash = content_hash(json.dumps(payload, sort_keys=True))
+    document = {
+        "schema": "megamind/existing-selection-state/v1",
+        "payload": payload,
+        "state_hash": state_hash,
+    }
+    return json.dumps(document, sort_keys=True) + "\n"
+
+
+def _state_audit_time(payload: Doc) -> datetime:
+    binding = payload.get("binding")
+    if not isinstance(binding, dict) or not isinstance(binding.get("today"), str):
+        raise _existing_state_error("malformed")
+    try:
+        return datetime.combine(date.fromisoformat(binding["today"]), time(), timezone.utc)
+    except ValueError as error:
+        raise _existing_state_error("malformed") from error
+
+
+def _audit_event(selection_id: str, status: str) -> Doc:
+    action = f"existing_selection_{status}"
+    return {
+        "action": action,
+        "event_id": content_hash(f"{selection_id}:{action}"),
+        "backup": None,
+    }
+
+
+def _audit_details(payload: Doc) -> dict[str, AuditValue]:
+    binding = payload.get("binding")
+    audit_event = payload.get("audit_event")
+    if not isinstance(binding, dict) or not isinstance(audit_event, dict):
+        raise _existing_state_error("audit record is malformed")
+    return {
+        "selection_id": str(payload["selection_id"]),
+        "request_hash": str(binding["request_hash"]),
+        "catalog_hash": str(binding["catalog_hash"]),
+        "event_id": str(audit_event["event_id"]),
+        "backup": audit_event.get("backup") if isinstance(audit_event.get("backup"), str) else None,
+    }
+
+
+def _audit_event_exists(state_root: Path, event_id: str) -> bool:
+    try:
+        raw = resolve_contained(state_root, Path(".megamind") / "audit" / "log.jsonl").read_text(
+            encoding="utf-8"
+        )
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise _existing_state_error("audit could not be read") from error
+    for line in raw.splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise _existing_state_error("audit is malformed") from error
+        if isinstance(entry, dict) and entry.get("event_id") == event_id:
+            return True
+    return False
+
+
+def _ensure_existing_audit(state_root: Path, payload: Doc) -> None:
+    audit_event = payload.get("audit_event")
+    if not isinstance(audit_event, dict):
+        raise _existing_state_error("audit record is malformed")
+    event_id = audit_event.get("event_id")
+    action = audit_event.get("action")
+    if not isinstance(event_id, str) or not isinstance(action, str):
+        raise _existing_state_error("audit record is malformed")
+    if _audit_event_exists(state_root, event_id):
+        return
+    try:
+        append_audit(
+            state_root,
+            action,
+            _audit_details(payload),
+            now=_state_audit_time(payload),
+        )
+    except OSError as error:
+        raise _existing_state_error("could not be audited") from error
+
+
+def _write_existing_state(state_root: Path, payload: Doc) -> None:
+    target = _existing_state_path(state_root, str(payload["selection_id"]))
+    try:
+        backup = backup_existing(state_root, target, durable=True)
+        audit_event = payload.get("audit_event")
+        if not isinstance(audit_event, dict):
+            raise _existing_state_error("audit record is malformed")
+        audit_event["backup"] = backup.name if backup else None
+        atomic_write(
+            state_root,
+            target,
+            _state_document(payload),
+            durable=True,
+        )
+    except OSError as error:
+        raise _existing_state_error("could not be recorded") from error
+    _ensure_existing_audit(state_root, payload)
+
+
+def _create_existing_state(state_root: Path, payload: Doc) -> bool:
+    try:
+        create_private_file(
+            resolve_contained(
+                state_root, _existing_state_path(state_root, str(payload["selection_id"]))
+            ),
+            _state_document(payload),
+            durable=True,
+        )
+    except FileExistsError:
+        return False
+    except OSError as error:
+        raise _existing_state_error("could not be recorded") from error
+    _ensure_existing_audit(state_root, payload)
+    return True
+
+
+def _claim_existing_state(state_root: Path, state: Doc, wiki: str) -> None:
+    selection_id = str(state["selection_id"])
+    claim = {
+        "selection_id": selection_id,
+        "state_hash": content_hash(json.dumps(state, sort_keys=True)),
+        "choice_hash": content_hash(wiki),
+        "audit_event": _audit_event(selection_id, "claimed"),
+    }
+    try:
+        create_private_file(
+            resolve_contained(state_root, _existing_claim_path(selection_id)),
+            json.dumps(claim, sort_keys=True) + "\n",
+            durable=True,
+        )
+    except FileExistsError as error:
+        existing = _read_existing_claim(state_root, selection_id, state)
+        recovered = dict(state)
+        recovered["status"] = "consumed"
+        recovered["audit_event"] = _audit_event(selection_id, "consumed")
+        _ensure_existing_audit(state_root, _claim_audit_payload(state, existing))
+        _write_existing_state(state_root, recovered)
+        raise _existing_state_error("already consumed") from error
+    except OSError as error:
+        raise _existing_state_error("could not be claimed") from error
+    _ensure_existing_audit(state_root, _claim_audit_payload(state, claim))
+
+
+def _claim_audit_payload(state: Doc, claim: Doc) -> Doc:
+    audit_event = claim.get("audit_event")
+    if not isinstance(audit_event, dict):
+        raise _existing_state_error("claim is malformed")
+    payload = dict(state)
+    payload["audit_event"] = audit_event
+    return payload
+
+
+def _read_existing_claim(state_root: Path, selection_id: str, state: Doc) -> Doc:
+    try:
+        raw = resolve_contained(state_root, _existing_claim_path(selection_id)).read_text(
+            encoding="utf-8"
+        )
+        claim = json.loads(raw)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise _existing_state_error("claim is malformed") from error
+    if not isinstance(claim, dict):
+        raise _existing_state_error("claim is malformed")
+    audit_event = claim.get("audit_event")
+    if (
+        claim.get("selection_id") != selection_id
+        or claim.get("state_hash") != content_hash(json.dumps(state, sort_keys=True))
+        or not isinstance(claim.get("choice_hash"), str)
+        or not isinstance(audit_event, dict)
+        or audit_event != _audit_event(selection_id, "claimed")
+    ):
+        raise _existing_state_error("claim is malformed")
+    return claim
+
+
+def _existing_candidates(refs: list[RootRef], catalog: Catalog, model_class: str) -> list[Doc]:
+    """Derive the picker set from validated current rows, never host input."""
+    rows_by_name: dict[str, list[Doc]] = {}
+    for row in catalog.rows:
+        name = row.get("name")
+        if isinstance(name, str):
+            rows_by_name.setdefault(name, []).append(row)
+
+    candidates: list[Doc] = []
+    for row in catalog.rows:
+        name = row.get("name")
+        if not isinstance(name, str) or len(rows_by_name.get(name, [])) != 1:
+            continue
+        if row.get("status") != "ok":
+            continue
+        # Hidden rows remain internal catalog facts but are never enumerable.
+        if row.get("catalog_visibility") not in _PROJECTION_ONLY_VISIBILITIES:
+            continue
+        if bool(row.get("provisional")) or row.get("routing_mode") == "pointer":
+            continue
+        if row.get("stale") is True:
+            continue
+        access = _access_level(row, model_class)
+        if access not in _LOADABLE_ACCESS:
+            continue
+        if not isinstance(row.get("paths"), dict):
+            continue
+        allows = allowed_paths(row, access)
+        # Unlike a router ladder, this operation authorizes a declared existing
+        # artifact only. An empty declaration is not an eligible existing wiki.
+        if not allows or (access == "digest-only" and len(allows) != 1):
+            continue
+        matching_refs = [ref for ref in refs if ref.label == row.get("root")]
+        if len(matching_refs) != 1 or matching_refs[0].path.is_symlink():
+            continue
+        try:
+            root_facts_hash = _validate_root_and_paths(matching_refs[0], row, allows)
+        except SelectionError:
+            continue
+        follow_up = _follow_up(row, "", access)
+        if not follow_up.loadable:
+            continue
+        budget = _context_budget(row)
+        entry: Doc = {
+            "name": name,
+            "root": row.get("root"),
+            "access": access,
+            "root_facts_hash": root_facts_hash,
+        }
+        if budget is not None:
+            entry["context_budget"] = budget
+        candidates.append(entry)
+    candidates.sort(key=lambda item: (str(item.get("root")), str(item.get("name"))))
+    return candidates
+
+
+def list_existing(
+    refs: list[RootRef],
+    request: str,
+    model_class: str,
+    owner_id: str,
+    session_id: str,
+    today: date,
+    catalog: Catalog,
+    state_root: Path,
+    full: bool = False,
+) -> ExistingSelectionList:
+    """Issue a one-time, exact-request list of eligible existing wikis."""
+    if not request:
+        raise SelectionError("existing selection request must not be empty")
+    if model_class not in MODEL_CLASSES:
+        raise SelectionError("existing selection model class is invalid")
+    if not owner_id or not session_id:
+        raise SelectionError("existing selection requires owner and session identities")
+    candidates = _existing_candidates(refs, catalog, model_class)
+    eligible = candidates if full else candidates[:20]
+    binding = _existing_binding(
+        request, model_class, owner_id, session_id, today, catalog, eligible, state_root
+    )
+    for issuance in range(10000):
+        nonce = content_hash(json.dumps({"binding": binding, "issuance": issuance}, sort_keys=True))
+        path = resolve_contained(state_root, _existing_state_path(state_root, nonce))
+        if path.is_file():
+            try:
+                prior = _read_existing_state(state_root, nonce)
+            except SelectionError:
+                raise
+            if prior.get("binding") == binding and prior.get("status") == "listed":
+                _ensure_existing_audit(state_root, prior)
+                return ExistingSelectionList(
+                    content_hash(request),
+                    catalog.catalog_hash,
+                    model_class,
+                    owner_id,
+                    session_id,
+                    today.isoformat(),
+                    nonce,
+                    eligible,
+                    len(candidates),
+                )
+            continue
+        payload: Doc = {
+            "schema": "megamind/existing-selection-state/v1",
+            "status": "listed",
+            "selection_id": nonce,
+            "issuance": issuance,
+            "binding": binding,
+            "audit_event": _audit_event(nonce, "listed"),
+        }
+        if _create_existing_state(state_root, payload):
+            return ExistingSelectionList(
+                content_hash(request),
+                catalog.catalog_hash,
+                model_class,
+                owner_id,
+                session_id,
+                today.isoformat(),
+                nonce,
+                eligible,
+                len(candidates),
+            )
+    raise _existing_state_error("nonce space is exhausted")
+
+
+def select_existing(
+    refs: list[RootRef],
+    request: str,
+    model_class: str,
+    owner_id: str,
+    session_id: str,
+    today: date,
+    selection_id: str,
+    wiki: str,
+    catalog: Catalog,
+    state_root: Path,
+) -> ExistingSelectionResult:
+    """Consume one issued list and authorize one current eligible wiki."""
+    if not wiki:
+        raise SelectionError("existing selection requires one wiki choice")
+    if model_class not in MODEL_CLASSES:
+        raise SelectionError("existing selection model class is invalid")
+    state = _read_existing_state(state_root, selection_id)
+    _ensure_existing_audit(state_root, state)
+    if state.get("status") != "listed":
+        raise _existing_state_error("already consumed")
+    candidates = _existing_candidates(refs, catalog, model_class)
+    stored_binding = state.get("binding")
+    if not isinstance(stored_binding, dict):
+        raise _existing_state_error("malformed")
+    listed_eligible = stored_binding.get("eligible")
+    if not isinstance(listed_eligible, list) or not all(
+        isinstance(entry, dict) for entry in listed_eligible
+    ):
+        raise _existing_state_error("malformed")
+    if listed_eligible != candidates and listed_eligible != candidates[:20]:
+        raise _existing_state_error("stale, drifted, or malformed")
+    eligible = listed_eligible
+    binding = _existing_binding(
+        request, model_class, owner_id, session_id, today, catalog, eligible, state_root
+    )
+    if state.get("binding") != binding:
+        raise _existing_state_error("stale, drifted, or bound to another session")
+    issuance = state.get("issuance")
+    expected = content_hash(json.dumps({"binding": binding, "issuance": issuance}, sort_keys=True))
+    if expected != selection_id:
+        raise _existing_state_error("nonce is malformed")
+    selected_entries = [entry for entry in eligible if entry.get("name") == wiki]
+    if len(selected_entries) != 1:
+        raise SelectionError("chosen wiki is not in the current eligible existing set")
+    entry = selected_entries[0]
+    rows = [
+        row
+        for row in catalog.rows
+        if row.get("name") == wiki and row.get("root") == entry.get("root")
+    ]
+    if len(rows) != 1:
+        raise SelectionError("chosen wiki identity is absent or duplicated")
+    row = rows[0]
+    access = _access_level(row, model_class)
+    allows = allowed_paths(row, access)
+    ref = _selected_ref(refs, row)
+    root_facts_hash = _validate_root_and_paths(ref, row, allows)
+    follow_up = _follow_up(row, request, access)
+    if not follow_up.loadable:
+        raise SelectionError("chosen wiki has no current loadable follow-up")
+    budget = _context_budget(row)
+    selected: Doc = {
+        "name": wiki,
+        "root": row.get("root"),
+        "access": access,
+        "routing_mode": row.get("routing_mode"),
+        "allows": allows,
+        "follow_up": follow_up.text,
+        "threshold_matched": False,
+        "confidence": None,
+    }
+    if budget is not None:
+        selected["context_budget"] = budget
+    provenance: Doc = {
+        "status": "explicit-user-selection",
+        "basis": "selected-eligible-existing",
+        "source_disposition": "eligible-existing",
+        "threshold_matched": False,
+        "confidence_changed": False,
+        "request_hash": content_hash(request),
+        "catalog_hash": catalog.catalog_hash,
+        "model_class": model_class,
+        "owner_id": owner_id,
+        "session_id": session_id,
+        "selection_id": selection_id,
+        "today": today.isoformat(),
+    }
+    _claim_existing_state(state_root, state, wiki)
+    consumed = dict(state)
+    consumed["status"] = "consumed"
+    consumed["audit_event"] = _audit_event(selection_id, "consumed")
+    _write_existing_state(state_root, consumed)
+    return ExistingSelectionResult(
+        content_hash(request),
+        catalog.catalog_hash,
+        model_class,
+        owner_id,
+        session_id,
+        today.isoformat(),
+        selection_id,
+        root_facts_hash,
+        selected,
+        provenance,
+    )
 
 
 def select_offer(

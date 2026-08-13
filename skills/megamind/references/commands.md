@@ -91,6 +91,27 @@ state, and path/symlink escape return `selection_invalid`, exit 1. A
 `redacted` wiki is redacted in the catalog projection only; it stays selectable
 on exactly the terms preflight already routes it on.
 
+## megamind-axi select-existing [WIKI] --request REQUEST --model-class local|cloud --owner-id ID --session-id ID --today D [--selection-id ID] [--estate DIR] [--full]
+
+Without `WIKI`, emits `megamind/existing-selection-list/v1` and derives the
+eligible list from the complete current catalog. It never accepts a caller
+supplied display array. Rows must be unique, healthy, nameable (`full` or
+`redacted`), loadable (`full` or `digest-only`), fresh, non-provisional,
+non-pointer, and have present declared artifacts contained by their card/root.
+The result carries exact access and card budget, plus an opaque one-time
+`selection_id` bound to the exact request hash, catalog hash, model class,
+owner/session, home, and date.
+It returns at most 20 names unless `--full`; truncation notes state the shown
+and total counts, and only returned names are authorized by that identity.
+
+With `WIKI` and `--selection-id`, recomputes and consumes that exact list
+identity, then emits `megamind/existing-selection-result/v1` with the bounded
+reader surface. Its basis is `selected-eligible-existing` and both provenance
+and selected entry carry `threshold_matched: false`; this grants consultation
+only, not confidence or answerability. Drift, date rollover, replay,
+cross-home reuse, forged names, and caller-manufactured eligibility refuse as
+`selection_invalid`. This operation is distinct from `select-offer`.
+
 ## megamind-axi adopt <target> [--name N] [--apply --plan-id ID] [--rollback] [--full]
 
 Non-destructive adoption of an existing wiki directory as a canonical root.
