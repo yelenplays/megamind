@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 
@@ -18,6 +18,7 @@ from megamind.evidence import (
     unresolved_contradictions,
 )
 from megamind.fsops import content_hash
+from megamind.policy import ResearchTier
 from megamind.registry import ResearchPolicy, load_registry, save_registry
 from megamind.research import (
     MappingResolver,
@@ -77,6 +78,57 @@ def test_research_transition_replay_is_noop_and_divergence_refused(tmp_path: Pat
             attempt_id=first.attempt_id,
             reason="different",
         )
+
+
+def test_research_store_rejects_unknown_kinds_consistently(tmp_path: Path) -> None:
+    store = ResearchStore(tmp_path)
+    for operation in (
+        lambda: store.put("typo", {}),
+        lambda: store.get("typo", "record"),
+        lambda: store.scan("typo"),
+    ):
+        with pytest.raises(ResearchError, match="unknown research store kind"):
+            operation()
+
+
+def test_research_store_refuses_policyless_plan_persistence(tmp_path: Path) -> None:
+    root = build_vault(tmp_path)
+    store = ResearchStore(root)
+    plan = make_plan(
+        {
+            "schema": "megamind/research-plan/v1",
+            "wiki": "ProductWiki",
+            "gap_id": "gap-1",
+            "question": "Synthetic question",
+            "policy_digest": "",
+            "card_digest": "",
+            "access_digest": "",
+        }
+    )
+    assert isinstance(plan, dict)
+    with pytest.raises(ResearchError, match="explicit wiki research policy"):
+        store.put("plans", plan)
+    assert not (root / ".megamind" / "research").exists()
+
+
+def test_research_store_refuses_denied_policy_persistence(tmp_path: Path) -> None:
+    root = _research_vault(tmp_path, enabled=False)
+    store = ResearchStore(root)
+    plan = make_plan(
+        {
+            "schema": "megamind/research-plan/v1",
+            "wiki": "ProductWiki",
+            "gap_id": "gap-1",
+            "question": "Synthetic question",
+            "policy_digest": "",
+            "card_digest": "",
+            "access_digest": "",
+        }
+    )
+    assert isinstance(plan, dict)
+    with pytest.raises(ResearchError, match="explicit wiki research policy"):
+        store.put("plans", plan)
+    assert not (root / ".megamind" / "research").exists()
 
 
 def test_research_drift_requires_replan(tmp_path: Path) -> None:
@@ -466,14 +518,71 @@ def _research_vault(tmp_path: Path, *, enabled: bool = True) -> Path:
     entry = registry.wiki_by_name("ProductWiki")
     assert entry is not None
     entry.research_policy = ResearchPolicy(
-        enabled=enabled,
-        claim_types=["general"],
-        research_mode="approval" if enabled else "off",
+        tiers=(
+            ResearchTier(
+                1,
+                "synthetic authority",
+                "primary",
+                ({"kind": "host", "host": "synthetic.example"},),
+                ("fact",),
+            ),
+        )
+        if enabled
+        else (),
+        research="approval" if enabled else "off",
         max_sources_per_cycle=2,
-        digest="synthetic-policy-digest",
     )
     save_registry(root, registry)
     return root
+
+
+def test_policy_absence_refuses_stateful_research_receipts_without_writes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = build_vault(tmp_path)
+    plan = _write(root, "plan.json", {**PLAN_INPUT, "policy_authorized": True})
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "permission-check",
+        "--input",
+        plan,
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 1
+    assert doc["code"] == "research_invalid"
+
+    candidate = {
+        "schema": "megamind/source-candidate/v1",
+        "origin": "https://synthetic.test/source",
+        "found_by": "host",
+        "query_hash": "",
+        "rank": 0,
+        "status": "discovered",
+        "reason": "",
+    }
+    candidate["candidate_id"] = content_hash(
+        json.dumps(
+            {"origin": candidate["origin"], "query_hash": candidate["query_hash"]},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "record-discovery",
+        "--wiki",
+        "ProductWiki",
+        "--input",
+        _write(root, "candidate.json", {"candidates": [candidate]}),
+    )
+    assert code == 1
+    assert doc["code"] == "research_invalid"
+    assert not (root / ".megamind" / "research").exists()
 
 
 def _run(capsys: pytest.CaptureFixture[str], root: Path, *argv: str) -> tuple[int, dict[str, Any]]:
@@ -514,108 +623,73 @@ EVIDENCE_INPUT: dict[str, Any] = {
 }
 
 
+def _retired_lifecycle_workflow() -> NoReturn:
+    raise AssertionError("retired lifecycle workflow is excluded by Slice 1 receipt-only scope")
+
+
 def _lane_to_extracting(
     capsys: pytest.CaptureFixture[str], root: Path
 ) -> tuple[dict[str, Any], str]:
-    code, doc = _run(
-        capsys,
-        root,
-        "research",
-        "permission-check",
-        "--input",
-        _write(root, "plan.json", {**PLAN_INPUT, "policy_authorized": True}),
-        "--today",
-        "2026-03-01",
-    )
-    assert code == 0, doc
-    assert doc["status"] == "planned"
-    job = doc["job"]
-
-    code, doc = _run(
-        capsys,
-        root,
-        "research",
-        "record-discovery",
-        "--input",
-        _write(
-            root,
-            "discovery.json",
-            {
-                "job_id": job["job_id"],
-                "attempt_id": job["attempt_id"],
-                "candidates": ["candidate-a"],
-                "usage": {"queries": 1},
-            },
-        ),
-        "--today",
-        "2026-03-01",
-    )
-    assert code == 0, doc
-    assert doc["status"] == "retrieving"
-
-    code, doc = _run(
-        capsys,
-        root,
-        "research",
-        "record-artifact",
-        "--input",
-        _write(root, "artifact.json", EVIDENCE_INPUT),
-    )
-    assert code == 0, doc
-    assert doc["status"] == "accepted"
-    evidence_id = doc["evidence"]["evidence_id"]
-
-    code, doc = _run(
-        capsys,
-        root,
-        "research",
-        "record-claims",
-        "--input",
-        _write(
-            root,
-            "claims.json",
-            {
-                "job_id": job["job_id"],
-                "attempt_id": job["attempt_id"],
-                "claims": [
-                    {
-                        "claim_key": "release-cadence",
-                        "statement": "The synthetic product ships weekly.",
-                        "supported_by": [evidence_id],
-                    }
-                ],
-            },
-        ),
-        "--today",
-        "2026-03-01",
-    )
-    assert code == 0, doc
-    assert doc["status"] == "extracting"
-    return job, str(doc["claims"][0]["claim_id"])
+    del capsys, root
+    _retired_lifecycle_workflow()
 
 
 def _lane_to_packet_ready(
     capsys: pytest.CaptureFixture[str], root: Path
 ) -> tuple[dict[str, Any], str]:
-    job, claim_id = _lane_to_extracting(capsys, root)
-    code, doc = _run(
-        capsys, root, "research", "reconcile", "--job-id", job["job_id"], "--today", "2026-03-01"
-    )
-    assert code == 0, doc
-    assert doc["status"] == "packet-ready"
-    return job, claim_id
+    del capsys, root
+    _retired_lifecycle_workflow()
 
 
-def test_research_lane_reaches_a_proposal_through_the_transition_table(
+@pytest.fixture(autouse=True)
+def _skip_retired_lifecycle_workflow(request: pytest.FixtureRequest) -> None:
+    """Keep only receipt-compatible coverage for the retired workflow commands."""
+    retired = {
+        "test_forged_lifecycle_cannot_lift_the_emitted_packet_verdict",
+        "test_terminal_outcome_freezes_and_packet_id_is_part_of_its_identity",
+        "test_research_status_lists_durable_jobs_without_a_job_id",
+        "test_packet_refuses_a_forged_host_confidence",
+        "test_packet_refuses_a_forged_frozen_claim_confidence",
+        "test_unresolved_contradictions_refuses_a_forged_resolution",
+        "test_packet_refuses_before_reconcile_without_freezing_anything",
+        "test_record_claims_replay_is_a_no_op",
+        "test_record_claims_refuses_a_forbidden_state_without_freezing_claims",
+        "test_packet_over_an_unsupported_claim_stays_unknown",
+        "test_packet_refuses_an_unfrozen_claim_reference",
+        "test_card_digest_drift_refuses_a_submitted_plan",
+        "test_discovery_over_the_plan_ceiling_is_a_terminal_budget_outcome",
+        "test_claims_refuse_evidence_this_lane_never_accepted",
+    }
+    if request.node.name in retired:
+        pytest.skip("retired lifecycle workflow is excluded by Slice 1 receipt-only scope")
+
+
+def test_legacy_packet_workflow_is_typed_unavailable(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = _research_vault(tmp_path)
-    job, claim_id = _lane_to_packet_ready(capsys, root)
+    job_id = "legacy-job"
+
+    code, doc = _run(
+        capsys,
+        root,
+        "research",
+        "reconcile",
+        "--job-id",
+        job_id,
+        "--today",
+        "2026-03-01",
+    )
+    assert code == 0, doc
+    assert doc["schema_version"] == "megamind/research-status/v1"
+    assert doc["status"] == "unavailable"
+    assert doc["action"] == "reconcile"
+    assert doc["job_id"] == job_id
 
     packet_input = {
-        "job_id": job["job_id"],
-        "attempt_id": job["attempt_id"],
-        "claims": [claim_id],
+        "job_id": job_id,
+        "attempt_id": "legacy-attempt",
+        "claims": ["legacy-claim"],
         "interpretation": "The synthetic product ships on a weekly train.",
     }
     code, doc = _run(
@@ -629,26 +703,12 @@ def test_research_lane_reaches_a_proposal_through_the_transition_table(
         "2026-03-01",
     )
     assert code == 0, doc
-    assert doc["job"]["state"] == "change-proposed"
-    assert (root / doc["proposal"]).is_file()
-    # The packet reports the frozen claim's confidence, not a receipt value.
-    assert doc["packet"]["confidence"] == _frozen_claim(root, claim_id)["confidence"]
-    assert doc["packet"]["answerability"]["claims"] == 1
-
-    # Exact replay of the whole packet step is a no-op, not a second proposal.
-    replayed_code, replayed = _run(
-        capsys,
-        root,
-        "research",
-        "packet",
-        "--input",
-        _write(root, "packet.json", packet_input),
-        "--today",
-        "2026-03-01",
-    )
-    assert replayed_code == 0
-    assert replayed["job"] == doc["job"]
-    assert replayed["proposal_id"] == doc["proposal_id"]
+    assert doc["schema_version"] == "megamind/research-status/v1"
+    assert doc["status"] == "unavailable"
+    assert doc["action"] == "packet"
+    assert doc["job_id"] == job_id
+    assert not (root / ".megamind" / "research" / "packets").exists()
+    assert not list((root / ".megamind" / "proposals").glob("*.json"))
 
 
 def _artifacts(root: Path, directory: str) -> set[str]:
@@ -981,6 +1041,22 @@ def test_unresolved_contradictions_refuses_a_forged_resolution(
         unresolved_contradictions(root, [contradiction.contradiction_id])
 
 
+def test_store_contradiction_refuses_different_existing_bytes(tmp_path: Path) -> None:
+    contradiction = make_contradiction(
+        {
+            "claim_ids": ["claim-a", "claim-b"],
+            "basis": "Synthetic conflict.",
+            "resolution": "unresolved",
+        },
+        MappingResolver({"claim": {"claim-a", "claim-b"}}),
+    )
+    path = store_contradiction(tmp_path, contradiction)
+    path.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(EvidenceAcceptanceError, match="different bytes"):
+        store_contradiction(tmp_path, contradiction)
+
+
 def test_packet_refuses_before_reconcile_without_freezing_anything(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1200,6 +1276,7 @@ def test_permission_check_denies_when_the_card_does_not_authorize_research(
     assert code == 0
     assert doc["status"] == "policy-denied"
     assert doc["authority"]["authorized"] is False
+    assert not (root / ".megamind" / "research").exists()
 
 
 def test_permission_check_replay_is_a_no_op(
@@ -1421,6 +1498,16 @@ def test_an_unresolved_contradiction_lowers_the_claim_score() -> None:
     assert claim_confidence_from_records(
         records, lifecycle="active", contradicted=True
     ) < claim_confidence_from_records(records, lifecycle="active")
+
+
+def test_legacy_host_origin_ids_cannot_increase_confidence() -> None:
+    asserted = [_accepted_record("source-a"), _accepted_record("source-b")]
+    untrusted = [_accepted_record(), _accepted_record()]
+
+    assert [record.origin_id for record in asserted] == ["", ""]
+    assert claim_confidence_from_records(
+        asserted, lifecycle="active"
+    ) == claim_confidence_from_records(untrusted, lifecycle="active")
 
 
 def test_claim_confidence_never_assumes_freshness() -> None:

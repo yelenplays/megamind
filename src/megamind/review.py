@@ -7,13 +7,14 @@ candidates. Review never changes anything.
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
 
 from .capture import list_proposals
 from .card import compiled_page_dir, is_canonical_page
+from .confidence import CLEAN_CORRECTION
+from .evidence import EvidenceStore, resolve_corrections
 from .evolve import PROPOSAL_MARKER
 from .fsops import resolve_contained
 from .links import extract_links, link_target_path, page_name_table, resolve_link
@@ -31,9 +32,8 @@ class ReviewReport:
     superseded_still_linked: list[dict[str, object]] = field(default_factory=list)
     dead_links: list[dict[str, object]] = field(default_factory=list)
     promotion_candidates: list[dict[str, object]] = field(default_factory=list)
-    research_packets: list[str] = field(default_factory=list)
-    pending_source_rights: list[str] = field(default_factory=list)
-    contradictions: list[str] = field(default_factory=list)
+    pending_evidence: list[dict[str, object]] = field(default_factory=list)
+    contradictions: list[dict[str, object]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -97,25 +97,6 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
     # `.` or a symlinked path, and mixing the two forms raises instead of
     # emitting a report.
     root_resolved = root.resolve()
-    research_root = root_resolved / ".megamind" / "research"
-    packets = research_root / "packets"
-    if packets.is_dir():
-        report.research_packets = [
-            path.relative_to(root_resolved).as_posix() for path in sorted(packets.glob("*.json"))
-        ]
-    evidence = research_root / "evidence"
-    if evidence.is_dir():
-        for path in sorted(evidence.glob("*.json")):
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if isinstance(raw, dict):
-                if raw.get("decision") == "deferred":
-                    report.pending_source_rights.append(path.relative_to(root_resolved).as_posix())
-                if raw.get("correction_status") == "expression_of_concern":
-                    report.contradictions.append(path.relative_to(root_resolved).as_posix())
-
     all_page_bodies: dict[str, str] = {}
     page_docs: dict[str, Document] = {}
     titles: dict[str, list[str]] = {}
@@ -185,6 +166,52 @@ def review(root: Path, registry: Registry, today: date | None = None) -> ReviewR
                     report.superseded_still_linked.append(
                         {"superseded": target_rel, "linked_from": rel}
                     )
+
+    # Evidence review is metadata-only. Bodies and source prose are never
+    # loaded by this projection. A malformed record is reported as work to do
+    # rather than aborting review and the home document that points at doctor.
+    evidence_store = EvidenceStore(root)
+    notices = [
+        notice for _, notice, _ in evidence_store.scan_readonly("corrections") if notice is not None
+    ]
+    for identifier, record, problem in evidence_store.scan_readonly("evidence"):
+        if record is None:
+            report.pending_evidence.append(
+                {"evidence_id": identifier, "decision": "invalid", "failure": problem}
+            )
+            continue
+        acceptance = record.get("acceptance", {})
+        decision = str(acceptance.get("decision", ""))
+        failure = str(acceptance.get("failure", ""))
+        status = str(resolve_corrections(record, notices)["status"])
+        pending = decision in {"deferred", "rejected"}
+        if status != CLEAN_CORRECTION and decision == "accepted":
+            # Support is already withdrawn by the correction posture; the stored
+            # acceptance block is what still has to catch up.
+            pending = True
+            failure = f"superseded by a {status} correction notice; re-record the artifact"
+        if pending:
+            report.pending_evidence.append(
+                {
+                    "evidence_id": record.get("evidence_id", ""),
+                    "decision": decision,
+                    "failure": failure,
+                }
+            )
+    for identifier, contradiction, problem in evidence_store.scan_readonly("contradictions"):
+        if contradiction is None:
+            report.contradictions.append(
+                {"contradiction_id": identifier, "claim_ids": "", "problem": problem}
+            )
+            continue
+        if contradiction.get("resolution") == "unresolved":
+            report.contradictions.append(
+                {
+                    "contradiction_id": contradiction.get("contradiction_id", ""),
+                    "claim_ids": ";".join(contradiction.get("claim_ids", [])),
+                    "problem": "",
+                }
+            )
 
     # Promotion candidates
     for wiki, wiki_dir in _iter_wiki_page_dirs(root, registry):

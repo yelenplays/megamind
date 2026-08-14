@@ -8,14 +8,15 @@ reports findings with severities; any error makes the command exit non-zero.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from .access import policy_findings
 from .capture import list_proposals
 from .card import CardError, load_wiki_card
+from .evidence import STORE_KINDS, EvidenceError, EvidenceStore, validate_correction_chain
 from .fsops import MEGAMIND_DIR, PathEscapeError, resolve_contained
 from .gardening import validate_gap_journal
 from .links import extract_links, page_name_table, resolve_link
@@ -29,7 +30,7 @@ from .registry import (
     generate_router,
     load_registry,
 )
-from .research import ResearchError, ResearchStore
+from .research import ResearchStore
 
 PROPOSAL_STATUSES = ("proposed", "applied", "rejected")
 
@@ -280,66 +281,183 @@ def _check_access_policy(registry: Registry, findings: list[Finding]) -> None:
             findings.append(entry)
 
 
-def _check_research_state(root: Path, findings: list[Finding]) -> None:
-    """Validate research journals and immutable artifact identity without loading source bodies."""
-    try:
-        store = ResearchStore(root)
-        jobs = store.jobs()
-    except (ResearchError, OSError) as error:
-        findings.append(_error("research", ".megamind/research/jobs.jsonl", str(error)))
-        return
-    for job in jobs:
-        if not job.job_id or not job.attempt_id:
-            findings.append(
-                _error("research", ".megamind/research/jobs.jsonl", "job lacks identity")
-            )
-        if not job.policy_digest or not job.card_digest or not job.access_digest:
-            findings.append(
-                _error(
-                    "research",
-                    ".megamind/research/jobs.jsonl",
-                    f"job {job.job_id} lacks bound policy/card/access digests",
-                )
-            )
-    for directory in ("packets", "outcomes", "evidence", "claims", "contradictions"):
-        path = root / ".megamind" / "research" / directory
-        if not path.is_dir():
-            continue
-        for artifact in sorted(path.glob("*.json")):
-            try:
-                value = artifact.read_text(encoding="utf-8")
-                if not value.endswith("\n"):
-                    findings.append(
-                        _error(
-                            "research",
-                            artifact.relative_to(root).as_posix(),
-                            "research artifact lacks trailing newline",
-                        )
-                    )
-                parsed = json.loads(value)
-                if not isinstance(parsed, dict) or not parsed.get("schema"):
-                    findings.append(
-                        _error(
-                            "research",
-                            artifact.relative_to(root).as_posix(),
-                            "research artifact is not a typed document",
-                        )
-                    )
-            except (OSError, ValueError) as error:
-                findings.append(
-                    _error(
-                        "research",
-                        artifact.relative_to(root).as_posix(),
-                        f"research artifact is unreadable: {error}",
-                    )
-                )
-
-
 def _check_gap_journal(root: Path, findings: list[Finding]) -> None:
     """The gap journal lives at whatever root the gap commands were given, so
     both root shapes have to validate it."""
     for message in validate_gap_journal(root):
         findings.append(_error("gaps", f"{MEGAMIND_DIR}/gaps.jsonl", message))
+
+
+def _evidence_rel(kind: str, identifier: str) -> str:
+    return f"{MEGAMIND_DIR}/evidence/{kind}/{identifier}.json"
+
+
+def _check_references(
+    records: dict[str, dict[str, dict[str, Any]]], findings: list[Finding]
+) -> None:
+    """Every cross-record reference must name a record this vault holds.
+
+    Each validator can only prove its own document, so the identities that
+    span documents (claim to quotation, claim to evidence, quotation to
+    evidence, packet to claim) have no owner until the whole set is readable.
+    Doctor is that owner.
+    """
+    for identifier, quotation in sorted(records["quotations"].items()):
+        artifact = records["evidence"].get(quotation["evidence_id"])
+        if artifact is None:
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("quotations", identifier),
+                    f"quotation cites unknown evidence record {quotation['evidence_id']}",
+                )
+            )
+        elif str(artifact["snapshot"]["normalized_sha256"]) != quotation["against_hash"]:
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("quotations", identifier),
+                    f"quotation against_hash {quotation['against_hash']} is not the normalized "
+                    f"snapshot of evidence record {quotation['evidence_id']}",
+                )
+            )
+    for identifier, claim in sorted(records["claims"].items()):
+        for support in claim["supported_by"]:
+            cited = records["quotations"].get(support["quotation_id"])
+            if cited is None:
+                findings.append(
+                    _error(
+                        "evidence",
+                        _evidence_rel("claims", identifier),
+                        f"claim cites unknown quotation {support['quotation_id']}",
+                    )
+                )
+            elif str(cited["evidence_id"]) != support["evidence_id"]:
+                findings.append(
+                    _error(
+                        "evidence",
+                        _evidence_rel("claims", identifier),
+                        f"claim pairs quotation {support['quotation_id']} with evidence record "
+                        f"{support['evidence_id']}, but that span is bound to "
+                        f"{cited['evidence_id']}",
+                    )
+                )
+            if support["evidence_id"] not in records["evidence"]:
+                findings.append(
+                    _error(
+                        "evidence",
+                        _evidence_rel("claims", identifier),
+                        f"claim cites unknown evidence record {support['evidence_id']}",
+                    )
+                )
+    for identifier, contradiction in sorted(records["contradictions"].items()):
+        for claim_id in contradiction["claim_ids"]:
+            if claim_id not in records["claims"]:
+                findings.append(
+                    _error(
+                        "evidence",
+                        _evidence_rel("contradictions", identifier),
+                        f"contradiction cites unknown claim {claim_id}",
+                    )
+                )
+    _check_correction_chains(records, findings)
+
+
+def _check_correction_chains(
+    records: dict[str, dict[str, dict[str, Any]]], findings: list[Finding]
+) -> None:
+    """A correction history must stay a single ordered chain per artifact.
+
+    Only one notice can be the current posture. A dangling or forked chain
+    would make an artifact's correction status undecidable, which is exactly
+    the state that must never be reached silently.
+    """
+    notices = records["corrections"]
+    for identifier, notice in sorted(notices.items()):
+        if notice["evidence_id"] not in records["evidence"]:
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("corrections", identifier),
+                    f"correction notice cites unknown evidence record {notice['evidence_id']}",
+                )
+            )
+        supersedes = str(notice["supersedes"])
+        prior = notices.get(supersedes) if supersedes else None
+        if supersedes and prior is None:
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("corrections", identifier),
+                    f"correction notice supersedes unknown notice {supersedes}",
+                )
+            )
+        elif prior is not None and str(prior["evidence_id"]) != str(notice["evidence_id"]):
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("corrections", identifier),
+                    f"correction notice supersedes {supersedes}, which belongs to a different "
+                    f"evidence record {prior['evidence_id']}",
+                )
+            )
+    for evidence_id in sorted({str(notice["evidence_id"]) for notice in notices.values()}):
+        try:
+            validate_correction_chain(evidence_id, notices)
+        except EvidenceError as error:
+            findings.append(
+                _error(
+                    "evidence",
+                    _evidence_rel("evidence", evidence_id),
+                    str(error),
+                )
+            )
+
+
+def _check_research_records(root: Path, findings: list[Finding]) -> None:
+    """Validate immutable evidence and research records without reading prose."""
+    evidence_store = EvidenceStore(root)
+    records: dict[str, dict[str, dict[str, Any]]] = {}
+    for kind in STORE_KINDS:
+        valid: dict[str, dict[str, Any]] = {}
+        for identifier, record, problem in evidence_store.scan(kind):
+            if record is None:
+                findings.append(_error("evidence", _evidence_rel(kind, identifier), problem))
+                continue
+            valid[identifier] = record
+        records[kind] = valid
+    _check_references(records, findings)
+    research_store = ResearchStore(root)
+    research_records: dict[str, dict[str, dict[str, Any]]] = {}
+    for kind in ("plans", "jobs", "packets", "outcomes", "candidates"):
+        suffix = "jsonl" if kind == "jobs" else "json"
+        research_valid: dict[str, dict[str, Any]] = {}
+        for identifier, record, problem in research_store.scan(kind):
+            rel = f"{MEGAMIND_DIR}/research/{kind}/{identifier}.{suffix}"
+            if record is None:
+                findings.append(_error("research", rel, problem))
+                continue
+            research_valid[identifier] = record
+        research_records[kind] = research_valid
+    for identifier, job in sorted(research_records["jobs"].items()):
+        rel = f"{MEGAMIND_DIR}/research/jobs/{identifier}.jsonl"
+        plan = research_records["plans"].get(str(job["plan_id"]))
+        if plan is None:
+            findings.append(_error("research", rel, f"job cites unknown plan {job['plan_id']}"))
+        elif str(plan["gap_id"]) != str(job["gap_id"]):
+            findings.append(_error("research", rel, "job and plan have different gap ids"))
+    for identifier, packet in sorted(research_records["packets"].items()):
+        rel = f"{MEGAMIND_DIR}/research/packets/{identifier}.json"
+        for claim_id in packet["claim_ids"]:
+            if claim_id not in records["claims"]:
+                findings.append(_error("research", rel, f"packet cites unknown claim {claim_id}"))
+        for contradiction_id in packet["contradiction_ids"]:
+            if contradiction_id not in records["contradictions"]:
+                findings.append(
+                    _error(
+                        "research", rel, f"packet cites unknown contradiction {contradiction_id}"
+                    )
+                )
 
 
 def run_doctor(root: Path) -> list[Finding]:
@@ -361,7 +479,7 @@ def run_doctor(root: Path) -> list[Finding]:
                     _error("canonical-root", required, "required canonical directory is missing")
                 )
         _check_gap_journal(root, findings)
-        _check_research_state(root, findings)
+        _check_research_records(root, findings)
         if not card.name:
             findings.append(
                 _error("card", f"{MEGAMIND_DIR}/wiki-card.json", "card has no wiki name")
@@ -378,7 +496,7 @@ def run_doctor(root: Path) -> list[Finding]:
     _check_proposals(root, findings)
     _check_symlinks(root, findings)
     _check_gap_journal(root, findings)
-    _check_research_state(root, findings)
+    _check_research_records(root, findings)
     findings.sort(key=lambda f: (f.severity != "error", f.check, f.path, f.message))
     return findings
 

@@ -37,6 +37,7 @@ with a stable `schema_version`:
 | `megamind/gap-transition/v1`, `megamind/gap-attempt/v1` | `gap` mutations |
 | `megamind/research-wave/v1` | `research-wave` |
 | `megamind/research-result/v1` or `v2` | `research-result` (v1 restrictive legacy; v2 typed acceptance) |
+| `megamind/research-status/v1`, `megamind/research-plan/v1`, `megamind/research-job/v1`, `megamind/source-candidate/v1`, `megamind/evidence-record/v1`, `megamind/correction-notice/v1`, `megamind/quotation/v1`, `megamind/claim/v1`, `megamind/contradiction/v1`, `megamind/research-packet/v1`, `megamind/research-outcome/v1` | `research` actions |
 | `megamind/provisional-wiki-result/v1` | `provision-wiki` |
 | `megamind/benchmark-result/v1`, `megamind/benchmark-check/v1` | `bench run`, `bench check` |
 | `megamind/evaluation-key/v1` | `experiment keygen` |
@@ -247,6 +248,58 @@ definitive empty value rather than disappearing. At a canonical wiki root,
 destinations inside the card's compiled page tree (the directory of its
 declared index) and rejects `raw/`, and `review` reports only compiled pages.
 
+## megamind-axi research <action> [--input FILE]
+
+`research plan` validates and stores an inert `research-plan/v1` plus its job
+spine record. `record-discovery`, `record-artifact`, `record-correction`,
+`record-quotations`, `record-claims`, and `reconcile` accept JSON host receipts and emit
+`source-candidate/v1`, `evidence-record/v1`, `correction-notice/v1`, `claim/v1`,
+and `contradiction/v1` documents. `packet` stores a cited
+`research-packet/v1`, and `outcome` stores a terminal
+`research-outcome/v1` receipt; `status`, `cancel`, and `resume` inspect or
+advance only typed local state. Inputs are files to keep large source payloads out of
+command strings. No action performs network access, dispatch, transcript
+fetching, publication, or an external write.
+
+The legacy `reconcile --job-id` and legacy packet-input forms remain parseable,
+but return a typed `unavailable` result because packet-to-proposal compilation
+is outside this slice. They make no vault mutation.
+
+`record-artifact` derives G1-G12 and source-class gates from validated facts and
+the selected wiki's restrictive research policy. A missing policy, an unnamed
+wiki, or an explicit `"research": "off"` denies acceptance. `--wiki` must name a
+registered wiki or a canonical card; an unresolvable name is a `usage_error`
+rather than a silent policy-free acceptance. Quotation selectors are hash-bound
+and must re-resolve against frozen normalized text before an active claim may
+rely on them; G10 stays `unknown` until at least one stored span for that
+artifact resolves, so the order is `record-artifact`, `record-quotations`, then
+`record-artifact` again to re-derive acceptance. That order is enforced, not
+merely advised: a quotation naming an artifact this vault does not hold is
+refused, as is a claim naming an artifact or span it does not hold. Only
+the derived acceptance block may be rewritten that way: every frozen fact of a
+stored record stays immutable, and re-recording an artifact with any of them
+changed is an `evidence_invalid` refusal. Unresolved contradictions remain
+visible, and packet confidence is never used as an acceptance verdict.
+
+`record-correction` is how a recheck lands. It appends a
+`correction-notice/v1` that supersedes the artifact's current notice, and it
+refuses a notice naming an unknown artifact or one that would fork the chain.
+Retraction removes support at once: claim confidence weighs the posture in
+force, `review` lists an accepted artifact whose posture has moved, and
+re-running `record-artifact` re-derives acceptance to `rejected` on G9.
+
+`record-claims` returns each claim's confidence from the unchanged confidence
+constants, using stored evidence acceptance, derived origin corroboration, the
+wiki freshness policy against `--today`, and stored unresolved contradictions.
+`reconcile` from `{claims: []}` requires `--today` and stores those claims
+together with the contradictions derived from them. Every citation is resolved
+against the store before the citing record is admitted: `reconcile` from
+`{contradictions: []}` and `packet` refuse a claim or contradiction id this
+vault does not hold, so the vault any of these actions leaves behind is one
+`doctor` reports clean. `status` truncates its lists like every other list
+section, takes `--full`, and reports an unreadable record under `problems[]`
+instead of failing. Every action requires an initialized vault root.
+
 ## Error codes
 
 `usage_error`, `not_initialized`, `registry_invalid`, `card_invalid`,
@@ -254,9 +307,10 @@ declared index) and rejects `raw/`, and `review` reports only compiled pages.
 `evolve_invalid`, `adopt_invalid`, `init_invalid`, `path_escape`,
 `frontmatter_invalid`, `io_error`, `garden_invalid`, `gap_not_found`,
 `gap_transition_invalid`, `provision_recovery_required`, `selection_invalid`,
-`evaluation_invalid`, `rollout_invalid`, `research_invalid`, `research_not_found`,
-`research_transition_invalid`, `research_replay_conflict`, `research_replan_required`,
-`research_immutable`, `evidence_acceptance_invalid`. Malformed vault content and filesystem
+`evaluation_invalid`, `rollout_invalid`, `evidence_invalid`, `research_invalid`,
+`research_policy_invalid`, `research_not_found`, `research_transition_invalid`,
+`research_replay_conflict`, `research_replan_required`, `research_immutable`,
+`evidence_acceptance_invalid`. Malformed vault content and filesystem
 failures are reported as `frontmatter_invalid` and `io_error` documents with
 exit 1; malformed frozen evaluation inputs are `evaluation_invalid`; malformed,
 unsafe, or stale rollout evidence is `rollout_invalid`; no invocation ever ends

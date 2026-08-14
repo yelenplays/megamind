@@ -39,15 +39,22 @@ the fields.
         "allowlist_status": "approved"
       },
       "research_policy": {
-        "enabled": true,
-        "tiers": {"primary": "release-notes"},
-        "claim_types": ["general"],
-        "sole_support": false,
+        "schema": "megamind/research-policy/v1",
+        "tiers": [
+          {
+            "tier": 1,
+            "name": "synthetic-release-notes",
+            "quality": "primary",
+            "matchers": [{"kind": "publisher", "publisher": "Synthetic Product"}],
+            "claim_types": ["fact", "decision"],
+            "sole_support": false
+          }
+        ],
+        "accepted_authorities": ["Synthetic Product"],
         "quote_ceiling_chars": 200,
-        "research_mode": "approval",
-        "apply_mode": "approval",
-        "max_sources_per_cycle": 3,
-        "digest": "synthetic-policy-digest"
+        "research": "approval",
+        "apply": "approval",
+        "max_sources_per_cycle": 3
       },
       "freshness": {"half_life_days": 90, "last_confirmed": "2026-08-01"},
       "examples": ["What is the current pricing model?"],
@@ -102,17 +109,15 @@ v2 card fields, all optional:
 - `source_policy`: a free-text `summary`, an `allowlist` path pointer, and
   the allowlist `allowlist_status` (`approved`, `proposed`, `none`).
 - `research_policy`: the only field that can authorize a research cycle (see
-  "Deterministic research state" below). `enabled` (boolean), `tiers` (string
-  to string), `claim_types` (strings), `sole_support` (boolean),
-  `quote_ceiling_chars` and `max_sources_per_cycle` (non-negative integers),
-  `research_mode` (`off`, `approval`, or `standing`), `apply_mode` (`approval`
-  or `standing`), and `digest` (the frozen policy text this entry stands for).
-  An omitted or empty policy denies research. Authorization requires all of
-  `enabled: true`, a `research_mode` other than `off`, a non-empty `digest`,
-  and a positive `max_sources_per_cycle`; anything else, including a
-  provisional wiki or a card whose local model access is `none`, is denied.
-  `apply_mode` never widens the write path: apply stays one explicit approval
-  per cycle.
+  "Deterministic research state" below). It is a strict
+  `megamind/research-policy/v1` object with a `tiers` list; each tier has a
+  positive number, name, quality, typed matchers, supported claim types, and
+  optional `sole_support`. `accepted_authorities` bounds publisher names that
+  claim `authority-registry` basis. `quote_ceiling_chars` and
+  `max_sources_per_cycle` are positive integers; `research` is `off`,
+  `approval`, or `standing`, and `apply` is `approval` or `standing`. An
+  omitted or empty policy denies research. `apply` never widens the write path:
+  apply stays one explicit approval per cycle.
 - `freshness`: declared expectations only (`half_life_days`,
   `last_confirmed`). Staleness is computed at read time (catalog passes
   `--today`), never stored.
@@ -710,74 +715,12 @@ superseded_by: path.md    # required when status is superseded
 ---
 ```
 
-## Deterministic research state (`.megamind/research/`)
+## Deterministic research state
 
-Slice 1 research uses strict JSON documents: `megamind/research-plan/v1` is
-content-addressed and binds the wiki, gap, question, capability flags, hard
-budget ceilings, policy/card/access digests, and change envelope. The
-append-only `research/jobs.jsonl` journal stores `megamind/research-job/v1`
-transition facts. `research/packets/<id>.json` and `research/outcomes/<id>.json`
-are immutable `megamind/research-packet/v1` and `megamind/research-outcome/v1`
-artifacts, and `research/evidence/`, `research/claims/`, and
-`research/contradictions/` hold the frozen `megamind/evidence-record/v1`,
-`megamind/claim/v1`, and `megamind/contradiction/v1` receipts. IDs are opaque
-references; packet validation uses narrow resolver interfaces and never treats
-a packet as admitted answer evidence. Cancellation retains artifacts, replaying
-the same event is a no-op, and divergent replay, terminal mutation, or
-policy/card/access drift is refused.
-
-Permission is never a host claim. Every plan names one wiki, and the policy,
-card, and access digests are derived from that wiki's validated card research
-policy (`docs/schemas.md` registry v2) and from the access policy layer; a
-submitted digest that contradicts the derived one is card drift and needs a
-replan. `policy_authorized` in a receipt is an observation that can withhold a
-cycle the card allows and can never authorize one the card denies.
-
-A claim's lifecycle, freshness, and confidence are derived from the frozen
-records, never read from the receipt. Slice 1 has no promotion step, so a claim
-extracted from accepted evidence stays `proposed`. A receipt may state a
-lifecycle, but it is an observation that can only narrow: a status whose cap
-sits above the derived `proposed` (`shaky`, `confirmed`, `active`) is
-discarded, only a strictly narrower one (`rejected`, `superseded`) is honored,
-and an unknown status is refused rather than scored above an honest `proposed`.
-
-Retraction and contradiction are handled outside the lifecycle. A retracted
-source is a `rejected` evidence record, and only `accepted` records can carry a
-claim, so a claim citing one is refused at acceptance rather than frozen with a
-weaker lifecycle. A contradiction is the frozen `megamind/contradiction/v1`
-record plus the confidence cap it imposes on the claims it names, and an
-unresolved one drives the job to the terminal `unresolved-contradiction` state;
-none of that promotes a claim to `shaky`.
-
-Freshness stays `unknown` because a passing `dated` gate says a record carries
-a date, not that the date is recent, and this lane freezes no timestamp to
-compare against a freshness policy. Since the derived lifecycle is what the
-claim identifier covers, a forged one changes neither the identifier nor the
-score. One consequence is deliberate: until a later slice can earn a stronger
-lifecycle, a Slice 1 packet reports `insufficient` rather than `supported`.
-
-The host receipt lane walks the transition table one validated step at a time:
-`permission-check` binds the card verdict and reaches `planned`,
-`record-discovery` checks the receipt against the plan ceilings and the card's
-`max_sources_per_cycle` and reaches `retrieving` or terminal `budget-exhausted`,
-`record-artifact` freezes one evidence record, `record-claims` resolves claim
-support against accepted evidence only and reaches `extracting`, and
-`reconcile` reaches `packet-ready` or terminal `unresolved-contradiction`.
-
-`research packet --input packet.json` requires a `packet-ready` job, resolves
-the packet's claim and contradiction references through a narrow resolver over
-the frozen artifacts, and compiles the packet to the existing normal
-`.megamind/proposals/<id>.md` shape. A packet's `confidence` and
-`answerability` are derived from those resolved records, never supplied: the
-confidence is the weakest relied-upon claim and stays `unknown` when any claim
-is unknown, and `answerability` reports `contradicted` when a referenced
-contradiction is unresolved, `insufficient` when there are no claims or the
-derived confidence misses the reliance floor, and `supported` otherwise. A
-receipt that states either field with a value other than the derived one is
-refused, so replaying an emitted packet stays a no-op while a forged score
-cannot be frozen. `evolve` validates the packet reference
-inside its existing write-ahead transaction; apply remains one explicit
-approval per cycle. Core has no network or host orchestration.
+The current research-state and governed evidence schemas are defined in
+[Governed evidence records (Slice 1)](#governed-evidence-records-slice-1).
+Packets are cited synthesis only: they never compile a proposal or become
+answer context.
 
 ## Proposal (`.megamind/proposals/<id>.md`)
 
@@ -825,3 +768,91 @@ record that `adopt --rollback` verifies before removing generated files;
 Existing-selection audit records contain only `selection_id`, `request_hash`,
 `catalog_hash`, `event_id`, and `backup`; they never include request text,
 wiki content, owner, or session identity.
+
+## Governed evidence records (Slice 1)
+
+Research is a host-executed boundary.  Megamind never fetches URLs, reads
+quarantine bodies, or accepts a model's quality label.  A wiki may opt into a
+strict `megamind/research-policy/v1` document in its registry entry or
+canonical card.  The field is absent by default and absence denies research;
+v1 registries keep that restrictive default.
+
+The evidence lane uses strict, unknown-field-refusing records:
+`megamind/evidence-record/v1`, `megamind/quotation/v1`,
+`megamind/claim/v1`, and `megamind/contradiction/v1`.  Evidence records bind a
+canonical identity and derived `origin_id` plus `origin_proof` to retrieval/publication facts,
+rights, snapshot hashes, correction status, source class, and typed G1-G12
+acceptance gates.  `unknown` is never a pass.  Retractions remove support,
+blocked retrieval is deferred, and injection scanning is advisory only.
+
+Quotation records carry both exact/prefix/suffix and half-open character
+selectors against `normalized_sha256`.  A selector is accepted as resolvable
+only when the supplied frozen normalized text reproduces it; an active claim
+must reference a resolvable quotation.  `exact` must be non-empty, the span
+must be non-empty, and it must lie inside the frozen text, so an empty or
+out-of-range selector can never stand in for a citation.  The per-wiki
+`quote_ceiling_chars` bounds every selector; without a policy the restrictive
+structural limit applies. `origin_id` is exactly `url-origin/v1:` plus the
+SHA-256 digest of the normalized final URL origin. `origin_proof` is the
+SHA-256 of the canonical URL, final URL, derived id, and
+`megamind/origin-proof/v1` schema marker in canonical JSON. A missing,
+malformed, or mismatched proof is rejected at admission and inert in direct
+scoring paths. Claim confidence is calculated by the existing constants after
+acceptance and counts only locally proven derived origin ids; freshness comes
+from the wiki `freshness_policy` and frozen dates, never from a clock.
+Contradiction records retain every claim and use typed precedence outcomes -
+there is no averaging and unresolved contradictions remain below reliance.
+
+A policy that sets `"research": "off"`, or that declares no tiers, admits no
+tier and therefore no quality: acceptance is denied exactly as an absent policy
+denies it.  `accepted_authorities` bounds which publishers may claim
+`authority-registry` basis, `max_sources_per_cycle` bounds one discovery
+receipt, and the `video` block clamps derived quality and claim types for
+video-class evidence.  `apply` is recorded but deliberately inert: no surface
+in this slice applies anything without the existing proposal boundary.
+
+Each record's identity covers only part of its body, so immutability is scoped
+to the identity-bearing fields.  Governed derived state - evidence
+`acceptance`, quotation resolution, claim lifecycle and support, contradiction
+resolution, job state, candidate status - may be advanced in place; any edit to
+an identity-bearing field of an existing record is refused.
+
+The frozen facts a host retrieved are never in that derived set.  A recheck
+that finds a correction or a retraction appends a `megamind/correction-notice/v1`
+record instead of editing the artifact: the notice is content-bound over the
+evidence id, status, check date, method, notice ids, and the notice it
+supersedes, so a posture history only ever grows and the record of what was
+true at retrieval time survives.  Each artifact's notices form one ordered
+chain with exactly one current head; a chain with no head or several heads
+resolves restrictively to `unknown` and doctor reports it.  The head is the
+posture G9 judges and the posture claim confidence weighs, so a retraction
+removes support the moment it is recorded, before the artifact's acceptance
+block is re-derived.  Records that reference each other are written as one set
+only after every member is proven writable, and every reference a record makes
+is resolved against the store before that record is admitted: a quotation names
+a stored artifact, a claim names stored quotations and artifacts, a
+contradiction names stored claims, a correction notice names a stored artifact
+and the notice it supersedes, and a packet names stored claims and
+contradictions.  Where a reference is a pair, both halves must agree: a
+quotation's `against_hash` must be the `snapshot.normalized_sha256` of the
+artifact it names, a claim's support must name the artifact its span was
+hash-bound to, and a notice may only supersede a notice of the same artifact.
+The hash binding therefore runs unbroken from the frozen snapshot through the
+span to the claim: a span cannot be bound to text the caller supplied instead
+of the artifact's own, and crediting a span to a second artifact - and with it
+that artifact's acceptance, quality, and correction posture - is refused rather
+than scored.  Admission and doctor enforce one invariant rather than competing
+over it, and a vault never lands in a state its own doctor reports as broken.
+
+The local job spine is represented by `megamind/research-plan/v1`,
+`megamind/research-job/v1`, `megamind/source-candidate/v1`,
+`megamind/research-packet/v1`, and `megamind/research-outcome/v1`.  These are
+receipts, not dispatch instructions.  Evidence and metadata are stored under
+`.megamind/evidence/` through `fsops`; full fetched bytes remain host
+quarantine.  Doctor validates every content-hash identity and the references
+that span documents - quotation to evidence, claim to quotation and evidence,
+contradiction to claim, correction notice to evidence and to the notice it
+supersedes, packet to claim - because no single validator can see more than its
+own record.  Review surfaces deferred evidence and unresolved
+contradictions, and reports an unreadable record as work to do instead of
+failing the whole projection.

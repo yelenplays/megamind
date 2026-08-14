@@ -308,26 +308,11 @@ any part of the nomination identity - wiki, topic, or the accepted sources -
 refuses. Megamind performs no network or external action and never writes
 `raw/`.
 
-## megamind-axi research ACTION [--input JSON] [--job-id ID]
+## megamind-axi research
 
-Maintains Slice 1's local, deterministic research state. `plan` creates a
-content-addressed plan and durable job; `permission-check` binds the plan to
-the current card-derived research policy and access facts. A host receipt can
-withhold a card-authorized cycle, never authorize a denied one. `record-discovery`,
-`record-artifact`, and `record-claims` validate and freeze bounded discovery,
-evidence, and claim facts. `reconcile` advances a job to `packet-ready` or a
-terminal contradiction state, and `packet` compiles its frozen records into a
-normal Markdown proposal for the existing explicit `evolve` approval path.
-
-`status` lists durable jobs (optionally narrowed by `--job-id`); `cancel`
-retains all artifacts and `resume` starts a fresh attempt that must pass
-re-admission. `outcome` freezes an immutable terminal outcome. Commands that
-submit facts use `--input` with a JSON file; `cancel`, `resume`, and
-`reconcile` require `--job-id`. Exact replay is a no-op, while conflicting
-replay, terminal mutation, or policy/card/access drift is refused. Megamind
-does not fetch, schedule, or perform host orchestration. The record formats and
-transition details are defined in the deterministic research-state section of
-the repository's `docs/schemas.md`.
+See [`megamind-axi research <action> [--input FILE]`](#megamind-axi-research-action---input-file)
+for the current governed evidence commands. Packets are cited synthesis only;
+they never compile proposals or become answer context.
 
 ## megamind-axi provision-wiki NAME PATH [criteria flags]
 
@@ -476,6 +461,33 @@ overwriting (`megamind/setup-result/v1`) and refuses a destination resolving
 inside a vault before any write. Uninstall by deleting that directory. Setup
 never makes network calls or edits shell/provider config.
 
+## `megamind-axi research <action> [--input FILE]`
+
+The offline governed evidence lane records host receipts without fetching or
+dispatching. `plan` stores an inert plan and job spine; `record-discovery`,
+`record-artifact`, `record-quotations`, `record-claims`, and `reconcile`
+validate content-addressed candidates, evidence, hash-bound quotations, claims,
+and visible contradictions. `packet` stores cited synthesis only. `status`,
+`cancel`, and `resume` inspect typed local state. Artifact acceptance derives
+common and source-class gates from frozen facts and the wiki's restrictive
+research policy named by `--wiki`; absent or `off` policy, unknown gates,
+retractions, and unresolved spans never authorize support. G10 stays unknown
+until a stored span resolves, so record the artifact first, then
+`record-quotations`, then re-run `record-artifact` to re-derive acceptance; a
+quotation or claim naming an artifact this vault does not hold is refused
+rather than committed. A frozen fact is never edited:
+`record-correction` appends a `correction-notice/v1` superseding the artifact's
+current notice, and its head is the posture that removes retracted support.
+`reconcile` from claims needs `--today` and stores those claims with the
+contradictions it derives. Every citation resolves against the store before the
+citing record is admitted, so a hand-written contradiction or `packet` naming a
+claim this vault does not hold is refused rather than committed. A quotation's
+`against_hash` must be the named artifact's own normalized snapshot digest, and
+a claim's support must name the artifact its span was hash-bound to, so the
+binding runs unbroken from snapshot to scored claim. `status` takes
+`--full` and reports unreadable records under `problems[]`, and every action
+needs an initialized vault. Full source bytes stay in host quarantine.
+
 ## Errors
 
 `megamind/error/v1` with a stable `code` (`usage_error`, `not_initialized`,
@@ -484,7 +496,8 @@ never makes network calls or edits shell/provider config.
 `init_invalid`, `path_escape`, `frontmatter_invalid`, `io_error`,
 `garden_invalid`, `gap_not_found`, `gap_transition_invalid`,
 `provision_recovery_required`, `selection_invalid`, `evaluation_invalid`,
-`rollout_invalid`, `research_invalid`, `research_not_found`,
-`research_transition_invalid`, `research_replay_conflict`, `research_replan_required`,
-`research_immutable`, `evidence_acceptance_invalid`), a sanitized `message`, and `help[]` with corrective
+`rollout_invalid`, `evidence_invalid`, `research_invalid`,
+`research_policy_invalid`, `research_not_found`, `research_transition_invalid`,
+`research_replay_conflict`, `research_replan_required`, `research_immutable`,
+`evidence_acceptance_invalid`), a sanitized `message`, and `help[]` with corrective
 commands.

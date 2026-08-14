@@ -14,7 +14,8 @@ import pytest
 
 from conftest import build_vault
 from megamind import toon
-from megamind.cli import DIFF_LINE_LIMIT, main
+from megamind.cli import DIFF_LINE_LIMIT, SECTION_ITEM_LIMIT, main
+from megamind.policy import RESEARCH_POLICY_SCHEMA, ResearchPolicy
 from megamind.registry import WikiEntry, load_registry, save_registry
 from megamind.scaffold import init_wiki_root
 
@@ -29,6 +30,30 @@ def run_toon(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, 
     code = main(list(argv))
     captured = capsys.readouterr()
     return code, captured.out, captured.err
+
+
+def research_ready_vault(tmp_path: Path) -> Path:
+    """Return the synthetic vault with the explicit policy research requires."""
+    vault = build_vault(tmp_path)
+    registry = load_registry(vault)
+    starter = registry.wiki_by_name("StarterWiki")
+    assert starter is not None
+    starter.research_policy = ResearchPolicy.from_data(
+        {
+            "schema": RESEARCH_POLICY_SCHEMA,
+            "research": "approval",
+            "tiers": [
+                {
+                    "tier": 1,
+                    "name": "synthetic-authority",
+                    "quality": "primary",
+                    "matchers": [{"kind": "publisher", "publisher": "Synthetic Authority"}],
+                }
+            ],
+        }
+    )
+    save_registry(vault, registry)
+    return vault
 
 
 # --- home -------------------------------------------------------------------
@@ -384,7 +409,7 @@ def test_review_lists_proposals_at_a_canonical_wiki_root(
     assert any(proposal_id in item for item in doc["open_proposals"])
 
 
-def test_review_renders_and_caps_research_diagnostics(
+def test_review_ignores_legacy_research_artifacts(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     vault = build_vault(tmp_path)
@@ -404,18 +429,8 @@ def test_review_renders_and_caps_research_diagnostics(
 
     assert code == 0
     assert err == ""
-    assert doc["status"] == "attention"
-    assert doc["aggregates"]["research_packets"] == 21
-    assert doc["aggregates"]["pending_source_rights"] == 21
-    assert doc["aggregates"]["contradictions"] == 21
-    assert len(doc["research_packets"]) == 20
-    assert len(doc["pending_source_rights"]) == 20
-    assert len(doc["contradictions"]) == 20
-    assert set(doc["notes"]) == {
-        "research_packets truncated to 20 of 21; re-run with --full",
-        "pending_source_rights truncated to 20 of 21; re-run with --full",
-        "contradictions truncated to 20 of 21; re-run with --full",
-    }
+    assert "research_packets" not in doc
+    assert "pending_source_rights" not in doc
 
 
 def test_review_at_a_canonical_wiki_root_reports_only_compiled_pages(
@@ -986,6 +1001,59 @@ def test_review_attention_lists_sections(
     assert doc["aggregates"]["uncategorized_proposals"] == 1
     assert len(doc["uncategorized_proposals"]) == 1
     assert any("evolve" in entry for entry in doc["help"])
+
+
+# --- research ----------------------------------------------------------------
+
+
+def test_research_documents_render_identically_in_toon_and_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = research_ready_vault(tmp_path)
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(
+        json.dumps({"gap_id": "gap-1", "wiki": "StarterWiki", "question": "What ships weekly?"}),
+        encoding="utf-8",
+    )
+    argv = ["--root", str(vault), "research", "plan", "--input", str(plan_file)]
+    code_j, doc, _ = run_json(capsys, *argv)
+    code_t, toon_out, err = run_toon(capsys, *argv)
+    assert code_j == code_t == 0
+    assert err == ""
+    assert doc["schema_version"] == "megamind/research-plan/v1"
+    assert toon.encode(doc) == toon_out
+
+    status_argv = ["--root", str(vault), "research", "status"]
+    code_j, status, _ = run_json(capsys, *status_argv)
+    code_t, status_toon, err = run_toon(capsys, *status_argv)
+    assert code_j == code_t == 0
+    assert err == ""
+    assert status["schema_version"] == "megamind/research-status/v1"
+    assert toon.encode(status) == status_toon
+
+
+def test_research_status_truncates_without_full(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = research_ready_vault(tmp_path)
+    for index in range(SECTION_ITEM_LIMIT + 2):
+        plan_file = tmp_path / f"plan-{index}.json"
+        plan_file.write_text(
+            json.dumps({"gap_id": f"gap-{index}", "wiki": "StarterWiki", "question": "q"}),
+            encoding="utf-8",
+        )
+        code, _, _ = run_json(
+            capsys, "--root", str(vault), "research", "plan", "--input", str(plan_file)
+        )
+        assert code == 0
+    code, doc, _ = run_json(capsys, "--root", str(vault), "research", "status")
+    assert code == 0
+    assert len(doc["plans"]) == SECTION_ITEM_LIMIT
+    assert any("plans truncated" in note for note in doc["notes"])
+    code, full, _ = run_json(capsys, "--root", str(vault), "research", "status", "--full")
+    assert code == 0
+    assert len(full["plans"]) == SECTION_ITEM_LIMIT + 2
+    assert full["notes"] == []
 
 
 # --- doctor ------------------------------------------------------------------

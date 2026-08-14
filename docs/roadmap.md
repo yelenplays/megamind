@@ -87,6 +87,11 @@ model are non-negotiable at every stage.
 - Machine-readable `gap`, `research-wave`, `research-result`, and
   `provision-wiki` AXI documents, with v1 retrieval and federation behavior
   unchanged
+- Slice 1 governed evidence lane: restrictive per-wiki research policy;
+  deterministic evidence, quotation, claim, and contradiction records;
+  source-class/common acceptance gates; derived-origin corroboration;
+  corrections, freshness, lifecycle, doctor, review, and offline AXI receipt
+  commands. Core remains network-free and packets are never answer context.
 - Known limitations, all deliberate boundaries: a wave stops at the direct gap
   plus at most two first-order topics and defers the rest as nominations;
   capacity is enforced from host-supplied measurements and is never measured by

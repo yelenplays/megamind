@@ -178,6 +178,12 @@ megamind-axi research-result --nomination-json <json> --result-json <json>
   clean correction check. Megamind derives eligibility and writes no proposal
   for missing, unknown, malformed, contradictory, or retracted facts. Nothing
   is fetched, and `raw/` stays human-curated.
+- **Governed evidence receipts** (`research`) record host-supplied discovery,
+  artifacts, hash-bound quotations, claims, corrections, and contradictions
+  under each wiki's restrictive research policy. Missing policy, unresolved
+  spans, unknown gates, and retractions deny support; Megamind never fetches,
+  dispatches, or turns a research packet into answer context. See
+  [docs/axi.md](docs/axi.md) for the offline command contract.
 - **Provisional wikis** (`provision-wiki`) are the qualified local creation
   path: accepted domain, repeat demand, multiple topics, overlap, scope and
   exclusions, owner, source policy, privacy and model access, seed topics, and

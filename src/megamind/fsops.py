@@ -50,6 +50,20 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
+def identity_bytes(data: object, mutable: frozenset[str]) -> str:
+    """The rewrite-invariant projection of a content-addressed document.
+
+    A stored record's identity covers only the fields the id is derived from;
+    the rest is governed state a later stage may legitimately advance. Callers
+    compare this projection instead of whole files, so an update to derived
+    state is allowed while any edit to the identity itself stays refused.
+    """
+    if not isinstance(data, dict):
+        return json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
+    kept = {key: value for key, value in data.items() if key not in mutable}
+    return json.dumps(kept, sort_keys=True, separators=(",", ":"), default=str)
+
+
 # Flushing a directory entry needs a directory handle, which only POSIX
 # exposes. On Windows ``os.open`` on a directory fails and ``os.fsync`` rejects
 # a directory handle, so there is no equivalent primitive to call: a durable

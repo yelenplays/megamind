@@ -17,7 +17,7 @@ import argparse
 import json
 import shlex
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
@@ -66,16 +66,22 @@ from .evaluation import (
     write_document,
 )
 from .evidence import (
-    EvidenceAcceptanceError,
-    FrozenPacketResolver,
-    accept_evidence,
-    frozen_evidence,
-    frozen_ids,
-    make_contradiction,
-    make_resolved_claim,
-    store_claim,
-    store_contradiction,
-    unresolved_contradictions,
+    CORRECTION_SCHEMA,
+    ID_KEYS,
+    QUOTE_CEILING_CHARS,
+    EvidenceError,
+    EvidenceStore,
+    acceptance_gates,
+    correction_head,
+    decide_acceptance,
+    reconcile_claims,
+    resolve_corrections,
+    score_claim,
+    validate_claim,
+    validate_contradiction,
+    validate_correction_notice,
+    validate_evidence_record,
+    validate_quotation,
 )
 from .evolve import (
     EvolveError,
@@ -85,7 +91,7 @@ from .evolve import (
     resume_evolution,
     rollback_evolution,
 )
-from .fsops import MEGAMIND_DIR, PathEscapeError, atomic_write, content_hash, resolve_contained
+from .fsops import PathEscapeError, content_hash
 from .gardening import (
     WAVE_SCHEMA,
     CapacityInput,
@@ -103,6 +109,7 @@ from .gardening import (
     rollback_provision,
 )
 from .models import FrontmatterError, parse_document
+from .policy import ResearchPolicy, admitted_quality, freshness_state, tier_for_facts
 from .preflight import MODEL_CLASSES, run_preflight
 from .registry import (
     CURRENT_VERSION,
@@ -115,26 +122,18 @@ from .registry import (
     migrate_registry,
 )
 from .research import (
+    CANDIDATE_SCHEMA,
+    JOB_SCHEMA,
     OUTCOME_SCHEMA,
     PACKET_SCHEMA,
-    InvalidResearchTransition,
-    JobView,
-    MappingResolver,
-    ReplayConflict,
-    ResearchAuthority,
-    ResearchDrift,
+    PLAN_SCHEMA,
     ResearchError,
-    ResearchPlan,
     ResearchStore,
-    budget_status,
-    compile_packet_proposal,
-    make_claims_receipt,
-    make_discovery_receipt,
-    make_outcome,
-    make_packet,
     make_plan,
-    research_authority,
-    resolve_wiki_entry,
+    validate_candidate,
+    validate_job,
+    validate_outcome,
+    validate_packet,
 )
 from .review import ReviewReport, review
 from .rollout import (
@@ -507,7 +506,7 @@ def cmd_select_existing(
                 f"wikis truncated to {len(list_result.wikis)} of {list_result.total_wikis}; "
                 "re-run with --full"
             )
-        doc: Doc = {
+        return {
             "schema_version": "megamind/existing-selection-list/v1",
             "status": "ready",
             "request_hash": list_result.request_hash,
@@ -526,8 +525,7 @@ def cmd_select_existing(
                 f"--model-class {model_class} --owner-id '<owner>' "
                 f"--session-id '<session>' --today {list_result.today}`",
             ),
-        }
-        return doc, 0
+        }, 0
     if selection_id is None:
         raise UsageError("a wiki choice requires --selection-id from the eligible list")
     auth_result = select_existing(
@@ -542,7 +540,7 @@ def cmd_select_existing(
         catalog,
         root,
     )
-    doc = {
+    return {
         "schema_version": "megamind/existing-selection-result/v1",
         "status": "authorized",
         "request_hash": auth_result.request_hash,
@@ -559,8 +557,7 @@ def cmd_select_existing(
             str(auth_result.selected["follow_up"]),
             "Record the selection_id with the task; explicit choice does not raise confidence",
         ),
-    }
-    return doc, 0
+    }, 0
 
 
 def cmd_select_offer(
@@ -931,8 +928,7 @@ def cmd_review(root: Path, registry: Registry, today: date | None, full: bool) -
         "superseded_still_linked": list(report.superseded_still_linked),
         "dead_links": list(report.dead_links),
         "promotion_candidates": list(report.promotion_candidates),
-        "research_packets": list(report.research_packets),
-        "pending_source_rights": list(report.pending_source_rights),
+        "pending_evidence": list(report.pending_evidence),
         "contradictions": list(report.contradictions),
     }
     for key, items in sections.items():
@@ -1296,456 +1292,681 @@ def cmd_research_result(args: argparse.Namespace, root: Path) -> tuple[Doc, int]
     }, 0
 
 
-def _json_file(path: str, flag: str) -> dict[str, Any]:
+def _read_json_file(path: str, label: str) -> Any:
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise UsageError(f"{flag} is not a readable JSON file") from error
-    if not isinstance(value, dict):
-        raise UsageError(f"{flag} must contain one JSON object")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise UsageError(f"{label} cannot be read as JSON") from error
     return value
 
 
-def _bound_plan(
-    root: Path, data: dict[str, Any], today: str
-) -> tuple[ResearchPlan, ResearchAuthority]:
-    """Bind a submitted plan to the wiki card that alone can authorize it.
+def _research_doc(schema: str, payload: Mapping[str, Any], help_text: str) -> Doc:
+    return {"schema_version": schema, **dict(payload), "help": _help(help_text)}
 
-    The policy, card, and access digests are derived here, never accepted from
-    the submitted JSON: a contradicting value is card drift and needs a replan.
+
+def _excluded_research_workflow(action: str, job_id: str) -> tuple[Doc, int]:
+    return _research_doc(
+        "megamind/research-status/v1",
+        {
+            "status": "unavailable",
+            "action": action,
+            "job_id": job_id,
+            "reason": "packet-to-proposal compilation is outside this slice",
+        },
+        "Research packets remain inert receipts; Megamind does not compile them into proposals",
+    ), 0
+
+
+def _research_policy(registry: Registry, wiki: str) -> ResearchPolicy | None:
+    """Resolve one wiki's validated research policy from its registry entry or card.
+
+    An unresolvable name is a usage error rather than a silent policy-free
+    acceptance: a governance command must never treat a typo as a wiki that
+    happens to have no policy.
     """
-    name = data.get("wiki", "")
-    if not isinstance(name, str):
-        raise ResearchError("wiki must be a string")
-    authority = research_authority(resolve_wiki_entry(root, name))
-    bound = dict(data)
-    for key, derived in (
-        ("policy_digest", authority.policy_digest),
-        ("card_digest", authority.card_digest),
-        ("access_digest", authority.access_digest),
-    ):
-        supplied = bound.get(key)
-        if supplied not in (None, "", derived):
-            raise ResearchDrift(f"{key} does not match the current wiki card; replan is required")
-        bound[key] = derived
-    return make_plan(bound, today=today), authority
+    if not wiki:
+        return None
+    entry = registry.wiki_by_name(wiki)
+    if entry is None:
+        raise UsageError(f"unknown wiki: {wiki}")
+    return entry.research_policy
 
 
-def _authorized_job(
+def _required_research_policy(registry: Registry, wiki: str) -> ResearchPolicy:
+    policy = _research_policy(registry, wiki)
+    if policy is None:
+        raise ResearchError("research state requires an explicit wiki research policy")
+    return policy
+
+
+def _admitting_research_policy(registry: Registry, wiki: str) -> ResearchPolicy:
+    policy = _required_research_policy(registry, wiki)
+    if not policy.permitted:
+        raise ResearchError("wiki research policy denies stateful research")
+    return policy
+
+
+def _stored_plan_policy(store: ResearchStore, registry: Registry, plan_id: str) -> ResearchPolicy:
+    plan = store.get("plans", plan_id)
+    return _admitting_research_policy(registry, str(plan["wiki"]))
+
+
+def _valid_records(root: Path, kind: str) -> list[dict[str, Any]]:
+    """Every readable record of one kind; unreadable ones are doctor's business."""
+    return [record for _, record, _ in EvidenceStore(root).scan(kind) if record is not None]
+
+
+def _known_records(root: Path, kind: str) -> dict[str, dict[str, Any]]:
+    """Stored records keyed by identity, for resolving references at admission.
+
+    Every reference a record makes is resolved against this projection before
+    the record is written, so no supported command can commit a citation that
+    doctor will then report as dangling.
+    """
+    return {str(record[ID_KEYS[kind]]): record for record in _valid_records(root, kind)}
+
+
+def _stored_quotations(root: Path, evidence_id: str) -> list[dict[str, Any]]:
+    """The already-validated hash-bound spans recorded against one artifact."""
+    return [
+        quotation
+        for quotation in _valid_records(root, "quotations")
+        if quotation["evidence_id"] == evidence_id
+    ]
+
+
+def _claim_confidences(
     root: Path,
-    store: ResearchStore,
-    job_id: str,
-    attempt_id: str,
-    *,
-    states: tuple[str, ...] = (),
-) -> tuple[JobView, ResearchPlan, ResearchAuthority]:
-    """Resolve a job whose card still authorizes the attempt the receipt names.
+    claims: Sequence[Mapping[str, Any]],
+    policy: ResearchPolicy | None,
+    today: str,
+) -> list[Doc]:
+    """Score each recorded claim with the existing, unchanged constants.
 
-    ``states`` names the job states the caller may act from.  Callers that
-    freeze an artifact pass it so a step the transition table would refuse
-    cannot leave a durable packet, proposal, or claim behind first.
+    Freshness and contradiction are read from stored typed facts rather than
+    supplied by the caller, so a host cannot buy confidence by asserting that
+    its own evidence is current or unconflicted.
     """
-    job = store.get(job_id)
-    if attempt_id and job.attempt_id != attempt_id:
-        raise ReplayConflict("receipt attempt identity does not match the current job")
-    if states and job.state not in states:
-        raise InvalidResearchTransition(f"expected {' or '.join(states)}, found {job.state}")
-    plan_record = store.load_plan(job.plan_id)
-    authority = research_authority(resolve_wiki_entry(root, plan_record.wiki))
-    store.assert_no_drift(
-        job,
-        policy_digest=authority.policy_digest,
-        card_digest=authority.card_digest,
-        access_digest=authority.access_digest,
-    )
-    if not authority.authorized:
-        raise ResearchError(f"wiki card no longer authorizes research: {authority.reason}")
-    return job, plan_record, authority
+    evidence = {str(record["evidence_id"]): record for record in _valid_records(root, "evidence")}
+    notices = _valid_records(root, "corrections")
+    conflicted: set[str] = set()
+    for contradiction in _valid_records(root, "contradictions"):
+        if contradiction["resolution"] == "unresolved":
+            conflicted.update(str(claim_id) for claim_id in contradiction["claim_ids"])
+    rows: list[Doc] = []
+    for claim in claims:
+        as_of = ""
+        for support in claim["supported_by"]:
+            record = evidence.get(str(support["evidence_id"]))
+            if record is None:
+                continue
+            candidate = str(record["evidence_as_of"] or record["published_at"])
+            if candidate and (not as_of or candidate < as_of):
+                as_of = candidate
+        freshness = freshness_state(policy, str(claim["type"]), as_of, today)
+        score = score_claim(
+            claim,
+            evidence,
+            freshness=freshness,
+            contradicted=str(claim["claim_id"]) in conflicted,
+            notices=notices,
+        )
+        rows.append(
+            {
+                "claim_id": str(claim["claim_id"]),
+                "freshness": freshness,
+                "contradicted": str(claim["claim_id"]) in conflicted,
+                "score": score.render(),
+                "meets_floor": score.meets_floor,
+            }
+        )
+    return rows
 
 
-def cmd_research_state(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc, int]:
-    store = ResearchStore(root)
+def cmd_research(args: argparse.Namespace, root: Path, today: str) -> tuple[Doc, int]:
+    """Record one offline research-stage receipt from a JSON file.
+
+    The command family intentionally accepts files rather than giant strings;
+    the file is a host artifact and is never interpreted as instructions.
+    """
     action = args.research_action
-    if action == "plan":
-        data = _json_file(args.input, "--input")
-        plan_record, authority = _bound_plan(root, data, today)
-        store.save_plan(plan_record)
-        job = store.start(plan_record, today=today)
-        return {
-            "schema_version": plan_record.to_data()["schema"],
-            "status": "created",
-            "plan": plan_record.to_data(),
-            "job": job.to_data(),
-            "authority": authority.to_data(),
-            "help": _help(f"Run `{EXECUTABLE} research permission-check --input` with this plan"),
-        }, 0
-    if action == "permission-check":
-        data = _json_file(args.input, "--input")
-        # The host receipt is an observation: it can withhold a cycle the card
-        # allows, and can never authorize one the card denies.
-        observation = data.get("policy_authorized")
-        if observation is not None and not isinstance(observation, bool):
-            raise ResearchError("policy_authorized must be a boolean host observation")
-        plan_record, authority = _bound_plan(
-            root, {key: value for key, value in data.items() if key != "policy_authorized"}, today
-        )
-        store.save_plan(plan_record)
-        job = store.start(plan_record, today=today)
-        if job.state == "gap-open":
-            store.transition(
-                job.job_id,
-                "permission-check",
-                plan_id=plan_record.plan_id,
-                gap_id=plan_record.gap_id,
-                attempt_id=job.attempt_id,
-                expected_state="gap-open",
-                reason="permission facts recorded",
-                policy_digest=plan_record.policy_digest,
-                card_digest=plan_record.card_digest,
-                access_digest=plan_record.access_digest,
-                today=today,
-            )
-        withheld = authority.authorized and observation is False
-        authorized = authority.authorized and not withheld
-        result = store.transition(
-            job.job_id,
-            "planned" if authorized else "policy-denied",
-            plan_id=plan_record.plan_id,
-            gap_id=plan_record.gap_id,
-            attempt_id=job.attempt_id,
-            expected_state="permission-check",
-            reason="host receipt withheld this cycle" if withheld else authority.reason,
-            policy_digest=plan_record.policy_digest,
-            card_digest=plan_record.card_digest,
-            access_digest=plan_record.access_digest,
-            today=today,
-        )
-        return {
-            "schema_version": "megamind/research-state/v1",
-            "status": result.state,
-            "job": result.to_data(),
-            "authority": authority.to_data(),
-            "help": _help(
-                f"Run `{EXECUTABLE} research record-discovery --input` with a host receipt"
-                if authorized
-                else "Authorize research in the wiki card research policy, then replan"
-            ),
-        }, 0
+    # Every action reads or writes vault state, so an uninitialized root is
+    # refused before any write instead of scattering a stray .megamind/ tree.
+    registry = _load_routing_registry(root)
+    store = ResearchStore(root)
+    wiki = getattr(args, "wiki", "")
+    claim_type = getattr(args, "claim_type", "fact")
+    policy = _research_policy(registry, wiki)
     if action == "status":
-        jobs = store.jobs()
-        if args.job_id:
-            jobs = [job for job in jobs if job.job_id == args.job_id]
-        return {
-            "schema_version": "megamind/research-status/v1",
-            "status": "ok",
-            "jobs": [job.to_data() for job in jobs],
-            "count": len(jobs),
-            "help": _help("Use research cancel --job-id ID for an active attempt"),
-        }, 0
-    if action in {"cancel", "resume"}:
-        job = store.get(args.job_id)
-        if action == "cancel":
-            if job.state in {"applying", "validating"}:
-                raise ResearchError("cancellation waits for the write-ahead transaction")
-            result = store.transition(
-                job.job_id,
-                "cancelled",
-                plan_id=job.plan_id,
-                gap_id=job.gap_id,
-                attempt_id=job.attempt_id,
-                expected_state=job.state,
-                reason=args.reason or "cancelled",
-                today=today,
-            )
-        else:
-            # A resumed attempt is fresh proof, never a packet/cache shortcut.
-            if job.state != "cancelled":
-                raise ResearchError("only a cancelled attempt can be resumed")
-            # Re-admission is fresh proof over a wiki-bound plan, so an omitted
-            # receipt resumes the frozen plan rather than a synthetic one.
-            data = (
-                _json_file(args.input, "--input")
-                if args.input
-                else {
-                    key: value
-                    for key, value in store.load_plan(job.plan_id).to_data().items()
-                    if key not in ("schema", "plan_id")
-                }
-            )
-            plan_record, _authority = _bound_plan(root, {**data, "job_id": job.job_id}, today)
-            store.save_plan(plan_record)
-            attempt_id = content_hash(
-                json.dumps(
-                    {
-                        "job_id": job.job_id,
-                        "plan_id": plan_record.plan_id,
-                        "resume_from": job.attempt_id,
-                    },
-                    sort_keys=True,
-                )
-            )
-            result = store.transition(
-                job.job_id,
-                "gap-open",
-                plan_id=plan_record.plan_id,
-                gap_id=plan_record.gap_id,
-                attempt_id=attempt_id,
-                policy_digest=plan_record.policy_digest,
-                card_digest=plan_record.card_digest,
-                access_digest=plan_record.access_digest,
-                today=today,
-            )
-        return {
-            "schema_version": "megamind/research-state/v1",
-            "status": "updated",
-            "job": result.to_data(),
-            "help": _help("Continue only through the validated research transition table"),
-        }, 0
-    if action == "record-artifact":
-        data = _json_file(args.input, "--input")
-        record = accept_evidence(data)
-        evidence_dir = Path(MEGAMIND_DIR) / "research" / "evidence"
-        text = json.dumps(record.to_data(), indent=2, sort_keys=True) + "\n"
-        existing = resolve_contained(root, evidence_dir / f"{record.evidence_id}.json")
-        if existing.is_file() and existing.read_text(encoding="utf-8") != text:
-            raise ResearchError("evidence artifact is immutable")
-        atomic_write(root, evidence_dir / f"{record.evidence_id}.json", text)
-        return {
-            "schema_version": record.to_data()["schema"],
-            "status": record.decision,
-            "evidence": record.to_data(),
-            "help": _help(
-                "Use record-claims with opaque evidence references; Megamind never "
-                "fetches this artifact"
-            ),
-        }, 0
-    if action == "outcome":
-        data = _json_file(args.input, "--input")
-        outcome = make_outcome(data)
-        store.save_outcome(outcome)
-        return {
-            "schema_version": OUTCOME_SCHEMA,
-            "status": "recorded",
-            "outcome": outcome.to_data(),
-            "help": _help("Terminal outcomes are immutable; resume requires a fresh attempt proof"),
-        }, 0
-    if action == "packet":
-        data = _json_file(args.input, "--input")
-        # Packet references resolve only through this narrow resolver over the
-        # frozen claim and contradiction artifacts; ids stay opaque, and the
-        # packet's confidence and answerability are derived from them.
-        resolver = FrozenPacketResolver(root)
-        packet = make_packet(data, resolver)
-        packet_id = str(packet["packet_id"])
-        job, _plan_record, _authority = _authorized_job(
-            root,
-            store,
-            str(packet["job_id"]),
-            str(packet["attempt_id"]),
-            states=("packet-ready", "change-proposed"),
-        )
-        if job.state == "change-proposed" and packet_id not in job.artifact_ids:
-            raise ReplayConflict("this attempt already proposed a different packet")
-        store.save_immutable(
-            PACKET_SCHEMA,
-            packet_id,
-            {key: value for key, value in packet.items() if key != "schema"},
-        )
-        proposal_id, proposal_path = compile_packet_proposal(
-            root, packet, destination=args.destination, today=today, resolver=resolver
-        )
-        result = store.transition(
-            job.job_id,
-            "change-proposed",
-            plan_id=job.plan_id,
-            gap_id=job.gap_id,
-            attempt_id=job.attempt_id,
-            expected_state="packet-ready",
-            reason=f"proposal {proposal_id}",
-            artifact_ids=[packet_id],
-            today=today,
-        )
-        return {
-            "schema_version": PACKET_SCHEMA,
-            "status": "compiled",
-            "packet": packet,
-            "job": result.to_data(),
-            "proposal_id": proposal_id,
-            "proposal": proposal_path.relative_to(root.resolve()).as_posix(),
-            "help": _help(
-                f"Review then run `{EXECUTABLE} evolve {proposal_id}`; apply remains "
-                "explicit approval"
-            ),
-        }, 0
-    if action == "record-discovery":
-        receipt = make_discovery_receipt(_json_file(args.input, "--input"))
-        job, plan_record, authority = _authorized_job(
-            root, store, receipt["job_id"], receipt["attempt_id"]
-        )
-        unbounded = sorted(set(receipt["usage"]) - set(plan_record.ceilings))
-        if unbounded:
-            raise ResearchError(
-                f"discovery usage reports counters with no plan ceiling: {', '.join(unbounded)}"
-            )
-        measured = budget_status(plan_record.ceilings, receipt["usage"])
-        over = set(measured["over"])
-        if len(receipt["candidates"]) > authority.max_sources_per_cycle:
-            over.add("sources")
-        current = job
-        if current.state == "planned":
-            current = store.transition(
-                job.job_id,
-                "discovering",
-                plan_id=job.plan_id,
-                gap_id=job.gap_id,
-                attempt_id=job.attempt_id,
-                expected_state="planned",
-                reason="discovery receipt recorded",
-                artifact_ids=receipt["candidates"],
-                today=today,
-            )
-        result = store.transition(
-            job.job_id,
-            "budget-exhausted" if over else "retrieving",
-            plan_id=job.plan_id,
-            gap_id=job.gap_id,
-            attempt_id=job.attempt_id,
-            expected_state="discovering",
-            reason=f"plan ceiling exceeded: {', '.join(sorted(over))}"
-            if over
-            else "candidates frozen for retrieval",
-            artifact_ids=receipt["candidates"],
-            today=today,
-        )
-        return {
-            "schema_version": "megamind/research-state/v1",
-            "status": result.state,
-            "job": result.to_data(),
-            "budget": {**measured, "within": not over, "over": sorted(over)},
-            "help": _help(
-                f"Run `{EXECUTABLE} research record-artifact --input` for each frozen source"
-                if not over
-                else "Replan with higher ceilings; this attempt is terminal"
-            ),
-        }, 0
-    if action == "record-claims":
-        receipt = make_claims_receipt(_json_file(args.input, "--input"))
-        job, _plan_record, _authority = _authorized_job(
-            root,
-            store,
-            receipt["job_id"],
-            receipt["attempt_id"],
-            states=("retrieving", "accepting", "extracting"),
-        )
-        records = frozen_evidence(root)
-        claims = [make_resolved_claim(item, records) for item in receipt["claims"]]
-        # Contradictions resolve against the claims this receipt froze plus the
-        # ones already frozen, never against a raw host identifier.
-        contradiction_resolver = MappingResolver(
-            {"claim": {claim.claim_id for claim in claims} | frozen_ids(root, "claim")}
-        )
-        contradictions = [
-            make_contradiction(item, contradiction_resolver) for item in receipt["contradictions"]
-        ]
-        artifact_ids = sorted(
-            {claim.claim_id for claim in claims}
-            | {contradiction.contradiction_id for contradiction in contradictions}
-        )
-        contradiction_ids = sorted(
-            contradiction.contradiction_id for contradiction in contradictions
-        )
-        if job.state in {"accepting", "extracting"} and (
-            list(job.artifact_ids) != artifact_ids
-            or list(job.contradiction_ids) != contradiction_ids
-        ):
-            raise ReplayConflict("accepted artifact set is immutable")
-        for claim in claims:
-            store_claim(root, claim)
-        for contradiction in contradictions:
-            store_contradiction(root, contradiction)
-        current = job
-        if current.state == "retrieving":
-            current = store.transition(
-                job.job_id,
-                "accepting",
-                plan_id=job.plan_id,
-                gap_id=job.gap_id,
-                attempt_id=job.attempt_id,
-                expected_state="retrieving",
-                reason="claim receipt admitted",
-                artifact_ids=artifact_ids,
-                contradiction_ids=contradiction_ids,
-                today=today,
-            )
-        result = store.transition(
-            job.job_id,
-            "extracting",
-            plan_id=job.plan_id,
-            gap_id=job.gap_id,
-            attempt_id=job.attempt_id,
-            expected_state="accepting",
-            reason="claims extracted",
-            artifact_ids=artifact_ids,
-            contradiction_ids=contradiction_ids,
-            today=today,
-        )
         notes: list[str] = []
-        return {
-            "schema_version": "megamind/research-claims/v1",
-            "status": result.state,
-            "job": result.to_data(),
-            "claims": [claim.to_data() for claim in _capped(claims, args.full, notes, "claims")],
-            "contradictions": [item.to_data() for item in contradictions],
-            "count": len(claims),
-            "notes": notes,
-            "help": _help(
-                f"Run `{EXECUTABLE} research reconcile --job-id {job.job_id}` after extraction"
-            ),
-        }, 0
-    if action == "reconcile":
-        job, _plan_record, _authority = _authorized_job(root, store, args.job_id, "")
-        artifact_ids = list(job.artifact_ids)
-        contradiction_ids = list(job.contradiction_ids)
-        if job.state == "extracting":
-            store.transition(
-                job.job_id,
-                "reconciling",
-                plan_id=job.plan_id,
-                gap_id=job.gap_id,
-                attempt_id=job.attempt_id,
-                expected_state="extracting",
-                reason="deterministic reconciliation",
-                artifact_ids=artifact_ids,
-                contradiction_ids=contradiction_ids,
-                today=today,
+        problems: list[Doc] = []
+        full = bool(getattr(args, "full", False))
+
+        def section(kind: str) -> list[Any]:
+            rows: list[Any] = []
+            for identifier, record, problem in store.scan(kind):
+                if record is None:
+                    problems.append({"kind": kind, "record": identifier, "problem": problem})
+                    continue
+                rows.append(record)
+            return _capped(rows, full, notes, kind)
+
+        sections = {kind: section(kind) for kind in ("plans", "jobs", "packets", "outcomes")}
+        return _research_doc(
+            "megamind/research-status/v1",
+            {
+                "status": "attention" if problems else "ok",
+                **sections,
+                "problems": problems,
+                "notes": notes,
+            },
+            f"Run `{EXECUTABLE} doctor` to inspect the unreadable research records"
+            if problems
+            else "Record the next host receipt with `megamind-axi research ... --input FILE`",
+        ), 0
+    if action == "reconcile" and args.job_id and not args.input:
+        return _excluded_research_workflow(action, args.job_id)
+    if not args.input:
+        raise UsageError(f"research {action} requires --input FILE")
+    if action in {"record-artifact", "record-correction"}:
+        EvidenceStore(root).recover()
+    raw = _read_json_file(args.input, "--input")
+    if action == "permission-check":
+        if not isinstance(raw, Mapping):
+            raise ResearchError("permission-check input must be an object")
+        plan_wiki = raw.get("wiki")
+        if not isinstance(plan_wiki, str) or not plan_wiki:
+            raise ResearchError("permission-check plan wiki is required")
+        if wiki and wiki != plan_wiki:
+            raise UsageError("--wiki must match the permission-check plan wiki")
+        policy = _required_research_policy(registry, plan_wiki)
+        candidate = dict(raw)
+        candidate.pop("policy_authorized", None)
+        candidate.pop("schema", None)
+        candidate.pop("plan_id", None)
+        candidate["schema"] = PLAN_SCHEMA
+        candidate.setdefault("budget", candidate.pop("ceilings", {}))
+        candidate.setdefault("policy_digest", "legacy-policy")
+        candidate.setdefault("card_digest", "legacy-card")
+        candidate.setdefault("access_digest", "legacy-access")
+        plan = make_plan(candidate)
+        if not isinstance(plan, dict):
+            raise ResearchError("legacy permission-check plan is invalid")
+        job_id = content_hash(
+            json.dumps(
+                {"plan_id": plan["plan_id"], "gap_id": plan["gap_id"]},
+                sort_keys=True,
+                separators=(",", ":"),
             )
-        unresolved = unresolved_contradictions(root, contradiction_ids)
-        result = store.transition(
-            job.job_id,
-            "unresolved-contradiction" if unresolved else "packet-ready",
-            plan_id=job.plan_id,
-            gap_id=job.gap_id,
-            attempt_id=job.attempt_id,
-            expected_state="reconciling",
-            reason=f"unresolved contradictions: {', '.join(unresolved)}"
-            if unresolved
-            else "claims reconciled",
-            artifact_ids=artifact_ids,
-            contradiction_ids=contradiction_ids,
-            today=today,
         )
-        return {
-            "schema_version": "megamind/research-state/v1",
-            "status": result.state,
-            "job": result.to_data(),
-            "unresolved_contradictions": unresolved,
-            "help": _help(
-                f"Run `{EXECUTABLE} research packet --input` with a packet JSON"
-                if not unresolved
-                else "Resolve the contradictions in a fresh attempt; this one is terminal"
-            ),
-        }, 0
-    raise UsageError("unsupported research action")
+        authorized = bool(policy.permitted and raw.get("policy_authorized") is True)
+        attempt_id = content_hash(
+            json.dumps(
+                {"job_id": job_id, "plan_id": plan["plan_id"], "attempt": 1},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        job = validate_job(
+            {
+                "schema": JOB_SCHEMA,
+                "job_id": job_id,
+                "plan_id": plan["plan_id"],
+                "gap_id": plan["gap_id"],
+                "state": "planned" if authorized else "policy-denied",
+                "attempt": 1,
+                "events": [],
+            }
+        )
+        legacy_job = {**job, "attempt_id": attempt_id}
+        if not authorized:
+            return _research_doc(
+                JOB_SCHEMA,
+                {
+                    "status": job["state"],
+                    "job": legacy_job,
+                    "authority": {"authorized": policy.permitted},
+                },
+                "Permission is derived from the wiki policy",
+            ), 0
+        store.put("plans", plan)
+        store.put("jobs", job)
+        return _research_doc(
+            JOB_SCHEMA,
+            {
+                "status": job["state"],
+                "job": legacy_job,
+                "authority": {"authorized": policy.permitted},
+            },
+            "Permission is derived from the wiki policy",
+        ), 0
+    if action == "outcome":
+        if not isinstance(raw, Mapping):
+            raise ResearchError("outcome input must be an object")
+        legacy_state = raw.get("state")
+        if not isinstance(legacy_state, str):
+            raise ResearchError("outcome state is required")
+        status = {
+            "answered": "completed",
+            "answered-with-open-gap": "completed",
+            "cancelled": "cancelled",
+            "budget-exhausted": "failed",
+            "tool-failed": "failed",
+        }.get(legacy_state, "deferred")
+        outcome = validate_outcome(
+            {
+                "schema": OUTCOME_SCHEMA,
+                "job_id": raw.get("job_id"),
+                "plan_id": raw.get("plan_id"),
+                "status": status,
+                "artifact_ids": raw.get("artifact_ids", []),
+                "packet_id": raw.get("packet_id", ""),
+                "failure": raw.get("reason", ""),
+                "today": today,
+            }
+        )
+        _stored_plan_policy(store, registry, str(outcome["plan_id"]))
+        path = store.put("outcomes", outcome)
+        legacy_outcome = {
+            **outcome,
+            "attempt_id": raw.get("attempt_id", ""),
+            "state": legacy_state,
+            "reason": raw.get("reason", ""),
+        }
+        return _research_doc(
+            OUTCOME_SCHEMA,
+            {
+                "status": legacy_state,
+                "outcome": legacy_outcome,
+                "path": path.relative_to(root.resolve()).as_posix(),
+            },
+            "Outcomes are immutable local receipts",
+        ), 0
+    if action == "plan":
+        plan = make_plan(raw)
+        if not isinstance(plan, Mapping):
+            raise ResearchError("research plan must be a current receipt")
+        plan_wiki = str(plan["wiki"])
+        if wiki and wiki != plan_wiki:
+            raise UsageError("--wiki must match the research plan wiki")
+        _admitting_research_policy(registry, plan_wiki)
+        path = store.put("plans", plan)
+        job_id = content_hash(
+            json.dumps(
+                {"plan_id": plan["plan_id"], "gap_id": plan["gap_id"]},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        job = validate_job(
+            {
+                "schema": JOB_SCHEMA,
+                "job_id": job_id,
+                "plan_id": plan["plan_id"],
+                "gap_id": plan["gap_id"],
+                "state": "planned",
+                "attempt": 1,
+                "events": [],
+            }
+        )
+        store.put("jobs", job)
+        return _research_doc(
+            PLAN_SCHEMA,
+            {
+                "status": "planned",
+                "plan": plan,
+                "job": job,
+                "path": path.relative_to(root.resolve()).as_posix(),
+            },
+            "The plan is inert; a host may execute only its declared capabilities and budgets",
+        ), 0
+    if action == "record-discovery":
+        values = (
+            raw
+            if isinstance(raw, list)
+            else raw.get("candidates", [])
+            if isinstance(raw, dict)
+            else None
+        )
+        if not isinstance(values, list):
+            raise UsageError("record-discovery input must be a JSON list or {candidates: []}")
+        legacy_receipt = isinstance(raw, Mapping) and all(isinstance(item, str) for item in values)
+        if legacy_receipt:
+            job_id = raw.get("job_id")
+            attempt_id = raw.get("attempt_id")
+            if (
+                not isinstance(job_id, str)
+                or not job_id
+                or not isinstance(attempt_id, str)
+                or not attempt_id
+            ):
+                raise ResearchError("legacy discovery receipt requires job_id and attempt_id")
+            job = store.get("jobs", job_id)
+            if job["state"] != "planned":
+                raise ResearchError("legacy discovery requires a planned job")
+            policy = _stored_plan_policy(store, registry, str(job["plan_id"]))
+            candidate_wiki = str(store.get("plans", str(job["plan_id"]))["wiki"])
+            values = [
+                {
+                    "candidate_id": content_hash(
+                        json.dumps(
+                            {"origin": item, "query_hash": ""},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    ),
+                    "origin": item,
+                    "found_by": "legacy-receipt",
+                    "query_hash": "",
+                    "rank": index,
+                    "status": "discovered",
+                    "reason": "",
+                }
+                for index, item in enumerate(values)
+            ]
+        else:
+            policy = _admitting_research_policy(registry, wiki)
+            candidate_wiki = wiki
+        candidates = [
+            validate_candidate({"schema": CANDIDATE_SCHEMA, **dict(item)})
+            for item in values
+            if isinstance(item, Mapping)
+        ]
+        if len(candidates) != len(values):
+            raise ResearchError("every discovery candidate must be an object")
+        if policy is not None and len(candidates) > policy.max_sources_per_cycle:
+            raise ResearchError(
+                f"discovery exceeds the wiki budget of "
+                f"{policy.max_sources_per_cycle} sources per cycle"
+            )
+        paths = [
+            store.put("candidates", candidate, wiki=candidate_wiki)
+            .relative_to(root.resolve())
+            .as_posix()
+            for candidate in candidates
+        ]
+        if legacy_receipt:
+            job["state"] = "discovering"
+            job["events"] = [{"event": "legacy-discovery"}]
+            store.put("jobs", job)
+        return _research_doc(
+            CANDIDATE_SCHEMA,
+            {"status": "recorded", "candidates": candidates, "paths": paths},
+            "Discovery is untrusted; retrieve and freeze artifacts before acceptance",
+        ), 0
+    if action == "record-artifact":
+        record = validate_evidence_record(raw)
+        # G10 stays unknown until a quotation resolves against the frozen
+        # normalized snapshot, so acceptance is re-derived from whatever spans
+        # this vault already holds. Unknown is deliberately not pass.
+        quotations = _stored_quotations(root, str(record["evidence_id"]))
+        notices = _valid_records(root, "corrections")
+        gates = acceptance_gates(record, policy, claim_type, quotations, notices)
+        decision, failure = decide_acceptance(gates)
+        derived_tier = tier_for_facts(
+            policy,
+            {
+                "publisher": record["publisher"]["name"],
+                "jurisdiction": record["jurisdiction"],
+                "document_type": record["source_class"],
+            },
+            claim_type,
+        )
+        # Quality and tier are minted here from the validated wiki policy.
+        # Any host-supplied labels in the input are observations and are never
+        # copied into the behavior-changing acceptance block. A per-class
+        # ceiling may narrow the tier's quality but can never widen it.
+        quality = admitted_quality(policy, derived_tier, str(record["source_class"]))
+        record["acceptance"] = {
+            "decision": decision,
+            "tier": derived_tier.tier if derived_tier and quality else None,
+            "quality": quality,
+            "failure": failure,
+            "gates": gates,
+        }
+        record = validate_evidence_record(record)
+        path = EvidenceStore(root).put("evidence", record)
+        return _research_doc(
+            "megamind/evidence-record/v1",
+            {
+                "status": decision,
+                "evidence": record,
+                "corrections": resolve_corrections(record, notices),
+                "path": path.relative_to(root.resolve()).as_posix(),
+            },
+            "Accepted artifacts can be cited only through hash-bound quotations",
+        ), 0
+    if action == "record-correction":
+        notice = validate_correction_notice(raw)
+        evidence_store = EvidenceStore(root)
+        evidence_id = str(notice["evidence_id"])
+        if evidence_id not in _known_records(root, "evidence"):
+            raise UsageError(f"correction notice cites unknown evidence record: {evidence_id}")
+        chain = [
+            item
+            for item in _valid_records(root, "corrections")
+            if str(item["evidence_id"]) == evidence_id
+        ]
+        head = correction_head(evidence_id, chain)
+        expected = str(head["notice_id"]) if head is not None else ""
+        # A posture history only ever grows, so a new notice must name the one
+        # it replaces. Without that, two notices would both claim to be current
+        # and the record's posture would stop being decidable.
+        if chain and head is None:
+            raise UsageError(
+                f"correction chain for {evidence_id} has no single current notice; "
+                "run doctor before recording another"
+            )
+        if str(notice["supersedes"]) != expected:
+            raise UsageError(
+                "correction notice must supersede the current notice "
+                f"({expected or 'none, so supersedes must be empty'})"
+            )
+        path = evidence_store.put("corrections", notice)
+        return _research_doc(
+            CORRECTION_SCHEMA,
+            {
+                "status": "recorded",
+                "notice": notice,
+                "corrections": resolve_corrections(
+                    evidence_store.get("evidence", evidence_id), [*chain, notice]
+                ),
+                "path": path.relative_to(root.resolve()).as_posix(),
+            },
+            "Frozen facts are never edited; re-run `megamind-axi research record-artifact` "
+            "to re-derive acceptance under the superseding posture",
+        ), 0
+    if action == "record-quotations":
+        values = (
+            raw
+            if isinstance(raw, list)
+            else raw.get("quotations", [])
+            if isinstance(raw, dict)
+            else None
+        )
+        if not isinstance(values, list):
+            raise UsageError("record-quotations input must be a JSON list or {quotations: []}")
+        if not args.normalized_file:
+            raise UsageError("record-quotations requires --normalized-file FILE")
+        try:
+            normalized_text = Path(args.normalized_file).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise UsageError("--normalized-file cannot be read") from error
+        # The quote ceiling is the wiki's own rights posture, so a policy-less
+        # invocation keeps the restrictive structural limit instead of a wider one.
+        ceiling = policy.quote_ceiling_chars if policy is not None else QUOTE_CEILING_CHARS
+        known_evidence = _known_records(root, "evidence")
+        quotations = [
+            validate_quotation(
+                item, normalized_text, quote_ceiling_chars=ceiling, evidence=known_evidence
+            )
+            for item in values
+        ]
+        paths = [
+            path.relative_to(root.resolve()).as_posix()
+            for path in EvidenceStore(root).put_all(
+                [("quotations", item) for item in quotations],
+                normalized_text,
+                quote_ceiling_chars=ceiling,
+            )
+        ]
+        return _research_doc(
+            "megamind/quotation/v1",
+            {"status": "recorded", "quotations": quotations, "paths": paths},
+            "Re-run `megamind-axi research record-artifact` to re-derive acceptance "
+            "now that these spans resolve",
+        ), 0
+    if action == "record-claims":
+        values = (
+            raw
+            if isinstance(raw, list)
+            else raw.get("claims", [])
+            if isinstance(raw, dict)
+            else None
+        )
+        if not isinstance(values, list):
+            raise UsageError("record-claims input must be a JSON list or {claims: []}")
+        evidence_store = EvidenceStore(root)
+        # Citation targets are resolved against the store, so a claim can only
+        # rely on a span and an artifact this vault actually holds and validated.
+        known_quotations = _known_records(root, "quotations")
+        known_evidence = _known_records(root, "evidence")
+        notices = _valid_records(root, "corrections")
+        claims = [
+            validate_claim(
+                item,
+                quotations=known_quotations,
+                evidence=known_evidence,
+                notices=notices,
+                policy=policy,
+                enforce_policy=True,
+            )
+            for item in values
+        ]
+        paths = [
+            path.relative_to(root.resolve()).as_posix()
+            for path in evidence_store.put_all([("claims", item) for item in claims])
+        ]
+        return _research_doc(
+            "megamind/claim/v1",
+            {
+                "status": "recorded",
+                "claims": claims,
+                "paths": paths,
+                "confidence": _claim_confidences(root, claims, policy, today),
+            },
+            "Claims are inert until their evidence and quotation references validate",
+        ), 0
+    if action == "reconcile":
+        values = (
+            raw
+            if isinstance(raw, list)
+            else raw.get("contradictions", [])
+            if isinstance(raw, dict)
+            else None
+        )
+        evidence_store = EvidenceStore(root)
+        claims = []
+        if isinstance(raw, dict) and "claims" in raw:
+            if not today:
+                raise UsageError(
+                    "reconcile from claims requires --today ISO_DATE to date the contradiction"
+                )
+            known_quotations = _known_records(root, "quotations")
+            known_evidence = _known_records(root, "evidence")
+            notices = _valid_records(root, "corrections")
+            claims = [
+                validate_claim(
+                    item,
+                    quotations=known_quotations,
+                    evidence=known_evidence,
+                    notices=notices,
+                    policy=policy,
+                    enforce_policy=True,
+                )
+                for item in raw["claims"]
+            ]
+            contradictions = reconcile_claims(claims, today=today, gap_id=args.gap_id)
+        elif isinstance(values, list):
+            # A hand-supplied contradiction names claims it did not create, so
+            # every one of them has to already exist in this vault.
+            known_claims = _known_records(root, "claims")
+            contradictions = [validate_contradiction(item, claims=known_claims) for item in values]
+        else:
+            raise UsageError(
+                "reconcile input must be a JSON list, {claims: []}, or {contradictions: []}"
+            )
+        # A derived contradiction cites the claims it was derived from, so both
+        # land together: committing the contradiction alone would leave a vault
+        # whose own doctor immediately reports it as citing unknown claims.
+        written = evidence_store.put_all(
+            [("claims", item) for item in claims]
+            + [("contradictions", item) for item in contradictions]
+        )
+        paths = [path.relative_to(root.resolve()).as_posix() for path in written[len(claims) :]]
+        return _research_doc(
+            "megamind/contradiction/v1",
+            {
+                "status": "recorded",
+                "claims": claims,
+                "contradictions": contradictions,
+                "paths": paths,
+            },
+            "Contradictions remain visible; unresolved claims are never averaged",
+        ), 0
+    if action == "packet":
+        if isinstance(raw, Mapping) and "claims" in raw:
+            legacy_job_id = raw.get("job_id")
+            if not isinstance(legacy_job_id, str) or not legacy_job_id:
+                raise ResearchError("legacy packet job_id is required")
+            return _excluded_research_workflow(action, legacy_job_id)
+        packet = validate_packet(
+            raw,
+            claims=_known_records(root, "claims"),
+            contradictions=_known_records(root, "contradictions"),
+        )
+        _stored_plan_policy(store, registry, str(packet["plan_id"]))
+        path = store.put("packets", packet)
+        return _research_doc(
+            PACKET_SCHEMA,
+            {
+                "status": "packet-ready",
+                "packet": packet,
+                "path": path.relative_to(root.resolve()).as_posix(),
+            },
+            "A packet is cited synthesis, never answer context or evidence",
+        ), 0
+    if action == "cancel":
+        requested_job = validate_job(raw)
+        job = store.get("jobs", str(requested_job["job_id"]))
+        plan = store.get("plans", str(job["plan_id"]))
+        if str(plan["gap_id"]) != str(job["gap_id"]):
+            raise ResearchError("stored research job and plan have different gap ids")
+        _admitting_research_policy(registry, str(plan["wiki"]))
+        job["state"] = "cancelled"
+        job["events"] = [*job["events"], {"event": "cancelled"}]
+        return _research_doc(
+            JOB_SCHEMA,
+            {
+                "status": "cancelled",
+                "job": store.put("jobs", job).relative_to(root.resolve()).as_posix(),
+            },
+            "Cancellation retains every frozen artifact",
+        ), 0
+    if action == "resume":
+        requested_job = validate_job(raw)
+        job = store.get("jobs", str(requested_job["job_id"]))
+        plan = store.get("plans", str(job["plan_id"]))
+        if str(plan["gap_id"]) != str(job["gap_id"]):
+            raise ResearchError("stored research job and plan have different gap ids")
+        if job["state"] in {"cancelled", "answered", "rolled-back"}:
+            raise ResearchError("terminal research jobs cannot resume")
+        return _research_doc(
+            JOB_SCHEMA,
+            {"status": "resume-required", "job": job},
+            "Resume revalidates plan, policy, card, and access digests before continuing",
+        ), 0
+    raise UsageError(f"unknown research action: {action}")
 
 
 # dest -> flag, in the order the help hint prints them, so the emitted apply
@@ -2542,6 +2763,66 @@ def build_parser() -> AxiParser:
         "--full", action="store_true", help="never truncate the gap list or its attempt histories"
     )
 
+    p_research = sub.add_parser(
+        "research",
+        help="record deterministic, host-supplied research evidence (never fetches)",
+    )
+    _common_flags(p_research)
+    p_research.add_argument(
+        "research_action",
+        choices=[
+            "plan",
+            "permission-check",
+            "record-discovery",
+            "record-artifact",
+            "record-quotations",
+            "record-correction",
+            "record-claims",
+            "reconcile",
+            "packet",
+            "outcome",
+            "status",
+            "cancel",
+            "resume",
+        ],
+    )
+    p_research.add_argument("--input", default=None, help="JSON host receipt or record file")
+    p_research.add_argument(
+        "--job-id", default="", help="legacy workflow job identity for a typed refusal"
+    )
+    p_research.add_argument(
+        "--normalized-file",
+        default=None,
+        help="frozen normalized text used to resolve quotation spans",
+    )
+    p_research.add_argument(
+        "--today",
+        default=argparse.SUPPRESS,
+        help="host-supplied ISO date for reconciliation and freshness",
+    )
+    p_research.add_argument(
+        "--gap-id", default="", help="existing gap identity for contradiction linkage"
+    )
+    p_research.add_argument(
+        "--wiki",
+        default="",
+        help="wiki whose validated research policy governs artifact acceptance",
+    )
+    p_research.add_argument(
+        "--claim-type",
+        default="fact",
+        choices=[
+            "fact",
+            "decision",
+            "hypothesis",
+            "procedure",
+            "example",
+            "guidance",
+            "attributed-statement",
+        ],
+    )
+    p_research.add_argument("--full", action="store_true", help="do not truncate status lists")
+
     p_wave = sub.add_parser("research-wave", help="plan a deterministic one-hop research wave")
     _common_flags(p_wave)
     p_wave.add_argument("gap_id")
@@ -2563,34 +2844,6 @@ def build_parser() -> AxiParser:
     p_result.add_argument("--nomination-json", required=True)
     p_result.add_argument("--result-json", required=True)
 
-    p_research = sub.add_parser("research", help="deterministic research state and artifact spine")
-    _common_flags(p_research)
-    research_sub = p_research.add_subparsers(dest="research_action")
-    for action, help_text in (
-        ("plan", "create a content-addressed research plan"),
-        ("permission-check", "derive card research authorization and bind access facts"),
-        ("record-discovery", "validate a host discovery receipt against the plan ceilings"),
-        ("record-artifact", "validate and freeze an evidence receipt"),
-        ("record-claims", "validate and freeze extractor claims against frozen evidence"),
-        ("reconcile", "advance to deterministic reconciliation"),
-        ("packet", "freeze a packet and compile a normal Markdown proposal"),
-        ("outcome", "freeze an immutable terminal outcome"),
-        ("status", "show durable research jobs"),
-        ("cancel", "cancel an active attempt"),
-        ("resume", "resume with fresh attempt proof"),
-    ):
-        command_parser = research_sub.add_parser(action, help=help_text)
-        _common_flags(command_parser)
-        command_parser.add_argument(
-            "--input", default=None, help="JSON file input (never a giant CLI string)"
-        )
-        command_parser.add_argument("--job-id", default="")
-        command_parser.add_argument("--reason", default="")
-        command_parser.add_argument("--destination", default="uncategorized")
-        command_parser.add_argument("--full", action="store_true", help="emit untruncated sections")
-        command_parser.add_argument("--today", default=argparse.SUPPRESS)
-    # Plans, receipts, claims, and packets require JSON files. Status and
-    # cancellation operate on the already durable journal.
     p_provision = sub.add_parser("provision-wiki", help="create a qualified provisional local wiki")
     _common_flags(p_provision)
     p_provision.add_argument("name")
@@ -3009,27 +3262,12 @@ def _dispatch(args: argparse.Namespace, root: Path, root_label: str) -> tuple[Do
         if args.gap_action == "transition" and not args.status:
             raise UsageError("gap transition requires --status")
         return cmd_gap(args, root, _garden_today(args))
+    if command == "research":
+        return cmd_research(args, root, _garden_today(args))
     if command == "research-wave":
         return cmd_research_wave(args, root, _garden_today(args))
     if command == "research-result":
         return cmd_research_result(args, root)
-    if command == "research":
-        if args.research_action is None:
-            raise UsageError(
-                "usage: megamind-axi research plan|record-artifact|packet|status|cancel|resume ..."
-            )
-        # Reconciliation, cancellation, and re-admission read the durable
-        # journal and the frozen plan; only receipt actions need a JSON file.
-        if args.research_action not in {"status", "cancel", "resume", "reconcile"} and (
-            not args.input
-        ):
-            raise UsageError(f"research {args.research_action} requires --input JSON_FILE")
-        # `status` is the discovery surface: bare, it lists every durable job,
-        # and --job-id only narrows it. The actions that mutate one attempt
-        # still name it explicitly.
-        if args.research_action in {"cancel", "resume", "reconcile"} and not args.job_id:
-            raise UsageError(f"research {args.research_action} requires --job-id")
-        return cmd_research_state(args, root, _garden_today(args))
     if command == "provision-wiki":
         if args.apply and args.rollback:
             raise UsageError("provision-wiki --apply and --rollback are mutually exclusive")
@@ -3108,6 +3346,19 @@ _ERROR_HELP: dict[str, list[str]] = {
         "Re-run `megamind-axi rollout promote` without --apply and review every typed check",
         "Do not widen card access or override a provisional or failed evaluation outcome",
     ],
+    "evidence_invalid": [
+        "Validate the frozen host artifact and its typed acceptance fields before recording it",
+        f"Run `{EXECUTABLE} research record-correction --input FILE` to change a stored "
+        "artifact's correction or retraction posture; frozen facts are never re-recorded",
+        f"Run `{EXECUTABLE} research record-claims` or `reconcile` only after every "
+        "evidence, quotation, and claim they cite is stored",
+    ],
+    "research_invalid": [
+        "Validate the research JSON receipt and replay its content-addressed identity"
+    ],
+    "research_policy_invalid": [
+        "Fix the wiki research-policy/v1 document; unknown fields and absent policy deny research"
+    ],
     "gap_not_found": [f"Run `{EXECUTABLE} gap list` to inspect durable gap ids"],
     "gap_transition_invalid": [
         f"Run `{EXECUTABLE} gap list` and use an allowed lifecycle transition"
@@ -3155,8 +3406,8 @@ def main(argv: list[str] | None = None) -> int:
         EvaluationError,
         RolloutError,
         SelectionError,
+        EvidenceError,
         ResearchError,
-        EvidenceAcceptanceError,
     ) as error:
         code = str(getattr(error, "code", "operation_failed"))
         exit_code = 2 if code in {"not_initialized", "registry_invalid"} else 1
