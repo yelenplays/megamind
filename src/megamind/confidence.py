@@ -56,6 +56,20 @@ SIGNAL_STRENGTH = {
 # shared word in a longer request can no longer summon an offer picker.
 TEXT_ONLY_OFFER_FLOOR = 0.35
 
+# A sole surviving candidate that clears this floor loads automatically even
+# below the reliance floor: with no rival above the offer floor there is no
+# genuine choice to offer, and parking one obvious candidate behind a picker
+# on every conversational request costs more than the bounded read it gates.
+# Callers opt in per decision surface (preflight passes it for estate-level
+# wiki selection; the in-vault route ladder does not), and only for a sole
+# candidate whose evidence carries at least SOLO_MIN_SIGNAL_TOKENS distinct
+# signaling tokens or a matched name token (naming a wiki is never an
+# accident): one stray trigger token alone already scores 0.6, so without
+# the corroboration requirement a single shared word in a long request
+# would auto-load a wiki instead of staying quiet.
+SOLO_RELIANCE_FLOOR = 0.6
+SOLO_MIN_SIGNAL_TOKENS = 2
+
 # Claim confidence: base score by source quality, in the plan's authority
 # order (current eligible primary evidence, then curated synthesis supported
 # by that evidence, then labeled hypotheses/observations, then unsupported
@@ -154,7 +168,7 @@ def route_confidence(token_signals: list[float], token_count: int) -> float:
     return round(SIGNAL_WEIGHT * best + COVERAGE_WEIGHT * coverage, 4)
 
 
-def decide(confidences: list[float]) -> tuple[str, int]:
+def decide(confidences: list[float], solo_floor: float | None = None) -> tuple[str, int]:
     """Apply the route thresholds to a set of candidate confidences.
 
     Returns the decision (``load``, ``offer``, or ``no-match``) and how many
@@ -176,10 +190,12 @@ def decide(confidences: list[float]) -> tuple[str, int]:
         band += 1
     if top >= RELIANCE_FLOOR and band == 1:
         return "load", 1
+    if solo_floor is not None and len(confidences) == 1 and top >= solo_floor:
+        return "load", 1
     return "offer", band
 
 
-def authorize(confidences: list[float]) -> tuple[str, list[int]]:
+def authorize(confidences: list[float], solo_floor: float | None = None) -> tuple[str, list[int]]:
     """Decide, and name exactly which candidates the decision authorizes.
 
     This is the single reliance-floor gate: no caller may hand out load
@@ -191,13 +207,16 @@ def authorize(confidences: list[float]) -> tuple[str, list[int]]:
     ``confidences`` in the caller's own order, so output ordering stays the
     caller's business.
     """
-    decision, count = decide(confidences)
+    decision, count = decide(confidences, solo_floor)
     if decision == "no-match":
         return decision, []
     if decision == "load":
-        return decision, [
-            index for index, score in enumerate(confidences) if score >= RELIANCE_FLOOR
-        ]
+        indices = [index for index, score in enumerate(confidences) if score >= RELIANCE_FLOOR]
+        if not indices:
+            # The solo path: decide() only loads below the reliance floor for
+            # exactly one candidate, so that sole candidate is the authorization.
+            indices = [0]
+        return decision, indices
     band = sorted(range(len(confidences)), key=lambda index: (-confidences[index], index))[:count]
     return decision, sorted(band)
 

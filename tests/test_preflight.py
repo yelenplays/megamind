@@ -214,6 +214,74 @@ def test_low_coverage_text_only_evidence_is_not_offered(vault: Path) -> None:
     assert any(entry["name"] == "QuietWiki" for entry in close.matches + close.offers)
 
 
+def test_sole_offerable_candidate_below_reliance_still_loads(vault: Path) -> None:
+    """One clear wiki under the reliance floor with no rival must load instead
+    of parking the request behind a one-option picker."""
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="SoloWiki",
+            path="SoloWiki",
+            privacy="public-reference",
+            keywords=["dirigible", "mooring"],
+            sensitivity="public-reference",
+            digest="SoloWiki/DIGEST.md",
+        )
+    )
+    (vault / "SoloWiki").mkdir()
+    (vault / "SoloWiki/DIGEST.md").write_text("# Synthetic solo digest\n", encoding="utf-8")
+    save_registry(vault, registry)
+    result = run_preflight(
+        [_ref(vault)], "dirigible mooring checklist for tomorrow evening", "local"
+    )
+    assert result.status == "matched"
+    assert result.matches and result.matches[0]["name"] == "SoloWiki"
+    assert result.matches[0]["allows"]
+    assert result.thresholds["solo_reliance_floor"] == 0.6
+
+
+def test_naming_the_sole_wiki_is_self_corroborating(vault: Path) -> None:
+    """A request that names the wiki loads it even with no second signal."""
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="SoloWiki",
+            path="SoloWiki",
+            privacy="public-reference",
+            keywords=["dirigible"],
+            sensitivity="public-reference",
+            digest="SoloWiki/DIGEST.md",
+        )
+    )
+    (vault / "SoloWiki").mkdir()
+    (vault / "SoloWiki/DIGEST.md").write_text("# Synthetic solo digest\n", encoding="utf-8")
+    save_registry(vault, registry)
+    result = run_preflight([_ref(vault)], "solowiki checklist", "local")
+    assert result.status == "matched"
+    assert result.matches and result.matches[0]["name"] == "SoloWiki"
+
+
+def test_sole_single_signal_candidate_stays_an_offer(vault: Path) -> None:
+    """One stray trigger token is not corroborated intent: however it scores,
+    a sole candidate with a single matched term keeps the choice."""
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="StrayWiki",
+            path="StrayWiki",
+            privacy="public-reference",
+            keywords=["mooring"],
+            sensitivity="public-reference",
+        )
+    )
+    (vault / "StrayWiki").mkdir()
+    save_registry(vault, registry)
+    result = run_preflight([_ref(vault)], "mooring paperwork for the harbor office", "local")
+    assert result.status == "ambiguous"
+    assert [str(offer["name"]) for offer in result.offers] == ["StrayWiki"]
+    assert result.matches == []
+
+
 def test_multiword_negative_phrase_ignores_stopwords_and_plural_s(vault: Path) -> None:
     """Phrase adjacency is judged on the same normalized token stream the
     scorer reads: stopwords vanish and an unambiguous final ``s`` strips."""

@@ -26,6 +26,8 @@ from .confidence import (
     OFFER_FLOOR,
     RELIANCE_FLOOR,
     SIGNAL_STRENGTH,
+    SOLO_MIN_SIGNAL_TOKENS,
+    SOLO_RELIANCE_FLOOR,
     TEXT_ONLY_OFFER_FLOOR,
     authorize,
     route_confidence,
@@ -51,6 +53,7 @@ THRESHOLDS: dict[str, float] = {
     "offer_floor": OFFER_FLOOR,
     "ambiguity_band": AMBIGUITY_BAND,
     "text_only_offer_floor": TEXT_ONLY_OFFER_FLOOR,
+    "solo_reliance_floor": SOLO_RELIANCE_FLOOR,
 }
 
 
@@ -444,7 +447,19 @@ def run_preflight(
         # which rows the decision covers, so only a row that itself reached the
         # reliance floor can ever become a loadable match.
         lexical_confs = [confidence for _lex, _row, confidence in strong]
-        decision, authorized = authorize(lexical_confs)
+        # The solo opt-in needs corroborated evidence, not just one stray
+        # signaling token: a sole candidate with a single matched term stays
+        # an offer however it scores. A matched name token is the exception -
+        # nobody types a wiki's own name by accident - so naming the wiki is
+        # self-corroborating.
+        solo_floor = None
+        if len(strong) == 1:
+            sole = strong[0][0]
+            corroborated = len(sole.signals) >= SOLO_MIN_SIGNAL_TOKENS
+            named = sole.counts.get("name", 0) > 0
+            if corroborated or named:
+                solo_floor = SOLO_RELIANCE_FLOOR
+        decision, authorized = authorize(lexical_confs, solo_floor)
         result.confidence = max(lexical_confs) if lexical_confs else None
 
         match_indices: list[int] = []
