@@ -232,12 +232,49 @@ def test_sole_offerable_candidate_below_reliance_still_loads(vault: Path) -> Non
     (vault / "SoloWiki/DIGEST.md").write_text("# Synthetic solo digest\n", encoding="utf-8")
     save_registry(vault, registry)
     result = run_preflight(
-        [_ref(vault)], "dirigible mooring checklist for tomorrow evening", "local"
+        [_ref(vault)], "dirigible mooring checklist for tomorrow evening please", "local"
     )
     assert result.status == "matched"
     assert result.matches and result.matches[0]["name"] == "SoloWiki"
     assert result.matches[0]["allows"]
+    # Pinned inside the solo window: at or above 0.6, strictly below the 0.75
+    # reliance floor, so this load can only come from the solo opt-in.
+    assert result.confidence == 0.7333
+    assert result.confidence < result.thresholds["reliance_floor"]
+    assert result.matches[0]["confidence"] == {"score": 0.7333, "meets_floor": False}
     assert result.thresholds["solo_reliance_floor"] == 0.6
+    assert any("solo reliance floor" in note for note in result.notes)
+
+
+def test_sole_provisional_candidate_keeps_an_accurate_offer(vault: Path) -> None:
+    """Governance forbids loading a provisional wiki, so a sole corroborated
+    provisional candidate stays an offer with the truthful below-reliance
+    note instead of a solo load downgraded behind a false one."""
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="SoloWiki",
+            path="SoloWiki",
+            privacy="public-reference",
+            keywords=["dirigible", "mooring"],
+            sensitivity="public-reference",
+            digest="SoloWiki/DIGEST.md",
+            provisional=True,
+        )
+    )
+    (vault / "SoloWiki").mkdir()
+    (vault / "SoloWiki/DIGEST.md").write_text("# Synthetic solo digest\n", encoding="utf-8")
+    save_registry(vault, registry)
+    result = run_preflight(
+        [_ref(vault)], "dirigible mooring checklist for tomorrow evening please", "local"
+    )
+    assert result.status == "ambiguous"
+    assert result.matches == []
+    assert [str(offer["name"]) for offer in result.offers] == ["SoloWiki"]
+    assert result.confidence == 0.7333
+    assert any("below the reliance floor" in note for note in result.notes)
+    assert any("governance gate" in note for note in result.notes)
+    assert not any("meets the reliance floor" in note for note in result.notes)
 
 
 def test_naming_the_sole_wiki_is_self_corroborating(vault: Path) -> None:

@@ -125,9 +125,11 @@ megamind-axi preflight "how do we price cleanup offers" --estate ~/Wikis --model
 - **Preflight** is catalog-level only: it filters by model access before any
   path is returned (`full`, `digest-only`, `none`, and pointer modes are all
   honored) and applies the route-confidence thresholds: a confident match
-  (`>= 0.75`) reports `matched` with per-match confidence, freshness, and
-  evidence; weaker matches report `ambiguous` (offers with no loadable paths)
-  or a quiet `no-match`; `unavailable` and `privacy-filtered` are explicit.
+  (`>= 0.75`, or a sole corroborated non-provisional candidate at or above
+  the 0.6 solo floor with no rival) reports `matched` with per-match
+  confidence, freshness, and evidence; weaker matches report `ambiguous`
+  (offers with no loadable paths) or a quiet `no-match`; `unavailable` and
+  `privacy-filtered` are explicit.
   It emits a deterministic `preflight_id` so a host can prove the
   consultation happened. It never reads page content, never writes anything,
   and never calls a model or the network; whether and when to run it is the

@@ -97,7 +97,15 @@ signal) must also reach the 0.35 text-only offer floor
 preflight `thresholds` block) before it may be offered: text-only confidence
 is 0.18 + 0.4 * coverage, so a short request that mostly matches a card's
 text stays offerable while one stray shared word in a longer request can no
-longer summon an offer picker. The floor is applied per
+longer summon an offer picker. Also in `preflight` only, a sole candidate
+with no rival above the offer floor loads at or above the 0.6 solo reliance
+floor (`SOLO_RELIANCE_FLOOR`, reported as `solo_reliance_floor` in the
+preflight `thresholds` block) even below 0.75, and only when its evidence is
+corroborated: at least `SOLO_MIN_SIGNAL_TOKENS` (2) distinct signaling
+tokens, or a matched name token, because naming a wiki is self-corroborating.
+A provisional sole candidate never opts in - governance forbids its load -
+and the in-vault route ladder deliberately does not opt in at all. The floor
+is otherwise applied per
 candidate, not just to the leader: `confidence.authorize` names exactly which
 rows a decision covers, so a `load` never hands out authorization to a weaker
 row riding behind a strong one - `route` omits it from the packet with a note

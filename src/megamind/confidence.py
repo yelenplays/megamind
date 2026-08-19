@@ -173,7 +173,14 @@ def decide(confidences: list[float], solo_floor: float | None = None) -> tuple[s
 
     Returns the decision (``load``, ``offer``, or ``no-match``) and how many
     of the strongest candidates an ``offer`` should present (those inside the
-    ambiguity band). Confidence order is established here rather than trusted:
+    ambiguity band). ``solo_floor`` is the one opt-in exception to the
+    reliance floor: when a caller passes it and exactly one candidate is in
+    play, that sole candidate loads at or above ``solo_floor`` even below
+    ``RELIANCE_FLOOR`` - with no rival above the offer floor there is no
+    genuine choice to offer. The corroboration requirement guarding the
+    opt-in belongs to the caller (see ``megamind.preflight``); the in-vault
+    route ladder deliberately never passes it.
+    Confidence order is established here rather than trusted:
     callers rank candidates by lexical score, and confidence is not monotone in
     score, so a genuine near-tie can sit anywhere in the caller's list. The
     lexical baseline alone feeds this function; semantic reranking may reorder
@@ -199,8 +206,10 @@ def authorize(confidences: list[float], solo_floor: float | None = None) -> tupl
     """Decide, and name exactly which candidates the decision authorizes.
 
     This is the single reliance-floor gate: no caller may hand out load
-    authorization to a candidate the floor did not clear. A ``load`` authorizes
-    only candidates that individually reach ``RELIANCE_FLOOR``, so a weak
+    authorization the thresholds did not grant. A ``load`` authorizes only
+    candidates that individually reach ``RELIANCE_FLOOR``, with one opt-in
+    exception: a sole candidate that ``decide`` loaded through the caller's
+    ``solo_floor`` is authorized alone, below the reliance floor. A weak
     candidate riding along behind a strong one is never loadable; an ``offer``
     authorizes the ambiguity band around the strongest candidate; a
     ``no-match`` authorizes nothing. Returned indices point into

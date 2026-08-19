@@ -451,13 +451,16 @@ def run_preflight(
         # signaling token: a sole candidate with a single matched term stays
         # an offer however it scores. A matched name token is the exception -
         # nobody types a wiki's own name by accident - so naming the wiki is
-        # self-corroborating.
+        # self-corroborating. A provisional sole candidate never opts in:
+        # governance forbids its load, so a solo load would only downgrade
+        # back into the one-option picker this branch exists to dissolve.
         solo_floor = None
         if len(strong) == 1:
             sole = strong[0][0]
             corroborated = len(sole.signals) >= SOLO_MIN_SIGNAL_TOKENS
             named = sole.counts.get("name", 0) > 0
-            if corroborated or named:
+            provisional = bool(strong[0][1].get("provisional"))
+            if (corroborated or named) and not provisional:
                 solo_floor = SOLO_RELIANCE_FLOOR
         decision, authorized = authorize(lexical_confs, solo_floor)
         result.confidence = max(lexical_confs) if lexical_confs else None
@@ -502,6 +505,17 @@ def run_preflight(
                     f"governance downgrade, not a confidence downgrade: request confidence "
                     f"{result.confidence} meets the reliance floor ({RELIANCE_FLOOR}), but every "
                     "wiki that cleared it is provisional: offer choices, load nothing"
+                )
+            if (
+                match_indices
+                and result.confidence is not None
+                and result.confidence < RELIANCE_FLOOR
+            ):
+                result.notes.append(
+                    f"sole corroborated candidate: request confidence {result.confidence} is "
+                    f"below the reliance floor ({RELIANCE_FLOOR}) but clears the solo reliance "
+                    f"floor ({SOLO_RELIANCE_FLOOR}); no rival above the offer floor leaves no "
+                    "choice to offer, so it loads"
                 )
         else:
             result.status = "ambiguous"
