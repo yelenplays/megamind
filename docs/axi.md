@@ -106,6 +106,10 @@ fixtures. `route` and `preflight` apply fixed thresholds:
   inside a 0.05 `ambiguity_band`, the route offers choices without loading
   (`decision: offer`, preflight `status: ambiguous`, no `allows` paths or
   follow-up commands on offers);
+- in `preflight` only, a candidate whose only evidence is free text (no
+  trigger/keyword or name signal) must also reach 0.35
+  (`text_only_offer_floor`, emitted in the preflight `thresholds` block) to
+  be offered, so one stray shared word cannot summon an offer picker;
 - below 0.25 the evidence is dropped and the result is a definitive no-match
   that stays quiet.
 

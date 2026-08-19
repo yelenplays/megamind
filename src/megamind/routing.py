@@ -296,17 +296,12 @@ def _normalize(token: str) -> str:
 
 
 def tokenize(text: str) -> list[str]:
-    """Fold, lowercase, and filter words, safely stripping an unambiguous final ``s``."""
-    seen: set[str] = set()
-    result: list[str] = []
-    for raw in _WORD.findall(_fold(text)):
-        if raw in STOPWORDS or len(raw) < 2:
-            continue
-        token = _normalize(raw)
-        if token not in seen:
-            seen.add(token)
-            result.append(token)
-    return result
+    """Fold, lowercase, and filter words, safely stripping an unambiguous final ``s``.
+
+    Exactly ``tokenize_sequence`` deduplicated to first occurrences, so the
+    signal set and the phrase stream can never drift apart.
+    """
+    return list(dict.fromkeys(tokenize_sequence(text)))
 
 
 def tokenize_sequence(text: str) -> list[str]:

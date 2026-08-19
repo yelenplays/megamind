@@ -208,6 +208,8 @@ def test_low_coverage_text_only_evidence_is_not_offered(vault: Path) -> None:
     assert noise.status == "no-match"
     assert noise.offers == []
     assert any("text-only offer floor" in note for note in noise.notes)
+    assert not any("no-match floor" in note for note in noise.notes)
+    assert noise.thresholds["text_only_offer_floor"] == 0.35
     close = run_preflight([_ref(vault)], "zeppelin maintenance workflows", "local")
     assert any(entry["name"] == "QuietWiki" for entry in close.matches + close.offers)
 

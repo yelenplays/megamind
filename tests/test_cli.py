@@ -1383,6 +1383,7 @@ def test_preflight_matched_document(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert doc["status"] == "matched"
     assert doc["confidence"] >= 0.75
     assert doc["thresholds"]["reliance_floor"] == 0.75
+    assert doc["thresholds"]["text_only_offer_floor"] == 0.35
     assert doc["semantic"]["status"] == "disabled"
     assert doc["matches"][0]["confidence"]["meets_floor"] is True
     assert doc["matches"][0]["evidence"]["lexical_classes"]

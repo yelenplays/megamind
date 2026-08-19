@@ -90,7 +90,14 @@ query typed either way on one token. All weights are constants in
 targets 0.5, free text 0.3) with query-token coverage (weights 0.6/0.4), and
 fixed thresholds decide the outcome: at least 0.75 loads automatically, 0.25
 to 0.75 (or top candidates within the 0.05 ambiguity band) offers choices
-without loading, and below 0.25 is a quiet no-match. The floor is applied per
+without loading, and below 0.25 is a quiet no-match. In `preflight` only, a
+candidate whose only evidence is free text (no trigger/keyword or name
+signal) must also reach the 0.35 text-only offer floor
+(`TEXT_ONLY_OFFER_FLOOR`, reported as `text_only_offer_floor` in the
+preflight `thresholds` block) before it may be offered: text-only confidence
+is 0.18 + 0.4 * coverage, so a short request that mostly matches a card's
+text stays offerable while one stray shared word in a longer request can no
+longer summon an offer picker. The floor is applied per
 candidate, not just to the leader: `confidence.authorize` names exactly which
 rows a decision covers, so a `load` never hands out authorization to a weaker
 row riding behind a strong one - `route` omits it from the packet with a note

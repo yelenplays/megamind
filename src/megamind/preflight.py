@@ -50,6 +50,7 @@ THRESHOLDS: dict[str, float] = {
     "reliance_floor": RELIANCE_FLOOR,
     "offer_floor": OFFER_FLOOR,
     "ambiguity_band": AMBIGUITY_BAND,
+    "text_only_offer_floor": TEXT_ONLY_OFFER_FLOOR,
 }
 
 
@@ -451,9 +452,21 @@ def run_preflight(
         untrusted: list[int] = []
         if not strong:
             result.status = "no-match"
-            result.notes.append(
-                f"all matching wikis fall below the no-match floor ({OFFER_FLOOR}): staying quiet"
-            )
+            if text_only and too_weak:
+                result.notes.append(
+                    f"all matching wikis fall below the no-match floor ({OFFER_FLOOR}) or the "
+                    f"text-only offer floor ({TEXT_ONLY_OFFER_FLOOR}): staying quiet"
+                )
+            elif text_only:
+                result.notes.append(
+                    f"all matching wikis fall below the text-only offer floor "
+                    f"({TEXT_ONLY_OFFER_FLOOR}): staying quiet"
+                )
+            else:
+                result.notes.append(
+                    f"all matching wikis fall below the no-match floor ({OFFER_FLOOR}): "
+                    "staying quiet"
+                )
         elif decision == "load":
             loadable = set(authorized)
             below_floor = [index for index in range(len(strong)) if index not in loadable]
