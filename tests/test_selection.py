@@ -99,13 +99,15 @@ def test_user_can_select_the_original_single_digest_offer(
     assert original["confidence"] == 0.4467
     assert [offer["name"] for offer in original["offers"]] == ["FinanzWiki"]
 
-    # The historical mask: naming the wiki raises lexical coverage but still
-    # leaves no authorized load path. Selection must bind the original request,
-    # not treat this second request as authority.
+    # Naming the wiki with corroborating terms is a sole corroborated
+    # candidate above the solo reliance floor, so it now loads directly
+    # instead of re-offering. Selection below still binds the ORIGINAL
+    # ambiguous request and never treats this second request as authority.
     rephrased = _preflight(capsys, vault, "use FinanzWiki for allocation retirement strategy")
-    assert rephrased["status"] == "ambiguous"
+    assert rephrased["status"] == "matched"
     assert rephrased["confidence"] == 0.66
-    assert rephrased["matches"] == []
+    assert rephrased["matches"][0]["name"] == "FinanzWiki"
+    assert rephrased["matches"][0]["allows"] == ["FinanzWiki/DIGEST.md"]
 
     code, selected, error = run_json(
         capsys, *_select_args(vault, _evidence(tmp_path, original), request)

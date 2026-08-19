@@ -9,6 +9,7 @@ from megamind.confidence import (
     AMBIGUITY_BAND,
     OFFER_FLOOR,
     RELIANCE_FLOOR,
+    SOLO_RELIANCE_FLOOR,
     Confidence,
     Source,
     answer_confidence,
@@ -216,6 +217,28 @@ def test_decide_ranks_confidences_instead_of_trusting_caller_order() -> None:
     assert decide([1.0, 0.82, 1.0]) == ("offer", 2)
     assert decide([0.4, 0.9]) == ("load", 1)
     assert decide([0.1, 0.2]) == ("no-match", 0)
+
+
+def test_decide_solo_floor_loads_a_sole_candidate() -> None:
+    """A sole candidate above the solo floor loads: there is no choice to offer."""
+    assert decide([SOLO_RELIANCE_FLOOR], SOLO_RELIANCE_FLOOR) == ("load", 1)
+    assert decide([0.67], SOLO_RELIANCE_FLOOR) == ("load", 1)
+    # below the solo floor a sole candidate stays an offer
+    assert decide([SOLO_RELIANCE_FLOOR - 0.01], SOLO_RELIANCE_FLOOR) == ("offer", 1)
+    # any rival above the offer floor keeps the choice with the user
+    assert decide([0.67, OFFER_FLOOR], SOLO_RELIANCE_FLOOR) == ("offer", 1)
+    # without the opt-in the reliance floor alone decides, as before
+    assert decide([0.67]) == ("offer", 1)
+
+
+def test_authorize_solo_load_covers_exactly_the_sole_candidate() -> None:
+    decision, covered = authorize([0.67], SOLO_RELIANCE_FLOOR)
+    assert decision == "load"
+    assert covered == [0]
+    # the reliance floor still owns multi-candidate authorization
+    decision, covered = authorize([0.95, 0.3], SOLO_RELIANCE_FLOOR)
+    assert decision == "load"
+    assert covered == [0]
 
 
 # --- reliance-floor authorization ---------------------------------------------

@@ -26,11 +26,14 @@ from .confidence import (
     OFFER_FLOOR,
     RELIANCE_FLOOR,
     SIGNAL_STRENGTH,
+    SOLO_MIN_SIGNAL_TOKENS,
+    SOLO_RELIANCE_FLOOR,
+    TEXT_ONLY_OFFER_FLOOR,
     authorize,
     route_confidence,
 )
 from .fsops import content_hash
-from .routing import bounded_names, tokenize
+from .routing import bounded_names, tokenize, tokenize_sequence
 from .semantic import SemanticBackend, disabled_outcome
 from .semantic import rerank as semantic_rerank
 
@@ -49,6 +52,8 @@ THRESHOLDS: dict[str, float] = {
     "reliance_floor": RELIANCE_FLOOR,
     "offer_floor": OFFER_FLOOR,
     "ambiguity_band": AMBIGUITY_BAND,
+    "text_only_offer_floor": TEXT_ONLY_OFFER_FLOOR,
+    "solo_reliance_floor": SOLO_RELIANCE_FLOOR,
 }
 
 
@@ -172,13 +177,31 @@ def _names(
     return list(dict.fromkeys(str(strong[index][1].get("name")) for index in indices))
 
 
-def _declined(row: dict[str, object], query_tokens: list[str]) -> str | None:
-    negative: set[str] = set()
+def _contains_phrase(sequence: list[str], phrase: list[str]) -> bool:
+    span = len(phrase)
+    starts = range(len(sequence) - span + 1)
+    return any(sequence[start : start + span] == phrase for start in starts)
+
+
+def _declined(row: dict[str, object], query_sequence: list[str]) -> str | None:
+    """The negative-trigger veto, judged on the normalized token stream.
+
+    A single-token negative vetoes by membership. A multi-word negative is a
+    scoping phrase and vetoes only when its tokens appear contiguously in the
+    request, so a card line like "acme ads" can never veto its own wiki
+    through the shared subject token "acme" alone.
+    """
+    present = set(query_sequence)
     for item in _str_list(row.get("negative_triggers")):
-        negative.update(_token_set(item))
-    for token in query_tokens:
-        if token in negative:
-            return f"negative trigger match: {token}"
+        trigger = tokenize_sequence(item)
+        if not trigger:
+            continue
+        if len(trigger) == 1:
+            if trigger[0] in present:
+                return f"negative trigger match: {trigger[0]}"
+            continue
+        if _contains_phrase(query_sequence, trigger):
+            return f"negative trigger match: {item.strip()}"
     return None
 
 
@@ -313,6 +336,7 @@ def run_preflight(
     )
     outcome = disabled_outcome()
     query_tokens = tokenize(request)
+    query_sequence = tokenize_sequence(request)
     if not query_tokens:
         result.status = "no-match"
         result.notes.append("no usable terms in request")
@@ -335,7 +359,7 @@ def run_preflight(
             continue
         if not query_tokens:
             continue
-        reason = _declined(row, query_tokens)
+        reason = _declined(row, query_sequence)
         if reason is not None:
             result.declined.append(
                 {"name": row.get("name"), "root": row.get("root"), "reason": reason}
@@ -393,18 +417,29 @@ def run_preflight(
             for lexical, _row in eligible
         ]
         # The no-match floor drops evidence too weak to offer, by name only.
+        # A candidate whose only evidence is free text (no trigger/keyword or
+        # name signal) needs the higher text-only floor: it can never reach
+        # reliance, so a stray shared word must not summon an offer picker.
         paired = list(zip(eligible, confidences, strict=True))
-        strong = [
-            (lexical, row, confidence)
-            for (lexical, row), confidence in paired
-            if confidence >= OFFER_FLOOR
-        ]
-        too_weak = [
-            str(row.get("name")) for (_lex, row), confidence in paired if confidence < OFFER_FLOOR
-        ]
+        strong: list[tuple[_Lexical, dict[str, object], float]] = []
+        too_weak: list[str] = []
+        text_only: list[str] = []
+        for (lexical, row), confidence in paired:
+            best_signal = max(lexical.signals.values(), default=0.0)
+            if confidence < OFFER_FLOOR:
+                too_weak.append(str(row.get("name")))
+            elif best_signal < SIGNAL_STRENGTH["name"] and confidence < TEXT_ONLY_OFFER_FLOOR:
+                text_only.append(str(row.get("name")))
+            else:
+                strong.append((lexical, row, confidence))
         if too_weak:
             result.notes.append(
                 f"below the no-match floor ({OFFER_FLOOR}): omitted {bounded_names(too_weak)}"
+            )
+        if text_only:
+            result.notes.append(
+                f"below the text-only offer floor ({TEXT_ONLY_OFFER_FLOOR}): "
+                f"omitted {bounded_names(text_only)}"
             )
 
         # Thresholds, membership, and the authorized set all come from lexical
@@ -412,7 +447,22 @@ def run_preflight(
         # which rows the decision covers, so only a row that itself reached the
         # reliance floor can ever become a loadable match.
         lexical_confs = [confidence for _lex, _row, confidence in strong]
-        decision, authorized = authorize(lexical_confs)
+        # The solo opt-in needs corroborated evidence, not just one stray
+        # signaling token: a sole candidate with a single matched term stays
+        # an offer however it scores. A matched name token is the exception -
+        # nobody types a wiki's own name by accident - so naming the wiki is
+        # self-corroborating. A provisional sole candidate never opts in:
+        # governance forbids its load, so a solo load would only downgrade
+        # back into the one-option picker this branch exists to dissolve.
+        solo_floor = None
+        if len(strong) == 1:
+            sole = strong[0][0]
+            corroborated = len(sole.signals) >= SOLO_MIN_SIGNAL_TOKENS
+            named = sole.counts.get("name", 0) > 0
+            provisional = bool(strong[0][1].get("provisional"))
+            if (corroborated or named) and not provisional:
+                solo_floor = SOLO_RELIANCE_FLOOR
+        decision, authorized = authorize(lexical_confs, solo_floor)
         result.confidence = max(lexical_confs) if lexical_confs else None
 
         match_indices: list[int] = []
@@ -420,9 +470,21 @@ def run_preflight(
         untrusted: list[int] = []
         if not strong:
             result.status = "no-match"
-            result.notes.append(
-                f"all matching wikis fall below the no-match floor ({OFFER_FLOOR}): staying quiet"
-            )
+            if text_only and too_weak:
+                result.notes.append(
+                    f"all matching wikis fall below the no-match floor ({OFFER_FLOOR}) or the "
+                    f"text-only offer floor ({TEXT_ONLY_OFFER_FLOOR}): staying quiet"
+                )
+            elif text_only:
+                result.notes.append(
+                    f"all matching wikis fall below the text-only offer floor "
+                    f"({TEXT_ONLY_OFFER_FLOOR}): staying quiet"
+                )
+            else:
+                result.notes.append(
+                    f"all matching wikis fall below the no-match floor ({OFFER_FLOOR}): "
+                    "staying quiet"
+                )
         elif decision == "load":
             loadable = set(authorized)
             below_floor = [index for index in range(len(strong)) if index not in loadable]
@@ -443,6 +505,17 @@ def run_preflight(
                     f"governance downgrade, not a confidence downgrade: request confidence "
                     f"{result.confidence} meets the reliance floor ({RELIANCE_FLOOR}), but every "
                     "wiki that cleared it is provisional: offer choices, load nothing"
+                )
+            if (
+                match_indices
+                and result.confidence is not None
+                and result.confidence < RELIANCE_FLOOR
+            ):
+                result.notes.append(
+                    f"sole corroborated candidate: request confidence {result.confidence} is "
+                    f"below the reliance floor ({RELIANCE_FLOOR}) but clears the solo reliance "
+                    f"floor ({SOLO_RELIANCE_FLOOR}); no rival above the offer floor leaves no "
+                    "choice to offer, so it loads"
                 )
         else:
             result.status = "ambiguous"

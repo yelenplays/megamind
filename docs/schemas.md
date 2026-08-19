@@ -122,7 +122,11 @@ v2 card fields, all optional:
   `last_confirmed`). Staleness is computed at read time (catalog passes
   `--today`), never stored.
 - `examples`, `triggers`, `negative_triggers`, `keywords`: the lexical
-  routing signals. Negative triggers let a wiki decline a request explicitly.
+  routing signals. Negative triggers let a wiki decline a request explicitly:
+  a single-token negative declines any request containing that token, while a
+  multi-word negative is a scoping phrase and declines only when its tokens
+  appear contiguously (stopwords removed), so a phrase like `"acme ads"`
+  never vetoes its own wiki through the shared token `"acme"` alone.
 - `dependencies`: other wikis this one relies on.
 - `context_budget`: optional per-wiki overrides surfaced by the catalog.
 - `catalog_visibility`: `full`, `redacted` (name, root, sensitivity, and

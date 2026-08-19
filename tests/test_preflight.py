@@ -161,6 +161,178 @@ def test_negative_trigger_declines_a_wiki(vault: Path) -> None:
     assert all(match["name"] != "ProductWiki" for match in result.matches)
 
 
+def test_multiword_negative_trigger_never_vetoes_through_one_shared_token(vault: Path) -> None:
+    """A scoping phrase like "pricing ads" must not veto its own wiki whenever
+    the request merely shares the subject token "pricing"."""
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.negative_triggers = ["pricing ads"]
+    save_registry(vault, registry)
+    result = run_preflight([_ref(vault)], "how does pricing work", "local")
+    assert result.declined == []
+    assert result.status == "matched"
+    assert result.matches[0]["name"] == "ProductWiki"
+
+
+def test_multiword_negative_trigger_declines_on_the_contiguous_phrase(vault: Path) -> None:
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.negative_triggers = ["pricing ads"]
+    save_registry(vault, registry)
+    result = run_preflight([_ref(vault)], "pricing ads budget", "local")
+    declined = [entry for entry in result.declined if entry["name"] == "ProductWiki"]
+    assert declined and "pricing ads" in str(declined[0]["reason"])
+    assert all(match["name"] != "ProductWiki" for match in result.matches)
+
+
+def test_low_coverage_text_only_evidence_is_not_offered(vault: Path) -> None:
+    """A stray free-text word (no keyword, trigger, or name signal) must not
+    summon an offer picker, while a request that mostly matches the card text
+    stays offerable so semantic reranking keeps its material."""
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="QuietWiki",
+            path="QuietWiki",
+            privacy="public-reference",
+            purpose="Synthetic notes about zeppelin maintenance workflows.",
+            keywords=["airship"],
+            sensitivity="public-reference",
+        )
+    )
+    (vault / "QuietWiki").mkdir()
+    save_registry(vault, registry)
+    noise = run_preflight([_ref(vault)], "zeppelin repair appointment tomorrow morning", "local")
+    assert noise.status == "no-match"
+    assert noise.offers == []
+    assert any("text-only offer floor" in note for note in noise.notes)
+    assert not any("no-match floor" in note for note in noise.notes)
+    assert noise.thresholds["text_only_offer_floor"] == 0.35
+    close = run_preflight([_ref(vault)], "zeppelin maintenance workflows", "local")
+    assert any(entry["name"] == "QuietWiki" for entry in close.matches + close.offers)
+
+
+def test_sole_offerable_candidate_below_reliance_still_loads(vault: Path) -> None:
+    """One clear wiki under the reliance floor with no rival must load instead
+    of parking the request behind a one-option picker."""
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="SoloWiki",
+            path="SoloWiki",
+            privacy="public-reference",
+            keywords=["dirigible", "mooring"],
+            sensitivity="public-reference",
+            digest="SoloWiki/DIGEST.md",
+        )
+    )
+    (vault / "SoloWiki").mkdir()
+    (vault / "SoloWiki/DIGEST.md").write_text("# Synthetic solo digest\n", encoding="utf-8")
+    save_registry(vault, registry)
+    result = run_preflight(
+        [_ref(vault)], "dirigible mooring checklist for tomorrow evening please", "local"
+    )
+    assert result.status == "matched"
+    assert result.matches and result.matches[0]["name"] == "SoloWiki"
+    assert result.matches[0]["allows"]
+    # Pinned inside the solo window: at or above 0.6, strictly below the 0.75
+    # reliance floor, so this load can only come from the solo opt-in.
+    assert result.confidence == 0.7333
+    assert result.confidence < result.thresholds["reliance_floor"]
+    assert result.matches[0]["confidence"] == {"score": 0.7333, "meets_floor": False}
+    assert result.thresholds["solo_reliance_floor"] == 0.6
+    assert any("solo reliance floor" in note for note in result.notes)
+
+
+def test_sole_provisional_candidate_keeps_an_accurate_offer(vault: Path) -> None:
+    """Governance forbids loading a provisional wiki, so a sole corroborated
+    provisional candidate stays an offer with the truthful below-reliance
+    note instead of a solo load downgraded behind a false one."""
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="SoloWiki",
+            path="SoloWiki",
+            privacy="public-reference",
+            keywords=["dirigible", "mooring"],
+            sensitivity="public-reference",
+            digest="SoloWiki/DIGEST.md",
+            provisional=True,
+        )
+    )
+    (vault / "SoloWiki").mkdir()
+    (vault / "SoloWiki/DIGEST.md").write_text("# Synthetic solo digest\n", encoding="utf-8")
+    save_registry(vault, registry)
+    result = run_preflight(
+        [_ref(vault)], "dirigible mooring checklist for tomorrow evening please", "local"
+    )
+    assert result.status == "ambiguous"
+    assert result.matches == []
+    assert [str(offer["name"]) for offer in result.offers] == ["SoloWiki"]
+    assert result.confidence == 0.7333
+    assert any("below the reliance floor" in note for note in result.notes)
+    assert any("governance gate" in note for note in result.notes)
+    assert not any("meets the reliance floor" in note for note in result.notes)
+
+
+def test_naming_the_sole_wiki_is_self_corroborating(vault: Path) -> None:
+    """A request that names the wiki loads it even with no second signal."""
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="SoloWiki",
+            path="SoloWiki",
+            privacy="public-reference",
+            keywords=["dirigible"],
+            sensitivity="public-reference",
+            digest="SoloWiki/DIGEST.md",
+        )
+    )
+    (vault / "SoloWiki").mkdir()
+    (vault / "SoloWiki/DIGEST.md").write_text("# Synthetic solo digest\n", encoding="utf-8")
+    save_registry(vault, registry)
+    result = run_preflight([_ref(vault)], "solowiki checklist", "local")
+    assert result.status == "matched"
+    assert result.matches and result.matches[0]["name"] == "SoloWiki"
+
+
+def test_sole_single_signal_candidate_stays_an_offer(vault: Path) -> None:
+    """One stray trigger token is not corroborated intent: however it scores,
+    a sole candidate with a single matched term keeps the choice."""
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="StrayWiki",
+            path="StrayWiki",
+            privacy="public-reference",
+            keywords=["mooring"],
+            sensitivity="public-reference",
+        )
+    )
+    (vault / "StrayWiki").mkdir()
+    save_registry(vault, registry)
+    result = run_preflight([_ref(vault)], "mooring paperwork for the harbor office", "local")
+    assert result.status == "ambiguous"
+    assert [str(offer["name"]) for offer in result.offers] == ["StrayWiki"]
+    assert result.matches == []
+
+
+def test_multiword_negative_phrase_ignores_stopwords_and_plural_s(vault: Path) -> None:
+    """Phrase adjacency is judged on the same normalized token stream the
+    scorer reads: stopwords vanish and an unambiguous final ``s`` strips."""
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.negative_triggers = ["plans for the client"]
+    save_registry(vault, registry)
+    declined = run_preflight([_ref(vault)], "pricing plan for a client", "local")
+    assert any(entry["name"] == "ProductWiki" for entry in declined.declined)
+    kept = run_preflight([_ref(vault)], "pricing plan review for launch", "local")
+    assert all(entry["name"] != "ProductWiki" for entry in kept.declined)
+
+
 def test_hidden_wiki_is_never_named(vault: Path, tmp_path: Path) -> None:
     registry = load_registry(vault)
     registry.wikis.append(

@@ -106,6 +106,18 @@ fixtures. `route` and `preflight` apply fixed thresholds:
   inside a 0.05 `ambiguity_band`, the route offers choices without loading
   (`decision: offer`, preflight `status: ambiguous`, no `allows` paths or
   follow-up commands on offers);
+- in `preflight` only, a candidate whose only evidence is free text (no
+  trigger/keyword or name signal) must also reach 0.35
+  (`text_only_offer_floor`, emitted in the preflight `thresholds` block) to
+  be offered, so one stray shared word cannot summon an offer picker;
+- in `preflight` only, a sole candidate with no rival above the offer floor
+  loads at or above 0.6 (`solo_reliance_floor`, emitted in the preflight
+  `thresholds` block) even below the reliance floor, provided its evidence is
+  corroborated - at least two distinct signaling tokens, or a matched name
+  token because naming a wiki is self-corroborating - and the wiki is not
+  `provisional`; with no genuine choice to offer, the result is `status:
+  matched` whose match carries `confidence.meets_floor: false` plus a note
+  naming the solo floor;
 - below 0.25 the evidence is dropped and the result is a definitive no-match
   that stays quiet.
 

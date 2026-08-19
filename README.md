@@ -125,9 +125,11 @@ megamind-axi preflight "how do we price cleanup offers" --estate ~/Wikis --model
 - **Preflight** is catalog-level only: it filters by model access before any
   path is returned (`full`, `digest-only`, `none`, and pointer modes are all
   honored) and applies the route-confidence thresholds: a confident match
-  (`>= 0.75`) reports `matched` with per-match confidence, freshness, and
-  evidence; weaker matches report `ambiguous` (offers with no loadable paths)
-  or a quiet `no-match`; `unavailable` and `privacy-filtered` are explicit.
+  (`>= 0.75`, or a sole corroborated non-provisional candidate at or above
+  the 0.6 solo floor with no rival) reports `matched` with per-match
+  confidence, freshness, and evidence; weaker matches report `ambiguous`
+  (offers with no loadable paths) or a quiet `no-match`; `unavailable` and
+  `privacy-filtered` are explicit.
   It emits a deterministic `preflight_id` so a host can prove the
   consultation happened. It never reads page content, never writes anything,
   and never calls a model or the network; whether and when to run it is the
@@ -329,8 +331,9 @@ only ever reordering what the lexical ladder surfaced; embedding-based local
 adapters come later behind the same protocol, and cloud embeddings are out of
 scope permanently. Confidence scores are calibrated rubric outputs, not truth
 guarantees: they never exceed what source quality, corroboration, freshness,
-and contradiction state justify, and `unknown` stays unknown. English
-stopwords only for now. Preflight routes at the catalog level and never loads
+and contradiction state justify, and `unknown` stays unknown. Tokenization
+covers English and German only for now (stopword filtering for both, plus
+umlaut folding). Preflight routes at the catalog level and never loads
 page content from other roots. The rollout proof can verify a host attestation,
 but running preflight and consuming or disarming the proof remain host-side
 policies that Megamind cannot enforce from inside its local process.

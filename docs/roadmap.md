@@ -195,7 +195,8 @@ model are non-negotiable at every stage.
   default; adapters only re-order already-authorized candidates and are
   always optional)
 - Micro-wiki promotion as a first-class evolve action
-- Multilingual stopword lists and configurable tokenization
+- Stopword lists beyond the built-in English and German, and configurable
+  tokenization
 - Watch mode for continuous capture suggestions
 - Editor integrations beyond the Agent Skill
 - Provider-specific host adapters beyond the local proof contract

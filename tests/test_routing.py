@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,35 @@ def test_tokenize_filters_stopwords_and_singularizes() -> None:
 )
 def test_tokenize_conservatively_handles_ambiguous_final_s(text: str, expected: list[str]) -> None:
     assert tokenize(text) == expected
+
+
+def test_tokenize_folds_german_umlauts_to_transliterations() -> None:
+    """An umlaut word must stay one token and meet its ae/oe/ue/ss spelling,
+    so a card written either way matches a query typed either way."""
+    assert tokenize("Vermögensaufteilung") == ["vermoegensaufteilung"]
+    assert tokenize("Vermoegensaufteilung") == ["vermoegensaufteilung"]
+    assert tokenize("Straße") == ["strasse"]
+    assert tokenize("Ernährung") == ["ernaehrung"]
+
+
+def test_tokenize_folds_decomposed_unicode_umlauts() -> None:
+    """macOS and web inputs can deliver NFD; a combining diaeresis must fold
+    identically to the precomposed character."""
+    decomposed = unicodedata.normalize("NFD", "Blätter")
+    assert len(decomposed) == 8  # the diaeresis really is its own codepoint
+    assert tokenize(decomposed) == ["blaetter"]
+
+
+def test_tokenize_filters_german_stopwords() -> None:
+    assert tokenize("welche Bilder passen für den Beitrag") == ["bilder", "passen", "beitrag"]
+    assert tokenize("und oder nicht mit von der die das") == []
+
+
+def test_tokenize_filters_german_request_scaffolding() -> None:
+    """Verbs and adjectives that only phrase a request ("wie finde ich einen
+    guten...") are noise for coverage, exactly like English how/what/which."""
+    assert tokenize("wie finde ich einen guten Markennamen") == ["markennamen"]
+    assert tokenize("Titelbild für das neue Video erstellen") == ["titelbild", "video"]
 
 
 def _with_picture_trigger(vault: Path) -> Registry:

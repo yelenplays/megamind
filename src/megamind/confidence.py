@@ -48,6 +48,28 @@ SIGNAL_STRENGTH = {
     "text": 0.3,
 }
 
+# A preflight candidate whose only evidence is free text (no trigger/keyword
+# or name signal) needs close to half the request to actually match that text
+# before it may be offered. Text-only confidence is 0.18 + 0.4 * coverage, so
+# 0.35 requires coverage above ~0.43: a short request that mostly matches a
+# card's text stays offerable (and semantically rerankable), while one stray
+# shared word in a longer request can no longer summon an offer picker.
+TEXT_ONLY_OFFER_FLOOR = 0.35
+
+# A sole surviving candidate that clears this floor loads automatically even
+# below the reliance floor: with no rival above the offer floor there is no
+# genuine choice to offer, and parking one obvious candidate behind a picker
+# on every conversational request costs more than the bounded read it gates.
+# Callers opt in per decision surface (preflight passes it for estate-level
+# wiki selection; the in-vault route ladder does not), and only for a sole
+# candidate whose evidence carries at least SOLO_MIN_SIGNAL_TOKENS distinct
+# signaling tokens or a matched name token (naming a wiki is never an
+# accident): one stray trigger token alone already scores 0.6, so without
+# the corroboration requirement a single shared word in a long request
+# would auto-load a wiki instead of staying quiet.
+SOLO_RELIANCE_FLOOR = 0.6
+SOLO_MIN_SIGNAL_TOKENS = 2
+
 # Claim confidence: base score by source quality, in the plan's authority
 # order (current eligible primary evidence, then curated synthesis supported
 # by that evidence, then labeled hypotheses/observations, then unsupported
@@ -146,12 +168,19 @@ def route_confidence(token_signals: list[float], token_count: int) -> float:
     return round(SIGNAL_WEIGHT * best + COVERAGE_WEIGHT * coverage, 4)
 
 
-def decide(confidences: list[float]) -> tuple[str, int]:
+def decide(confidences: list[float], solo_floor: float | None = None) -> tuple[str, int]:
     """Apply the route thresholds to a set of candidate confidences.
 
     Returns the decision (``load``, ``offer``, or ``no-match``) and how many
     of the strongest candidates an ``offer`` should present (those inside the
-    ambiguity band). Confidence order is established here rather than trusted:
+    ambiguity band). ``solo_floor`` is the one opt-in exception to the
+    reliance floor: when a caller passes it and exactly one candidate is in
+    play, that sole candidate loads at or above ``solo_floor`` even below
+    ``RELIANCE_FLOOR`` - with no rival above the offer floor there is no
+    genuine choice to offer. The corroboration requirement guarding the
+    opt-in belongs to the caller (see ``megamind.preflight``); the in-vault
+    route ladder deliberately never passes it.
+    Confidence order is established here rather than trusted:
     callers rank candidates by lexical score, and confidence is not monotone in
     score, so a genuine near-tie can sit anywhere in the caller's list. The
     lexical baseline alone feeds this function; semantic reranking may reorder
@@ -168,28 +197,35 @@ def decide(confidences: list[float]) -> tuple[str, int]:
         band += 1
     if top >= RELIANCE_FLOOR and band == 1:
         return "load", 1
+    if solo_floor is not None and len(confidences) == 1 and top >= solo_floor:
+        return "load", 1
     return "offer", band
 
 
-def authorize(confidences: list[float]) -> tuple[str, list[int]]:
+def authorize(confidences: list[float], solo_floor: float | None = None) -> tuple[str, list[int]]:
     """Decide, and name exactly which candidates the decision authorizes.
 
     This is the single reliance-floor gate: no caller may hand out load
-    authorization to a candidate the floor did not clear. A ``load`` authorizes
-    only candidates that individually reach ``RELIANCE_FLOOR``, so a weak
+    authorization the thresholds did not grant. A ``load`` authorizes only
+    candidates that individually reach ``RELIANCE_FLOOR``, with one opt-in
+    exception: a sole candidate that ``decide`` loaded through the caller's
+    ``solo_floor`` is authorized alone, below the reliance floor. A weak
     candidate riding along behind a strong one is never loadable; an ``offer``
     authorizes the ambiguity band around the strongest candidate; a
     ``no-match`` authorizes nothing. Returned indices point into
     ``confidences`` in the caller's own order, so output ordering stays the
     caller's business.
     """
-    decision, count = decide(confidences)
+    decision, count = decide(confidences, solo_floor)
     if decision == "no-match":
         return decision, []
     if decision == "load":
-        return decision, [
-            index for index, score in enumerate(confidences) if score >= RELIANCE_FLOOR
-        ]
+        indices = [index for index, score in enumerate(confidences) if score >= RELIANCE_FLOOR]
+        if not indices:
+            # The solo path: decide() only loads below the reliance floor for
+            # exactly one candidate, so that sole candidate is the authorization.
+            indices = [0]
+        return decision, indices
     band = sorted(range(len(confidences)), key=lambda index: (-confidences[index], index))[:count]
     return decision, sorted(band)
 

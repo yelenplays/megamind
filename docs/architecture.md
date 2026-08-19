@@ -72,12 +72,15 @@ always returned even when it alone exceeds the budget, so a real match never
 degrades into a silent empty result. Privacy classes shape the result:
 `digest-only` wikis never expose pages, `pointer-only` wikis never expose
 content and therefore cost nothing against the budget. Tokenization is
-lowercase word extraction with an English stopword list and plural stripping:
-a final `s` is removed from tokens longer than three characters, except for
-the exact conversational token `pros`, which must not become the unrelated
-trigger `pro`. This preserves ordinary plural normalization such as `logos` ->
-`logo` and `names` -> `name`. All weights are constants in `routing.py`;
-changing them is a behavior change and needs test updates.
+lowercase word extraction with an English-plus-German stopword list and plural
+stripping: a final `s` is removed from tokens longer than three characters,
+except for the exact conversational token `pros`, which must not become the
+unrelated trigger `pro`. This preserves ordinary plural normalization such as
+`logos` -> `logo` and `names` -> `name`. Before extraction the text is NFC
+normalized and German umlauts fold to their transliterations (`ä` -> `ae`,
+`ö` -> `oe`, `ü` -> `ue`, `ß` -> `ss`), so a card written either way meets a
+query typed either way on one token. All weights are constants in
+`routing.py`; changing them is a behavior change and needs test updates.
 
 ## Confidence and thresholds
 
@@ -87,7 +90,22 @@ changing them is a behavior change and needs test updates.
 targets 0.5, free text 0.3) with query-token coverage (weights 0.6/0.4), and
 fixed thresholds decide the outcome: at least 0.75 loads automatically, 0.25
 to 0.75 (or top candidates within the 0.05 ambiguity band) offers choices
-without loading, and below 0.25 is a quiet no-match. The floor is applied per
+without loading, and below 0.25 is a quiet no-match. In `preflight` only, a
+candidate whose only evidence is free text (no trigger/keyword or name
+signal) must also reach the 0.35 text-only offer floor
+(`TEXT_ONLY_OFFER_FLOOR`, reported as `text_only_offer_floor` in the
+preflight `thresholds` block) before it may be offered: text-only confidence
+is 0.18 + 0.4 * coverage, so a short request that mostly matches a card's
+text stays offerable while one stray shared word in a longer request can no
+longer summon an offer picker. Also in `preflight` only, a sole candidate
+with no rival above the offer floor loads at or above the 0.6 solo reliance
+floor (`SOLO_RELIANCE_FLOOR`, reported as `solo_reliance_floor` in the
+preflight `thresholds` block) even below 0.75, and only when its evidence is
+corroborated: at least `SOLO_MIN_SIGNAL_TOKENS` (2) distinct signaling
+tokens, or a matched name token, because naming a wiki is self-corroborating.
+A provisional sole candidate never opts in - governance forbids its load -
+and the in-vault route ladder deliberately does not opt in at all. The floor
+is otherwise applied per
 candidate, not just to the leader: `confidence.authorize` names exactly which
 rows a decision covers, so a `load` never hands out authorization to a weaker
 row riding behind a strong one - `route` omits it from the packet with a note
