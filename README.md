@@ -329,8 +329,9 @@ only ever reordering what the lexical ladder surfaced; embedding-based local
 adapters come later behind the same protocol, and cloud embeddings are out of
 scope permanently. Confidence scores are calibrated rubric outputs, not truth
 guarantees: they never exceed what source quality, corroboration, freshness,
-and contradiction state justify, and `unknown` stays unknown. English
-stopwords only for now. Preflight routes at the catalog level and never loads
+and contradiction state justify, and `unknown` stays unknown. Tokenization
+covers English and German only for now (stopword filtering for both, plus
+umlaut folding). Preflight routes at the catalog level and never loads
 page content from other roots. The rollout proof can verify a host attestation,
 but running preflight and consuming or disarming the proof remain host-side
 policies that Megamind cannot enforce from inside its local process.

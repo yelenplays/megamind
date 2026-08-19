@@ -53,7 +53,9 @@ pointer wikis expose location metadata only, digest-only wikis allow only
 their approved digest. Fixed route-confidence thresholds decide `status`:
 `matched` at or above the 0.75 reliance floor, `ambiguous` below it or inside
 the 0.05 ambiguity band (`offers[]` choices, nothing loaded), `no-match`
-under the 0.25 floor, plus `unavailable` and `privacy-filtered`. Matches
+under the 0.25 floor, plus `unavailable` and `privacy-filtered`. A candidate
+whose only evidence is free text must also reach the 0.35
+`text_only_offer_floor` (reported in `thresholds`) to be offered. Matches
 carry per-match `confidence`, `freshness`, `reasons`, and a privacy-safe
 `evidence` summary (routing class, numeric coverage, per-class signal counts,
 and declared card provenance; `evidence.lexical_classes` is the fired subset
