@@ -81,9 +81,16 @@ _Avoid_: probability of truth, model self-assessment
 **Reliance floor**:
 The fixed 0.75 threshold: at or above it a route may load automatically, a
 claim may become active factual knowledge, an answer may be delivered without
-a warning. Below it evidence stays an offer, hypothesis, or raw material; an
-`unknown` confidence never meets it.
+a warning. Below it evidence stays an offer, hypothesis, or raw material -
+the solo reliance floor is the one exception - and an `unknown` confidence
+never meets it.
 _Avoid_: tunable preference, guarantee of correctness
+
+**Solo reliance floor**:
+The fixed 0.6 preflight-only threshold: a sole corroborated, non-provisional
+candidate with no rival above the offer floor loads at or above it even below
+the reliance floor, because a one-option offer presents no genuine choice.
+_Avoid_: route-ladder behavior, reliance-floor replacement, tunable preference
 
 **Explicit offer selection**:
 The governed follow-up after a user chooses exactly one wiki from a validated

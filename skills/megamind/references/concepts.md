@@ -49,7 +49,9 @@ only the compiled wiki layer.
 Route, claim, and answer confidence are separate scores in [0, 1] against the
 fixed 0.75 reliance floor. Route confidence blends the strongest per-token
 routing signal with query coverage; the thresholds are 0.75 (load), 0.25
-(offer below, no-match under), and a 0.05 ambiguity band. Claim confidence
+(offer below, no-match under), and a 0.05 ambiguity band. Preflight alone
+adds a 0.35 text-only offer floor and a 0.6 solo reliance floor for a sole
+corroborated candidate (see `commands.md`). Claim confidence
 weighs eligible source quality (primary, synthesis, hypothesis, prior),
 independent corroboration by derived `origin_id` (sources sharing one count
 once, and unknown independence collapses to a single origin), freshness,
