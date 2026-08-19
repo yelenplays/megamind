@@ -48,6 +48,14 @@ SIGNAL_STRENGTH = {
     "text": 0.3,
 }
 
+# A preflight candidate whose only evidence is free text (no trigger/keyword
+# or name signal) needs close to half the request to actually match that text
+# before it may be offered. Text-only confidence is 0.18 + 0.4 * coverage, so
+# 0.35 requires coverage above ~0.43: a short request that mostly matches a
+# card's text stays offerable (and semantically rerankable), while one stray
+# shared word in a longer request can no longer summon an offer picker.
+TEXT_ONLY_OFFER_FLOOR = 0.35
+
 # Claim confidence: base score by source quality, in the plan's authority
 # order (current eligible primary evidence, then curated synthesis supported
 # by that evidence, then labeled hypotheses/observations, then unsupported

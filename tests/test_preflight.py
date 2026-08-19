@@ -161,6 +161,71 @@ def test_negative_trigger_declines_a_wiki(vault: Path) -> None:
     assert all(match["name"] != "ProductWiki" for match in result.matches)
 
 
+def test_multiword_negative_trigger_never_vetoes_through_one_shared_token(vault: Path) -> None:
+    """A scoping phrase like "pricing ads" must not veto its own wiki whenever
+    the request merely shares the subject token "pricing"."""
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.negative_triggers = ["pricing ads"]
+    save_registry(vault, registry)
+    result = run_preflight([_ref(vault)], "how does pricing work", "local")
+    assert result.declined == []
+    assert result.status == "matched"
+    assert result.matches[0]["name"] == "ProductWiki"
+
+
+def test_multiword_negative_trigger_declines_on_the_contiguous_phrase(vault: Path) -> None:
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.negative_triggers = ["pricing ads"]
+    save_registry(vault, registry)
+    result = run_preflight([_ref(vault)], "pricing ads budget", "local")
+    declined = [entry for entry in result.declined if entry["name"] == "ProductWiki"]
+    assert declined and "pricing ads" in str(declined[0]["reason"])
+    assert all(match["name"] != "ProductWiki" for match in result.matches)
+
+
+def test_low_coverage_text_only_evidence_is_not_offered(vault: Path) -> None:
+    """A stray free-text word (no keyword, trigger, or name signal) must not
+    summon an offer picker, while a request that mostly matches the card text
+    stays offerable so semantic reranking keeps its material."""
+    registry = load_registry(vault)
+    registry.wikis.append(
+        WikiEntry(
+            name="QuietWiki",
+            path="QuietWiki",
+            privacy="public-reference",
+            purpose="Synthetic notes about zeppelin maintenance workflows.",
+            keywords=["airship"],
+            sensitivity="public-reference",
+        )
+    )
+    (vault / "QuietWiki").mkdir()
+    save_registry(vault, registry)
+    noise = run_preflight([_ref(vault)], "zeppelin repair appointment tomorrow morning", "local")
+    assert noise.status == "no-match"
+    assert noise.offers == []
+    assert any("text-only offer floor" in note for note in noise.notes)
+    close = run_preflight([_ref(vault)], "zeppelin maintenance workflows", "local")
+    assert any(entry["name"] == "QuietWiki" for entry in close.matches + close.offers)
+
+
+def test_multiword_negative_phrase_ignores_stopwords_and_plural_s(vault: Path) -> None:
+    """Phrase adjacency is judged on the same normalized token stream the
+    scorer reads: stopwords vanish and an unambiguous final ``s`` strips."""
+    registry = load_registry(vault)
+    product = registry.wiki_by_name("ProductWiki")
+    assert product is not None
+    product.negative_triggers = ["plans for the client"]
+    save_registry(vault, registry)
+    declined = run_preflight([_ref(vault)], "pricing plan for a client", "local")
+    assert any(entry["name"] == "ProductWiki" for entry in declined.declined)
+    kept = run_preflight([_ref(vault)], "pricing plan review for launch", "local")
+    assert all(entry["name"] != "ProductWiki" for entry in kept.declined)
+
+
 def test_hidden_wiki_is_never_named(vault: Path, tmp_path: Path) -> None:
     registry = load_registry(vault)
     registry.wikis.append(

@@ -15,6 +15,7 @@ evidence packet states what it rests on.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
@@ -35,6 +36,18 @@ from .semantic import SemanticBackend, disabled_outcome
 from .semantic import rerank as semantic_rerank
 
 _WORD = re.compile(r"[a-z0-9]+")
+
+# German umlauts fold to their canonical transliterations before word
+# extraction, so a card written "Vermoegensaufteilung" and a query typed
+# "Vermögensaufteilung" meet on one token instead of the ASCII word pattern
+# shattering the umlaut word into fragments.
+_UMLAUT_FOLD = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
+
+
+def _fold(text: str) -> str:
+    """Lowercase and fold umlauts; NFC first so decomposed input folds too."""
+    return unicodedata.normalize("NFC", text).lower().translate(_UMLAUT_FOLD)
+
 
 STOPWORDS = frozenset(
     [
@@ -124,6 +137,129 @@ STOPWORDS = frozenset(
         "any",
         "all",
         "each",
+        # German function words, in their folded spellings (see _fold), so
+        # mixed-language requests keep only content-bearing tokens.
+        "der",
+        "die",
+        "das",
+        "den",
+        "dem",
+        "des",
+        "ein",
+        "eine",
+        "einen",
+        "einem",
+        "einer",
+        "eines",
+        "und",
+        "oder",
+        "aber",
+        "nicht",
+        "kein",
+        "keine",
+        "ich",
+        "du",
+        "er",
+        "sie",
+        "es",
+        "wir",
+        "ihr",
+        "mein",
+        "meine",
+        "dein",
+        "deine",
+        "seine",
+        "unser",
+        "euer",
+        "ihre",
+        "fuer",
+        "mit",
+        "von",
+        "zu",
+        "zum",
+        "zur",
+        "auf",
+        "aus",
+        "bei",
+        "nach",
+        "vor",
+        "ueber",
+        "unter",
+        "als",
+        "auch",
+        "noch",
+        "schon",
+        "nur",
+        "sehr",
+        "mehr",
+        "wie",
+        "wer",
+        "wo",
+        "wann",
+        "warum",
+        "welche",
+        "welcher",
+        "welches",
+        "dass",
+        "wenn",
+        "dann",
+        "denn",
+        "da",
+        "hier",
+        "dort",
+        "ist",
+        "sind",
+        "war",
+        "waren",
+        "hat",
+        "haben",
+        "hatte",
+        "hatten",
+        "wird",
+        "werden",
+        "wurde",
+        "kann",
+        "koennen",
+        "soll",
+        "sollen",
+        "muss",
+        "muessen",
+        "wollen",
+        "mag",
+        "moechte",
+        "bitte",
+        "mal",
+        "doch",
+        "ja",
+        "nein",
+        "man",
+        # German request scaffolding: verbs and adjectives that only phrase a
+        # request ("wie finde ich einen guten ...") and dilute coverage the
+        # same way English how/what/which would if they were kept.
+        "finde",
+        "finden",
+        "suche",
+        "suchen",
+        "mache",
+        "machen",
+        "erstelle",
+        "erstellen",
+        "brauche",
+        "brauchen",
+        "gut",
+        "gute",
+        "guten",
+        "guter",
+        "gutes",
+        "neu",
+        "neue",
+        "neuen",
+        "neuer",
+        "neues",
+        "richtig",
+        "richtige",
+        "richtigen",
+        "moeglich",
     ]
 )
 
@@ -160,10 +296,10 @@ def _normalize(token: str) -> str:
 
 
 def tokenize(text: str) -> list[str]:
-    """Lowercase and filter words, safely stripping an unambiguous final ``s``."""
+    """Fold, lowercase, and filter words, safely stripping an unambiguous final ``s``."""
     seen: set[str] = set()
     result: list[str] = []
-    for raw in _WORD.findall(text.lower()):
+    for raw in _WORD.findall(_fold(text)):
         if raw in STOPWORDS or len(raw) < 2:
             continue
         token = _normalize(raw)
@@ -171,6 +307,19 @@ def tokenize(text: str) -> list[str]:
             seen.add(token)
             result.append(token)
     return result
+
+
+def tokenize_sequence(text: str) -> list[str]:
+    """Like ``tokenize`` but keeps order and repeats, for phrase adjacency.
+
+    Deduplication would destroy adjacency, so consumers that match multi-word
+    phrases (negative triggers) read this stream instead of the signal set.
+    """
+    return [
+        _normalize(raw)
+        for raw in _WORD.findall(_fold(text))
+        if raw not in STOPWORDS and len(raw) >= 2
+    ]
 
 
 def _token_set(text: str) -> set[str]:
